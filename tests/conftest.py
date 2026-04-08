@@ -1,24 +1,26 @@
 """
 Test fixtures for nmem.
 
-Uses SQLite in-memory database with no-op embedding and LLM providers
-for fast, zero-dependency testing.
+Uses PostgreSQL + pgvector via docker-compose (port 5433).
+Run `docker compose up -d` before running tests.
 """
 
 from __future__ import annotations
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import text
 
 from nmem import MemorySystem, NmemConfig
+
+TEST_DB_URL = "postgresql+asyncpg://nmem:nmem@localhost:5433/nmem"
 
 
 @pytest_asyncio.fixture
 async def mem() -> MemorySystem:
-    """Create an initialized MemorySystem with SQLite + no-op providers."""
+    """Create an initialized MemorySystem with PostgreSQL + no-op providers."""
     config = NmemConfig(
-        database_url="sqlite+aiosqlite:///:memory:",
-        storage_provider="sqlite",
+        database_url=TEST_DB_URL,
         embedding={"provider": "noop", "dimensions": 384},
         llm={"provider": "noop"},
         consolidation={"enabled": False},
@@ -26,6 +28,24 @@ async def mem() -> MemorySystem:
     system = MemorySystem(config)
     await system.initialize()
     yield system  # type: ignore[misc]
+
+    # Clean up all nmem tables between tests
+    async with system._db.session() as session:
+        for table in [
+            "nmem_working_memory",
+            "nmem_journal_entries",
+            "nmem_long_term_memory",
+            "nmem_shared_knowledge",
+            "nmem_entity_memory",
+            "nmem_policy_memory",
+            "nmem_memory_conflicts",
+            "nmem_curiosity_signals",
+            "nmem_delegations",
+            "nmem_performance_scores",
+            "nmem_scheduled_followups",
+        ]:
+            await session.execute(text(f"DELETE FROM {table}"))
+
     await system.close()
 
 

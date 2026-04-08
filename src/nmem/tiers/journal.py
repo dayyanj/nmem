@@ -88,7 +88,7 @@ class JournalTier:
         else:
             compressed = content
 
-        expires_at = datetime.now(timezone.utc) + timedelta(
+        expires_at = datetime.utcnow() + timedelta(
             days=self._config.journal.default_expiry_days
         )
 
@@ -186,7 +186,7 @@ class JournalTier:
         Returns:
             List of JournalEntry objects, newest first.
         """
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        cutoff = datetime.utcnow() - timedelta(days=days)
         async with self._db.session() as session:
             stmt = (
                 select(JournalEntryModel)

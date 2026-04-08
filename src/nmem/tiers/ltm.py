@@ -97,8 +97,9 @@ class LTMTier:
                 existing.record_type = record_type
                 existing.grounding = grounding
                 existing.version += 1
-                existing.last_validated_at = datetime.now(timezone.utc)
+                existing.last_validated_at = datetime.utcnow()
                 await session.flush()
+                await session.refresh(existing)
                 return self._row_to_entry(existing)
             else:
                 record = LTMModel(
@@ -170,7 +171,7 @@ class LTMTier:
             row = result.scalar_one_or_none()
             if row:
                 row.access_count += 1
-                row.last_accessed_at = datetime.now(timezone.utc)
+                row.last_accessed_at = datetime.utcnow()
                 return self._row_to_entry(row)
             return None
 

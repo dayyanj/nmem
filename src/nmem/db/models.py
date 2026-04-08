@@ -20,51 +20,36 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-# Conditional pgvector import — falls back to nullable binary for SQLite
+# PostgreSQL-specific types with fallbacks for portability
 try:
+    from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
     from pgvector.sqlalchemy import Vector as PgVector
 
     def VectorColumn(dim: int):  # noqa: N802
         return mapped_column(PgVector(dim), nullable=True)
 
     HAS_PGVECTOR = True
+    JSONType = JSONB
+    TSVType = TSVECTOR
 except ImportError:
-    from sqlalchemy import LargeBinary
+    from sqlalchemy import JSON, LargeBinary
 
     def VectorColumn(dim: int):  # noqa: N802
         return mapped_column(LargeBinary, nullable=True)
 
     HAS_PGVECTOR = False
-
-# Conditional TSVECTOR — PostgreSQL only
-try:
-    from sqlalchemy.dialects.postgresql import TSVECTOR
-
-    HAS_TSVECTOR = True
-except ImportError:
-    TSVECTOR = Text  # type: ignore[misc,assignment]
-    HAS_TSVECTOR = False
-
-# Conditional JSONB — fall back to JSON for SQLite
-try:
-    from sqlalchemy.dialects.postgresql import JSONB as PgJSONB  # noqa: F811
-
-    JSONColumn = PgJSONB
-except ImportError:
-    from sqlalchemy import JSON
-
-    JSONColumn = JSON  # type: ignore[misc,assignment]
+    JSONType = JSON  # type: ignore[misc,assignment]
+    TSVType = Text  # type: ignore[misc,assignment]
 
 
 class Base(DeclarativeBase):
     """nmem declarative base."""
 
     type_annotation_map = {
-        dict: JSONColumn,
-        list: JSONColumn,
+        dict: JSONType,
+        list: JSONType,
     }
 
 
@@ -111,7 +96,7 @@ class JournalEntryModel(Base):
     entry_type: Mapped[str] = mapped_column(String(30))
     title: Mapped[str] = mapped_column(String(300))
     content: Mapped[str] = mapped_column(Text)
-    content_tsv = mapped_column(TSVECTOR, nullable=True)
+    content_tsv = mapped_column(TSVType, nullable=True)
 
     # Importance and decay
     importance: Mapped[int] = mapped_column(Integer, default=5)
@@ -162,7 +147,7 @@ class LTMModel(Base):
     category: Mapped[str] = mapped_column(String(50))
     key: Mapped[str] = mapped_column(String(200))
     content: Mapped[str] = mapped_column(Text)
-    content_tsv = mapped_column(TSVECTOR, nullable=True)
+    content_tsv = mapped_column(TSVType, nullable=True)
 
     # Importance and staleness
     importance: Mapped[int] = mapped_column(Integer, default=5)
@@ -216,7 +201,7 @@ class SharedKnowledgeModel(Base):
     category: Mapped[str] = mapped_column(String(50))
     key: Mapped[str] = mapped_column(String(200), unique=True)
     content: Mapped[str] = mapped_column(Text)
-    content_tsv = mapped_column(TSVECTOR, nullable=True)
+    content_tsv = mapped_column(TSVType, nullable=True)
 
     # Authorship
     created_by: Mapped[str] = mapped_column(String(100))
@@ -413,7 +398,7 @@ class DelegationModel(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     embedding = VectorColumn(384)
-    content_tsv = mapped_column(TSVECTOR, nullable=True)
+    content_tsv = mapped_column(TSVType, nullable=True)
 
     __table_args__ = (
         Index("ix_nmem_deleg_agents", "delegating_agent", "target_agent"),
@@ -439,7 +424,7 @@ class PerformanceScoreModel(Base):
     approvals: Mapped[int] = mapped_column(Integer, default=0)
     rejections: Mapped[int] = mapped_column(Integer, default=0)
     composite_score: Mapped[float] = mapped_column(Float, default=5.0)
-    metadata: Mapped[dict | None] = mapped_column(nullable=True)
+    extra_data: Mapped[dict | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (Index("ix_nmem_perf_agent_period", "agent_id", "period_end"),)

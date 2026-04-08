@@ -62,6 +62,14 @@ class DatabaseManager:
 
     async def initialize(self, embedding_dimensions: int = 384) -> None:
         """Create all tables and indexes. Idempotent."""
+        # Ensure pgvector extension exists BEFORE creating tables (vector type needed)
+        if self._is_postgres:
+            async with self._engine.begin() as conn:
+                try:
+                    await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                except Exception as e:
+                    logger.warning("Could not create pgvector extension: %s", e)
+
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
@@ -96,13 +104,6 @@ class DatabaseManager:
             return
 
         async with self._engine.begin() as conn:
-            # Ensure pgvector extension exists
-            try:
-                await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-            except Exception as e:
-                logger.warning("Could not create pgvector extension: %s", e)
-                return
-
             # HNSW indexes for vector similarity search
             vector_tables = [
                 "nmem_journal_entries",
