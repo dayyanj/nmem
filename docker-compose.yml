@@ -1,0 +1,19 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: nmem
+      POSTGRES_PASSWORD: nmem
+      POSTGRES_DB: nmem
+    ports:
+      - "5433:5432"
+    volumes:
+      - nmem_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nmem"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  nmem_data:
