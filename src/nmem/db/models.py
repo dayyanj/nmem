@@ -32,10 +32,27 @@ try:
 
     HAS_PGVECTOR = True
 except ImportError:
-    from sqlalchemy import LargeBinary
+
+    class _VectorAsJSON(types.TypeDecorator):
+        """Store embedding vectors as JSON text in SQLite (no pgvector)."""
+
+        impl = Text
+        cache_ok = True
+
+        def process_bind_param(self, value, dialect):
+            if value is None:
+                return None
+            import json as _json
+            return _json.dumps(value)
+
+        def process_result_value(self, value, dialect):
+            if value is None:
+                return None
+            import json as _json
+            return _json.loads(value)
 
     def VectorColumn(dim: int):  # noqa: N802
-        return mapped_column(LargeBinary, nullable=True)
+        return mapped_column(_VectorAsJSON(), nullable=True)
 
     HAS_PGVECTOR = False
 

@@ -24,11 +24,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -e ".[cli,sqlite]"
+          pip install -e ".[cli,sqlite,mcp-server]"
           pip install pytest pytest-asyncio pytest-cov pytest-timeout
 
       - name: Run unit tests
-        run: pytest tests/ --ignore=tests/integration -v --timeout=30
+        run: pytest tests/ --ignore=tests/integration -v --timeout=60
 
   test-integration:
     name: Integration Tests (PostgreSQL + pgvector)

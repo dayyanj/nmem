@@ -6,7 +6,15 @@ from unittest.mock import MagicMock
 import pytest
 import pytest_asyncio
 
+try:
+    import mcp
+    HAS_MCP = True
+except ImportError:
+    HAS_MCP = False
+
 from nmem import MemorySystem, NmemConfig
+
+pytestmark = pytest.mark.skipif(not HAS_MCP, reason="mcp package not installed")
 
 
 @pytest_asyncio.fixture

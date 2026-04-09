@@ -261,7 +261,7 @@ class JournalTier:
                         JournalEntryModel.created_at >= cutoff,
                     )
                 )
-                .order_by(JournalEntryModel.created_at.desc())
+                .order_by(JournalEntryModel.created_at.desc(), JournalEntryModel.id.desc())
                 .limit(limit)
             )
             result = await session.execute(stmt)
