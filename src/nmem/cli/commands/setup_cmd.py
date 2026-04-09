@@ -59,6 +59,16 @@ def setup(
     # Determine database URL
     db_url = database_url or "postgresql+asyncpg://nmem:nmem@localhost:5433/nmem"
 
+    # ── 0. Verify nmem-mcp is available ────────────────────────────
+    import shutil
+    if not shutil.which("nmem-mcp"):
+        console.print(
+            "[yellow]Warning:[/yellow] [bold]nmem-mcp[/bold] not found on PATH.\n"
+            "  Claude Code won't be able to start the MCP server.\n"
+            "  Install with: [cyan]pip install nmem\\[mcp-server][/cyan]\n"
+            "  Or if using a venv, ensure it's activated when Claude Code runs.\n"
+        )
+
     # ── 1. Configure MCP server in .claude.json ──────────────────────
     claude_json_path = project_dir / ".claude.json"
     claude_config = {}

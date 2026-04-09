@@ -60,7 +60,39 @@ def stats():
 
             console.print(table)
 
-            # Database info
+            # ── Per-Agent Breakdown ───────────────────────────────
+            agent_tables = [
+                ("Journal", "nmem_journal_entries"),
+                ("LTM", "nmem_long_term_memory"),
+            ]
+            agent_counts: dict[str, dict[str, int]] = {}
+            for tier_label, tbl in agent_tables:
+                try:
+                    async with mem._db.session() as session:
+                        r = await session.execute(
+                            text(f"SELECT agent_id, COUNT(*) FROM {tbl} GROUP BY agent_id ORDER BY COUNT(*) DESC LIMIT 20")
+                        )
+                        for agent_id, cnt in r.all():
+                            agent_counts.setdefault(agent_id, {})[tier_label] = cnt
+                except Exception:
+                    pass
+
+            if agent_counts:
+                agent_table = Table(title="Per-Agent Breakdown", show_lines=True)
+                agent_table.add_column("Agent", style="bold", width=25)
+                agent_table.add_column("Journal", style="yellow", justify="right")
+                agent_table.add_column("LTM", style="cyan", justify="right")
+                agent_table.add_column("Total", style="bold", justify="right")
+
+                for agent_id in sorted(agent_counts, key=lambda a: sum(agent_counts[a].values()), reverse=True):
+                    counts = agent_counts[agent_id]
+                    j = counts.get("Journal", 0)
+                    l = counts.get("LTM", 0)
+                    agent_table.add_row(agent_id, str(j), str(l), str(j + l))
+
+                console.print(agent_table)
+
+            # ── System Info ───────────────────────────────────────
             db_type = "PostgreSQL" if mem._db.is_postgres else "SQLite"
             db_size = ""
             if mem._db.is_postgres:

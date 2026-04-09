@@ -28,19 +28,25 @@ logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
+_shared_mem = None  # Module-level reference for resources
+
+
 @asynccontextmanager
 async def lifespan(server: FastMCP):
     """Initialize MemorySystem on startup, close on shutdown."""
+    global _shared_mem
     from nmem import MemorySystem
     from nmem.cli.config_loader import load_config
 
     config = load_config()
     mem = MemorySystem(config)
     await mem.initialize()
+    _shared_mem = mem
     logger.info("nmem MCP server initialized")
     try:
         yield {"mem": mem}
     finally:
+        _shared_mem = None
         await mem.close()
         logger.info("nmem MCP server shut down")
 
@@ -264,85 +270,64 @@ async def memory_stats(ctx: Context) -> str:
 @mcp.resource("nmem://agent/{agent_id}/journal")
 async def agent_journal(agent_id: str) -> str:
     """Recent journal entries for an agent (last 7 days)."""
-    from nmem import MemorySystem
-    from nmem.cli.config_loader import load_config
-
-    config = load_config()
-    mem = MemorySystem(config)
-    await mem.initialize()
-    try:
-        entries = await mem.journal.recent(agent_id, days=7, limit=20)
-        if not entries:
-            return f"No journal entries for {agent_id} in the last 7 days."
-        lines = [f"# Journal: {agent_id}\n"]
-        for e in entries:
-            ts = e.created_at.strftime("%Y-%m-%d") if e.created_at else "?"
-            lines.append(f"## [{ts}] {e.title}")
-            lines.append(f"*{e.entry_type} | importance: {e.importance}*\n")
-            lines.append(e.content[:500])
-            lines.append("")
-        return "\n".join(lines)
-    finally:
-        await mem.close()
+    if not _shared_mem:
+        return "nmem not initialized"
+    entries = await _shared_mem.journal.recent(agent_id, days=7, limit=20)
+    if not entries:
+        return f"No journal entries for {agent_id} in the last 7 days."
+    lines = [f"# Journal: {agent_id}\n"]
+    for e in entries:
+        ts = e.created_at.strftime("%Y-%m-%d") if e.created_at else "?"
+        lines.append(f"## [{ts}] {e.title}")
+        lines.append(f"*{e.entry_type} | importance: {e.importance}*\n")
+        lines.append(e.content[:500])
+        lines.append("")
+    return "\n".join(lines)
 
 
 @mcp.resource("nmem://agent/{agent_id}/ltm")
 async def agent_ltm(agent_id: str) -> str:
     """Long-term memory entries for an agent."""
-    from nmem import MemorySystem
-    from nmem.cli.config_loader import load_config
-
-    config = load_config()
-    mem = MemorySystem(config)
-    await mem.initialize()
-    try:
-        from sqlalchemy import text
-        async with mem._db.session() as session:
-            result = await session.execute(
-                text("SELECT key, category, content, importance FROM nmem_long_term_memory "
-                     "WHERE agent_id = :agent_id ORDER BY importance DESC LIMIT 50"),
-                {"agent_id": agent_id},
-            )
-            rows = result.all()
-        if not rows:
-            return f"No LTM entries for {agent_id}."
-        lines = [f"# Long-Term Memory: {agent_id}\n"]
-        for key, category, content, importance in rows:
-            lines.append(f"## {key} [{category}] (importance: {importance})")
-            lines.append(content[:500])
-            lines.append("")
-        return "\n".join(lines)
-    finally:
-        await mem.close()
+    if not _shared_mem:
+        return "nmem not initialized"
+    from sqlalchemy import text as sa_text
+    async with _shared_mem._db.session() as session:
+        result = await session.execute(
+            sa_text("SELECT key, category, content, importance FROM nmem_long_term_memory "
+                    "WHERE agent_id = :agent_id ORDER BY importance DESC LIMIT 50"),
+            {"agent_id": agent_id},
+        )
+        rows = result.all()
+    if not rows:
+        return f"No LTM entries for {agent_id}."
+    lines = [f"# Long-Term Memory: {agent_id}\n"]
+    for key, category, content, importance in rows:
+        lines.append(f"## {key} [{category}] (importance: {importance})")
+        lines.append(content[:500])
+        lines.append("")
+    return "\n".join(lines)
 
 
 @mcp.resource("nmem://shared")
 async def shared_knowledge() -> str:
     """All shared knowledge entries."""
-    from nmem import MemorySystem
-    from nmem.cli.config_loader import load_config
-
-    config = load_config()
-    mem = MemorySystem(config)
-    await mem.initialize()
-    try:
-        from sqlalchemy import text
-        async with mem._db.session() as session:
-            result = await session.execute(
-                text("SELECT key, category, content, importance FROM nmem_shared_knowledge "
-                     "ORDER BY importance DESC LIMIT 50")
-            )
-            rows = result.all()
-        if not rows:
-            return "No shared knowledge entries."
-        lines = ["# Shared Knowledge\n"]
-        for key, category, content, importance in rows:
-            lines.append(f"## {key} [{category}] (importance: {importance})")
-            lines.append(content[:500])
-            lines.append("")
-        return "\n".join(lines)
-    finally:
-        await mem.close()
+    if not _shared_mem:
+        return "nmem not initialized"
+    from sqlalchemy import text as sa_text
+    async with _shared_mem._db.session() as session:
+        result = await session.execute(
+            sa_text("SELECT key, category, content, importance FROM nmem_shared_knowledge "
+                    "ORDER BY importance DESC LIMIT 50")
+        )
+        rows = result.all()
+    if not rows:
+        return "No shared knowledge entries."
+    lines = ["# Shared Knowledge\n"]
+    for key, category, content, importance in rows:
+        lines.append(f"## {key} [{category}] (importance: {importance})")
+        lines.append(content[:500])
+        lines.append("")
+    return "\n".join(lines)
 
 
 # ── Entry Point ───────────────────────────────────────────────────────────────

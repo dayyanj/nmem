@@ -107,3 +107,32 @@ def import_jsonl(
             print_import_result(result, f"JSONL ({file.name})")
 
     run_async(_import())
+
+
+@import_app.command("chatgpt")
+def import_chatgpt(
+    file: Annotated[Path, typer.Argument(help="Path to conversations.json from ChatGPT export")],
+    agent_id: Annotated[str, typer.Option("--agent-id", "-a",
+        help="Agent ID for imported entries")] = "chatgpt",
+    min_messages: Annotated[int, typer.Option("--min-messages",
+        help="Skip conversations shorter than this")] = 4,
+    compress: Annotated[bool, typer.Option("--compress/--no-compress",
+        help="LLM-compress content (off by default)")] = False,
+):
+    """Import ChatGPT conversations.json from OpenAI data export."""
+    if not file.is_file():
+        console.print(f"[red]File not found: {file}[/red]")
+        raise typer.Exit(1)
+
+    async def _import():
+        import json as json_mod
+        from nmem.cli.importers.chatgpt import import_chatgpt as do_import
+
+        data = json_mod.loads(file.read_text(encoding="utf-8"))
+        console.print(f"Found [cyan]{len(data)}[/cyan] conversations in {file}")
+
+        async with get_mem() as mem:
+            result = await do_import(mem, file, agent_id, min_messages, compress)
+            print_import_result(result, f"ChatGPT ({file.name})")
+
+    run_async(_import())
