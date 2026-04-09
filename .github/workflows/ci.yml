@@ -62,6 +62,18 @@ jobs:
           pip install -e ".[cli,postgres]"
           pip install "pytest>=8.0" "pytest-asyncio>=0.23" "pytest-cov>=5.0" "pytest-timeout>=2.0"
 
+      - name: Verify database and create pgvector extension
+        run: |
+          python -c "
+          import asyncio, asyncpg
+          async def setup():
+              conn = await asyncpg.connect('postgresql://nmem:nmem@localhost:5433/nmem')
+              await conn.execute('CREATE EXTENSION IF NOT EXISTS vector')
+              print('pgvector extension created')
+              await conn.close()
+          asyncio.run(setup())
+          "
+
       - name: Run integration tests (mock embeddings)
         env:
           NMEM_TEST_DSN: postgresql+asyncpg://nmem:nmem@localhost:5433/nmem
