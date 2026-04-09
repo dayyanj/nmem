@@ -152,16 +152,31 @@ mem.start_consolidation()
 | **Embedding** | sentence-transformers (local), OpenAI (cloud), no-op |
 | **LLM** | OpenAI-compatible (vLLM, Ollama), Anthropic, no-op |
 
-## Configuration
+## Documentation
 
-Via Python, environment variables, or YAML:
+| Guide | Description |
+|-------|-------------|
+| [Quickstart](docs/quickstart.md) | Install to first search in under 5 minutes |
+| [Concepts](docs/concepts.md) | The 6-tier hierarchy, consolidation, hybrid search explained |
+| [MCP Integration](docs/mcp-integration.md) | Connect to Claude Code / Cursor with persistent memory |
+| [Configuration](docs/configuration.md) | Every config option with tradeoffs and examples |
+| [API Reference](docs/api-reference.md) | Full method documentation with signatures and examples |
+| [Testing](TESTING.md) | Run tests, benchmarks, E2E QA checklist |
+
+## CLI
 
 ```bash
-export NMEM_DATABASE_URL=postgresql+asyncpg://localhost/mydb
-export NMEM_EMBEDDING__PROVIDER=sentence-transformers
-export NMEM_LLM__PROVIDER=openai
-export NMEM_LLM__BASE_URL=http://localhost:11434/v1
-export NMEM_LLM__MODEL=qwen3
+nmem init [--sqlite]              # Initialize database
+nmem demo                         # Run interactive demo
+nmem search <query>               # Search across all tiers
+nmem stats                        # Show tier counts + per-agent breakdown
+nmem consolidate [--nightly]      # Run consolidation cycle
+nmem setup [--auto-append]        # Configure MCP + generate CLAUDE.md snippet
+nmem benchmark [--sizes 50,200]   # Run performance benchmarks
+nmem import claude-code           # Import Claude Code memories
+nmem import chatgpt <file>        # Import ChatGPT conversations
+nmem import markdown <dir>        # Import markdown directory
+nmem import jsonl <file>          # Import structured JSONL
 ```
 
 ## License
