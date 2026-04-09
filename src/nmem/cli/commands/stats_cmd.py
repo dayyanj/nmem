@@ -20,7 +20,7 @@ def stats():
                 "Long-Term Memory": "nmem_long_term_memory",
                 "Shared Knowledge": "nmem_shared_knowledge",
                 "Entity Memory": "nmem_entity_memory",
-                "Policies": "nmem_policies",
+                "Policies": "nmem_policy_memory",
                 "Delegations": "nmem_delegations",
                 "Curiosity Signals": "nmem_curiosity_signals",
             }

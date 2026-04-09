@@ -35,7 +35,7 @@ def init(
                 "LTM": "nmem_long_term_memory",
                 "Shared": "nmem_shared_knowledge",
                 "Entity": "nmem_entity_memory",
-                "Policy": "nmem_policies",
+                "Policy": "nmem_policy_memory",
             }
             for label, table in tables.items():
                 try:

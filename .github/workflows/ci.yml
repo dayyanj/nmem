@@ -23,7 +23,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: |
+          pip install -e ".[cli,sqlite]"
+          pip install pytest pytest-asyncio pytest-cov pytest-timeout
 
       - name: Run unit tests
         run: pytest tests/ --ignore=tests/integration -v --timeout=30
@@ -56,7 +58,9 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -e ".[postgres,dev]"
+        run: |
+          pip install -e ".[cli,postgres]"
+          pip install pytest pytest-asyncio pytest-cov pytest-timeout
 
       - name: Run integration tests (mock embeddings)
         env:
@@ -75,7 +79,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[cli,sqlite]"
 
       - name: Check imports
         run: python -c "import nmem; print(f'nmem {nmem.__version__} imported successfully')"

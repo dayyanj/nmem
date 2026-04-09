@@ -1,11 +1,12 @@
 """
 Test fixtures for nmem.
 
-Uses PostgreSQL + pgvector via docker-compose (port 5433).
-Run `docker compose up -d` before running tests.
+Uses PostgreSQL if available (docker compose on port 5433), falls back to SQLite.
 """
 
 from __future__ import annotations
+
+import os
 
 import pytest
 import pytest_asyncio
@@ -13,12 +14,42 @@ from sqlalchemy import text
 
 from nmem import MemorySystem, NmemConfig
 
-TEST_DB_URL = "postgresql+asyncpg://nmem:nmem@localhost:5433/nmem"
+# Use PostgreSQL if available, otherwise SQLite
+_PG_URL = "postgresql+asyncpg://nmem:nmem@localhost:5433/nmem"
+_SQLITE_URL = "sqlite+aiosqlite:///:memory:"
+
+
+def _detect_db_url() -> str:
+    """Detect which database to use for tests."""
+    # Explicit override
+    env_url = os.environ.get("NMEM_TEST_DSN")
+    if env_url:
+        return env_url
+
+    # Try PostgreSQL
+    try:
+        import asyncio
+        import asyncpg
+
+        async def _check():
+            conn = await asyncpg.connect("postgresql://nmem:nmem@localhost:5433/nmem")
+            await conn.close()
+            return True
+
+        if asyncio.get_event_loop().run_until_complete(_check()):
+            return _PG_URL
+    except Exception:
+        pass
+
+    return _SQLITE_URL
+
+
+TEST_DB_URL = _detect_db_url()
 
 
 @pytest_asyncio.fixture
 async def mem() -> MemorySystem:
-    """Create an initialized MemorySystem with PostgreSQL + no-op providers."""
+    """Create an initialized MemorySystem with noop providers."""
     config = NmemConfig(
         database_url=TEST_DB_URL,
         embedding={"provider": "noop", "dimensions": 384},
@@ -27,24 +58,37 @@ async def mem() -> MemorySystem:
     )
     system = MemorySystem(config)
     await system.initialize()
+
+    # Clean BEFORE test to handle stale data from crashed runs
+    tables = [
+        "nmem_working_memory",
+        "nmem_journal_entries",
+        "nmem_long_term_memory",
+        "nmem_shared_knowledge",
+        "nmem_entity_memory",
+        "nmem_policy_memory",
+        "nmem_memory_conflicts",
+        "nmem_curiosity_signals",
+        "nmem_delegations",
+        "nmem_performance_scores",
+        "nmem_scheduled_followups",
+    ]
+    async with system._db.session() as session:
+        for table in tables:
+            try:
+                await session.execute(text(f"DELETE FROM {table}"))
+            except Exception:
+                pass  # Table may not exist in SQLite
+
     yield system  # type: ignore[misc]
 
-    # Clean up all nmem tables between tests
+    # Clean AFTER test too
     async with system._db.session() as session:
-        for table in [
-            "nmem_working_memory",
-            "nmem_journal_entries",
-            "nmem_long_term_memory",
-            "nmem_shared_knowledge",
-            "nmem_entity_memory",
-            "nmem_policy_memory",
-            "nmem_memory_conflicts",
-            "nmem_curiosity_signals",
-            "nmem_delegations",
-            "nmem_performance_scores",
-            "nmem_scheduled_followups",
-        ]:
-            await session.execute(text(f"DELETE FROM {table}"))
+        for table in tables:
+            try:
+                await session.execute(text(f"DELETE FROM {table}"))
+            except Exception:
+                pass
 
     await system.close()
 
@@ -52,7 +96,6 @@ async def mem() -> MemorySystem:
 @pytest_asyncio.fixture
 async def mem_with_data(mem: MemorySystem) -> MemorySystem:
     """MemorySystem pre-populated with sample data across tiers."""
-    # Journal entries
     await mem.journal.add(
         agent_id="agent1",
         entry_type="session_summary",
@@ -68,7 +111,6 @@ async def mem_with_data(mem: MemorySystem) -> MemorySystem:
         importance=8,
     )
 
-    # LTM entries
     await mem.ltm.save(
         agent_id="agent1",
         category="procedure",
@@ -77,7 +119,6 @@ async def mem_with_data(mem: MemorySystem) -> MemorySystem:
         importance=9,
     )
 
-    # Shared knowledge
     await mem.shared.save(
         key="company_refund_policy",
         content="Refunds must be processed within 30 days of purchase.",
@@ -86,7 +127,6 @@ async def mem_with_data(mem: MemorySystem) -> MemorySystem:
         importance=10,
     )
 
-    # Entity memory
     await mem.entity.save(
         entity_type="customer",
         entity_id="cust_123",

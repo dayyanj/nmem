@@ -241,7 +241,7 @@ async def memory_stats(ctx: Context) -> str:
         "Long-Term Memory": "nmem_long_term_memory",
         "Shared Knowledge": "nmem_shared_knowledge",
         "Entity Memory": "nmem_entity_memory",
-        "Policies": "nmem_policies",
+        "Policies": "nmem_policy_memory",
     }
 
     lines = ["Memory System Statistics:\n"]
