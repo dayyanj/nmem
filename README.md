@@ -4,87 +4,104 @@
 
 nmem gives your agents a brain that learns. Not just storage and retrieval — active cognition with automatic promotion, confidence decay, conflict detection, and nightly synthesis.
 
-## Architecture
+## How it works
+
+### Memory flows upward — entries earn their way
 
 ```mermaid
-graph TB
-    subgraph Agent["Your Agent / Framework"]
-        LC[LangChain Adapter]
-        CR[CrewAI Adapter]
-        PY[Plain Python]
+graph LR
+    subgraph session [" "]
+        W["Working Memory\n<i>session slots</i>"]
     end
 
-    subgraph nmem["nmem — Cognitive Memory System"]
-        direction TB
-
-        MS[MemorySystem]
-        PB[Prompt Builder]
-        CE[Cognitive Engine]
-
-        subgraph Tiers["Memory Tiers"]
-            direction LR
-            T1["<b>Working</b><br/><i>ephemeral</i><br/>session slots"]
-            T2["<b>Journal</b><br/><i>30 days</i><br/>activity log"]
-            T3["<b>LTM</b><br/><i>permanent</i><br/>per-agent knowledge"]
-            T4["<b>Shared</b><br/><i>permanent</i><br/>cross-agent facts"]
-            T5["<b>Entity</b><br/><i>permanent</i><br/>per-object workspace"]
-            T6["<b>Policy</b><br/><i>permanent</i><br/>governance rules"]
-        end
-
-        subgraph Consolidator["Consolidation Engine (background)"]
-            direction LR
-            DECAY[Decay Expired]
-            PROMO[Promote to LTM]
-            SHARED_PROMO[Promote to Shared<br/><i>cross-agent access</i>]
-            DEDUP[Dedup via<br/>Union-Find + LLM]
-            CONF[Confidence<br/>Decay]
-            SYNTH[Nightly<br/>Synthesis]
-        end
-
-        HS[Hybrid Search<br/>60/40 Vector + FTS]
+    subgraph shortterm [" "]
+        J["Journal\n<i>30-day log</i>"]
     end
 
-    subgraph Providers["Pluggable Providers"]
-        EMB["Embedding<br/>sentence-transformers<br/>OpenAI · no-op"]
-        LLM["LLM<br/>vLLM · Ollama · OpenAI<br/>Anthropic · no-op"]
-        DB["Database<br/>PostgreSQL + pgvector<br/>SQLite (dev)"]
+    subgraph longterm [" "]
+        L["Long-Term Memory\n<i>per-agent, permanent</i>"]
     end
 
-    LC & CR & PY --> MS
-    MS --> PB
-    MS --> CE
-    MS --> Tiers
-    Tiers --> HS
-    HS --> DB
-    HS --> EMB
+    subgraph shared [" "]
+        S["Shared Knowledge\n<i>cross-agent, canonical</i>"]
+    end
 
-    T2 -- "importance ≥ 7" --> PROMO
-    PROMO --> T3
-    T3 -- "≥ 2 agents accessed" --> SHARED_PROMO
-    SHARED_PROMO --> T4
-    SYNTH -- "patterns" --> T4
-    Consolidator --> LLM
-    Consolidator --> EMB
+    W -- "session end" --> J
+    J -- "importance ≥ 7\nor accessed 5x" --> L
+    L -- "≥ 2 agents\naccessed it" --> S
 
-    style T1 fill:#e8f5e9,stroke:#4caf50
-    style T2 fill:#fff3e0,stroke:#ff9800
-    style T3 fill:#e3f2fd,stroke:#2196f3
-    style T4 fill:#f3e5f5,stroke:#9c27b0
-    style T5 fill:#fce4ec,stroke:#e91e63
-    style T6 fill:#efebe9,stroke:#795548
-    style Consolidator fill:#fff8e1,stroke:#ffc107
-    style HS fill:#e0f7fa,stroke:#00bcd4
+    style W fill:#e8f5e9,stroke:#4caf50,color:#1b5e20
+    style J fill:#fff3e0,stroke:#ff9800,color:#e65100
+    style L fill:#e3f2fd,stroke:#2196f3,color:#0d47a1
+    style S fill:#f3e5f5,stroke:#9c27b0,color:#4a148c
+    style session fill:none,stroke:none
+    style shortterm fill:none,stroke:none
+    style longterm fill:none,stroke:none
+    style shared fill:none,stroke:none
 ```
 
-### How it works
+Plus two specialized tiers: **Entity Memory** (per-object collaborative workspace) and **Policy Memory** (governance rules with write permissions).
 
-1. **Write** — agents store observations, decisions, and outcomes in their journal. Write-time compression distills verbose content into dense facts. Dedup prevents redundant entries.
+### The consolidation engine refines memory overnight
 
-2. **Search** — hybrid search combines pgvector cosine similarity (60%) with PostgreSQL full-text search (40%) across all tiers simultaneously. Access stats are updated on every retrieval.
+```mermaid
+graph LR
+    subgraph cycle ["Every 6 hours"]
+        direction LR
+        D["Decay\nexpired"] --> P["Promote\nto LTM"] --> SP["Promote\nto Shared"] --> DD["Dedup\nmerge similar"] --> C["Confidence\ndecay stale"]
+    end
 
-3. **Consolidate** — a background engine promotes high-importance journal entries to permanent LTM, clusters and merges duplicates via union-find + LLM, decays confidence on stale entries, and runs nightly cross-agent pattern synthesis.
+    subgraph nightly ["Daily at 11 PM UTC"]
+        SY["Synthesize\npatterns"] --> RB["Retroactive\nboost"]
+    end
 
-4. **Inject** — the prompt builder assembles relevant memory context with tiered verbosity (policies get full text, journal gets title stubs) and injects it into your agent's system prompt.
+    style D fill:#ffebee,stroke:#ef5350
+    style P fill:#e8f5e9,stroke:#4caf50
+    style SP fill:#f3e5f5,stroke:#9c27b0
+    style DD fill:#fff3e0,stroke:#ff9800
+    style C fill:#e3f2fd,stroke:#2196f3
+    style SY fill:#fce4ec,stroke:#e91e63
+    style RB fill:#fff8e1,stroke:#ffc107
+    style cycle fill:#fafafa,stroke:#e0e0e0
+    style nightly fill:#fafafa,stroke:#e0e0e0
+```
+
+### The full picture
+
+```
+Your Agent (LangChain / CrewAI / Plain Python)
+    │
+    ▼
+┌─────────────────────────────────────────────────┐
+│  MemorySystem                                   │
+│                                                 │
+│  ┌──────────┐ ┌──────────┐ ┌──────────────────┐│
+│  │ Prompt   │ │ Hybrid   │ │  Cognitive       ││
+│  │ Builder  │ │ Search   │ │  Engine          ││
+│  │          │ │ 60% vec  │ │  (deja vu,       ││
+│  │ tiered   │ │ 40% FTS  │ │   curiosity)     ││
+│  │ verbosity│ │          │ │                  ││
+│  └──────────┘ └──────────┘ └──────────────────┘│
+│                                                 │
+│  6 Memory Tiers + Consolidation Engine          │
+└─────────────────────┬───────────────────────────┘
+                      │
+        ┌─────────────┼─────────────┐
+        ▼             ▼             ▼
+   ┌─────────┐  ┌──────────┐  ┌─────────┐
+   │ Database│  │ Embedding│  │  LLM    │
+   │ pg+vec  │  │ MiniLM   │  │ vLLM    │
+   │ SQLite  │  │ OpenAI   │  │ Ollama  │
+   └─────────┘  └──────────┘  └─────────┘
+```
+
+**Write** — agents store observations, decisions, and outcomes in their journal. Write-time compression distills verbose content into dense facts. Dedup prevents redundant entries.
+
+**Search** — hybrid search combines pgvector cosine similarity (60%) with PostgreSQL full-text search (40%) across all tiers simultaneously. Access stats are updated on every retrieval.
+
+**Consolidate** — a background engine promotes high-importance journal entries to permanent LTM, clusters and merges duplicates via union-find + LLM, decays confidence on stale entries, and synthesizes cross-agent patterns nightly.
+
+**Promote** — no LLM decides what's "universal." Entries promote to shared knowledge when multiple agents actually search for them. The agents vote with their queries.
 
 ## Features
 
