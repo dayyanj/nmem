@@ -36,6 +36,10 @@ dependencies = [
     "pydantic-settings>=2.0",
 ]
 
+[project.scripts]
+nmem = "nmem.cli.main:app"
+nmem-mcp = "nmem.mcp.server:main"
+
 [project.urls]
 Homepage = "https://github.com/spwig/nmem"
 Documentation = "https://github.com/spwig/nmem#readme"
@@ -50,14 +54,17 @@ openai = ["openai>=1.0"]
 anthropic = ["anthropic>=0.30"]
 langchain = ["langchain-core>=0.3"]
 crewai = ["crewai>=0.50"]
+cli = ["typer>=0.12", "rich>=13.0", "tqdm>=4.60"]
+mcp-server = ["mcp>=1.0"]
 all = [
-    "nmem[postgres,sqlite,st,openai,anthropic,langchain,crewai]",
+    "nmem[postgres,sqlite,st,openai,anthropic,langchain,crewai,cli,mcp-server]",
 ]
 dev = [
     "nmem[all]",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
+    "pytest-timeout>=2.0",
     "ruff>=0.4",
     "mypy>=1.10",
 ]

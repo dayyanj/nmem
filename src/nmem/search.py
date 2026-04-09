@@ -64,6 +64,12 @@ async def hybrid_memory_search(
     Returns:
         List of (id, combined_score) tuples, ranked by score.
     """
+    # SQLite fallback: no pgvector operators, compute similarity in Python
+    if not db.is_postgres:
+        return await _sqlite_fallback_search(
+            db, table, query_embedding, where_clause, params, top_k,
+        )
+
     embedding_str = f"[{','.join(str(x) for x in query_embedding)}]"
     params.update({
         "embedding_vec": embedding_str,
@@ -102,6 +108,65 @@ async def hybrid_memory_search(
     async with db.session() as session:
         result = await session.execute(sql, params)
         return [(row[0], float(row[1])) for row in result.all()]
+
+
+async def _sqlite_fallback_search(
+    db: DatabaseManager,
+    table: str,
+    query_embedding: list[float],
+    where_clause: str,
+    params: dict,
+    top_k: int,
+) -> list[tuple[int, float]]:
+    """SQLite fallback: fetch candidates by importance, rank by cosine similarity in Python.
+
+    This is only suitable for small datasets (demo, dev). Production should use PostgreSQL.
+    """
+    import json as json_mod
+
+    # Fetch top candidates ordered by importance (best proxy without vector search)
+    candidate_limit = top_k * 5
+    # Use importance for ordering if the table has it, otherwise created_at
+    sql = sa_text(
+        f"SELECT id, embedding FROM {table} WHERE {where_clause} "
+        f"ORDER BY id DESC LIMIT :candidate_limit"
+    )
+    params["candidate_limit"] = candidate_limit
+
+    async with db.session() as session:
+        result = await session.execute(sql, params)
+        rows = result.all()
+
+    if not rows:
+        return []
+
+    # Compute cosine similarity in Python
+    scored = []
+    for row_id, emb_data in rows:
+        if emb_data is None:
+            continue
+        # Embedding stored as LargeBinary — could be JSON string or bytes
+        if isinstance(emb_data, (bytes, memoryview)):
+            try:
+                emb = json_mod.loads(emb_data)
+            except Exception:
+                continue
+        elif isinstance(emb_data, str):
+            try:
+                emb = json_mod.loads(emb_data)
+            except Exception:
+                continue
+        elif isinstance(emb_data, list):
+            emb = emb_data
+        else:
+            continue
+
+        sim = cosine_similarity(query_embedding, emb)
+        scored.append((row_id, sim))
+
+    # Sort by similarity descending
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[:top_k]
 
 
 # ── TSVECTOR Population ──────────────────────────────────────────────────────

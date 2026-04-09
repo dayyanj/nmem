@@ -19,29 +19,53 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    types,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 # PostgreSQL-specific types with fallbacks for portability
 try:
-    from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
     from pgvector.sqlalchemy import Vector as PgVector
 
     def VectorColumn(dim: int):  # noqa: N802
         return mapped_column(PgVector(dim), nullable=True)
 
     HAS_PGVECTOR = True
-    JSONType = JSONB
-    TSVType = TSVECTOR
 except ImportError:
-    from sqlalchemy import JSON, LargeBinary
+    from sqlalchemy import LargeBinary
 
     def VectorColumn(dim: int):  # noqa: N802
         return mapped_column(LargeBinary, nullable=True)
 
     HAS_PGVECTOR = False
-    JSONType = JSON  # type: ignore[misc,assignment]
-    TSVType = Text  # type: ignore[misc,assignment]
+
+
+class JSONType(types.TypeDecorator):
+    """JSONB on PostgreSQL, JSON on everything else."""
+
+    from sqlalchemy import JSON
+    impl = JSON
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            from sqlalchemy.dialects.postgresql import JSONB
+            return dialect.type_descriptor(JSONB())
+        from sqlalchemy import JSON
+        return dialect.type_descriptor(JSON())
+
+
+class TSVType(types.TypeDecorator):
+    """TSVECTOR on PostgreSQL, TEXT on everything else."""
+
+    impl = Text
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            from sqlalchemy.dialects.postgresql import TSVECTOR
+            return dialect.type_descriptor(TSVECTOR())
+        return dialect.type_descriptor(Text())
 
 
 class Base(DeclarativeBase):
