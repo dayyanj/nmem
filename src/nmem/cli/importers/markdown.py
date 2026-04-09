@@ -78,7 +78,9 @@ async def import_markdown(
         result.details.append(f"No .md files found in {directory}")
         return result
 
-    for path in tqdm(files, desc="Importing", unit="file"):
+    # Phase 1: Parse all files
+    batch: list[dict] = []
+    for path in tqdm(files, desc="Parsing", unit="file"):
         try:
             title, content = _parse_markdown(path)
             if not content:
@@ -86,20 +88,26 @@ async def import_markdown(
                 continue
 
             key = _sanitize_key(path, directory)
-
-            await mem.ltm.save(
-                agent_id=agent_id,
-                category=category,
-                key=key,
-                content=f"{title}\n\n{content}" if title else content,
-                importance=5,
-                compress=compress,
-            )
-            result.imported += 1
+            batch.append({
+                "agent_id": agent_id,
+                "category": category,
+                "key": key,
+                "content": f"{title}\n\n{content}" if title else content,
+                "importance": 5,
+            })
             result.details.append(f"[LTM/{category}] {key}")
 
         except Exception as e:
             result.errors += 1
             result.details.append(f"Error {path.name}: {e}")
+
+    # Phase 2: Batch-embed and save
+    if batch:
+        try:
+            saved = await mem.ltm.save_batch(batch, compress=compress)
+            result.imported += len(saved)
+        except Exception as e:
+            result.errors += len(batch)
+            result.details.append(f"Batch save failed: {e}")
 
     return result

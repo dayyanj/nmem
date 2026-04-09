@@ -2,6 +2,8 @@
 sentence-transformers embedding provider.
 
 Runs locally — no API calls needed. Default model: all-MiniLM-L6-v2 (384 dims).
+Model loading is lazy — deferred to first embed() call to avoid 2-3s startup
+cost when embeddings aren't needed (e.g., nmem stats, nmem init).
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ class SentenceTransformersProvider:
 
     def __init__(self, model: str = "all-MiniLM-L6-v2", device: str = "cpu"):
         try:
-            from sentence_transformers import SentenceTransformer
+            import sentence_transformers  # noqa: F401
         except ImportError:
             raise ImportError(
                 "sentence-transformers package required. "
@@ -33,18 +35,34 @@ class SentenceTransformersProvider:
             )
 
         self._model_name = model
-        try:
-            self._model = SentenceTransformer(model, device=device)
-        except Exception as e:
-            raise EmbeddingError(f"Failed to load sentence-transformer model '{model}': {e}") from e
+        self._device = device
+        self._model = None
+        self._dimensions: int | None = None
 
+    def _ensure_loaded(self):
+        """Lazy-load the model on first use."""
+        if self._model is not None:
+            return
+        from sentence_transformers import SentenceTransformer
+
+        logger.info("Loading embedding model: %s (device=%s)", self._model_name, self._device)
+        try:
+            self._model = SentenceTransformer(self._model_name, device=self._device)
+        except Exception as e:
+            raise EmbeddingError(
+                f"Failed to load sentence-transformer model '{self._model_name}': {e}"
+            ) from e
         self._dimensions = self._model.get_sentence_embedding_dimension()
 
     @property
     def dimensions(self) -> int:
-        return self._dimensions
+        if self._dimensions is not None:
+            return self._dimensions
+        # Return default without loading model — config specifies dimensions
+        return 384
 
     def embed(self, text: str) -> list[float]:
+        self._ensure_loaded()
         try:
             embedding = self._model.encode(text, normalize_embeddings=True)
             return embedding.tolist()
@@ -54,6 +72,7 @@ class SentenceTransformersProvider:
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+        self._ensure_loaded()
         try:
             embeddings = self._model.encode(texts, normalize_embeddings=True, batch_size=32)
             return embeddings.tolist()

@@ -131,7 +131,11 @@ async def import_claude_code(
         result.details.append(f"No memory files found in {claude_dir}")
         return result
 
-    for project_label, file_path, file_type in tqdm(files, desc="Importing", unit="file"):
+    # Phase 1: Parse all files and collect LTM batch + shared entries
+    ltm_batch: list[dict] = []
+    shared_entries: list[tuple[str, str]] = []  # (key, content)
+
+    for project_label, file_path, file_type in tqdm(files, desc="Parsing", unit="file"):
         try:
             if file_type == "memory":
                 parsed = _parse_memory_file(file_path)
@@ -141,22 +145,19 @@ async def import_claude_code(
 
                 mem_type = parsed["type"]
                 category, importance = _TYPE_MAP.get(mem_type, ("project", 5))
-                key = file_path.stem  # filename without extension
+                key = file_path.stem
 
-                # Include project context in content
                 content = parsed["content"]
                 if parsed["description"]:
                     content = f"{parsed['description']}\n\n{content}"
 
-                await mem.ltm.save(
-                    agent_id=agent_id,
-                    category=category,
-                    key=f"{project_label}/{key}",
-                    content=content,
-                    importance=importance,
-                    compress=compress,
-                )
-                result.imported += 1
+                ltm_batch.append({
+                    "agent_id": agent_id,
+                    "category": category,
+                    "key": f"{project_label}/{key}",
+                    "content": content,
+                    "importance": importance,
+                })
                 result.details.append(f"[LTM/{category}] {project_label}/{key}")
 
             elif file_type == "claude_md":
@@ -164,20 +165,32 @@ async def import_claude_code(
                 if not content:
                     result.skipped += 1
                     continue
-
-                key = f"claude_md/{project_label}"
-                await mem.shared.save(
-                    agent_id=agent_id,
-                    category="instructions",
-                    key=key,
-                    content=content[:4000],  # Cap at 4K chars
-                    importance=8,
-                )
-                result.imported += 1
-                result.details.append(f"[Shared/instructions] {key}")
+                shared_entries.append((f"claude_md/{project_label}", content[:4000]))
 
         except Exception as e:
             result.errors += 1
             result.details.append(f"Error {file_path.name}: {e}")
+
+    # Phase 2: Batch-embed and save LTM entries
+    if ltm_batch:
+        try:
+            saved = await mem.ltm.save_batch(ltm_batch, compress=compress)
+            result.imported += len(saved)
+        except Exception as e:
+            result.errors += len(ltm_batch)
+            result.details.append(f"Batch save failed: {e}")
+
+    # Phase 3: Save shared entries (small count, no batching needed)
+    for key, content in shared_entries:
+        try:
+            await mem.shared.save(
+                agent_id=agent_id, category="instructions",
+                key=key, content=content, importance=8,
+            )
+            result.imported += 1
+            result.details.append(f"[Shared/instructions] {key}")
+        except Exception as e:
+            result.errors += 1
+            result.details.append(f"Error shared {key}: {e}")
 
     return result
