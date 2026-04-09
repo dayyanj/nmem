@@ -18,9 +18,12 @@ class SentenceTransformersProvider:
 
     Args:
         model: Model name from HuggingFace (default: all-MiniLM-L6-v2).
+        device: Device to run on ("cpu", "cuda", or None for auto-detect).
+            Defaults to "cpu" since embedding models are small and CPU is
+            always available, while GPU may be occupied by LLM inference.
     """
 
-    def __init__(self, model: str = "all-MiniLM-L6-v2"):
+    def __init__(self, model: str = "all-MiniLM-L6-v2", device: str = "cpu"):
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError:
@@ -31,7 +34,7 @@ class SentenceTransformersProvider:
 
         self._model_name = model
         try:
-            self._model = SentenceTransformer(model)
+            self._model = SentenceTransformer(model, device=device)
         except Exception as e:
             raise EmbeddingError(f"Failed to load sentence-transformer model '{model}': {e}") from e
 

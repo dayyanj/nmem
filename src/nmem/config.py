@@ -31,6 +31,9 @@ class EmbeddingConfig(BaseModel):
     base_url: str | None = None
     """Base URL override (for self-hosted endpoints)."""
 
+    device: str = "cpu"
+    """Device for local models: "cpu", "cuda", or "cuda:0", etc."""
+
 
 class LLMConfig(BaseModel):
     """LLM provider configuration for compression/synthesis."""

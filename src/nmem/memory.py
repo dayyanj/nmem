@@ -252,7 +252,10 @@ class MemorySystem:
             from nmem.providers.embedding.sentence_transformers_provider import (
                 SentenceTransformersProvider,
             )
-            return SentenceTransformersProvider(self._config.embedding.model)
+            return SentenceTransformersProvider(
+                self._config.embedding.model,
+                device=self._config.embedding.device,
+            )
 
         if provider == "openai":
             from nmem.providers.embedding.openai_provider import OpenAIEmbeddingProvider
