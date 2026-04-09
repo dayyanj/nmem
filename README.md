@@ -136,7 +136,7 @@ mem.start_consolidation()
 |------|---------|----------|-----------|
 | **Working** | Current session context | Session | → Journal on close |
 | **Journal** | Activity log | 30 days | → LTM at importance ≥7 |
-| **LTM** | Permanent knowledge | Forever | → Shared at importance ≥8 |
+| **LTM** | Permanent knowledge | Forever | Confidence-decayed |
 | **Shared** | Cross-agent facts | Forever | Canonical source |
 | **Entity** | Per-object workspace | Forever | Collaborative |
 | **Policy** | Governance rules | Forever | Writer-controlled |
