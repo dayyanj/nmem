@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select, and_
 
 from nmem.db.models import LTMModel
+from nmem.search import hybrid_memory_search, populate_tsvector, assign_context_thread
 from nmem.types import LTMEntry
 
 if TYPE_CHECKING:
@@ -100,7 +101,7 @@ class LTMTier:
                 existing.last_validated_at = datetime.utcnow()
                 await session.flush()
                 await session.refresh(existing)
-                return self._row_to_entry(existing)
+                entry = self._row_to_entry(existing)
             else:
                 record = LTMModel(
                     agent_id=agent_id,
@@ -116,7 +117,15 @@ class LTMTier:
                 )
                 session.add(record)
                 await session.flush()
-                return self._row_to_entry(record)
+                await session.refresh(record)
+                entry = self._row_to_entry(record)
+
+        # Populate TSVECTOR (outside session to avoid deadlock)
+        await populate_tsvector(
+            self._db, "nmem_long_term_memory", entry.id,
+            f"{key} {content[:2000]}",
+        )
+        return entry
 
     async def search(
         self,
@@ -139,19 +148,46 @@ class LTMTier:
         Returns:
             List of LTMEntry objects, ranked by relevance.
         """
-        # TODO: Phase 2 — implement full hybrid search
-        async with self._db.session() as session:
-            stmt = (
-                select(LTMModel)
-                .where(LTMModel.agent_id == agent_id)
-                .order_by(LTMModel.importance.desc())
-                .limit(top_k)
-            )
-            if category:
-                stmt = stmt.where(LTMModel.category == category)
+        query_embedding = await asyncio.to_thread(self._embedding.embed, query)
 
-            result = await session.execute(stmt)
-            return [self._row_to_entry(row) for row in result.scalars().all()]
+        where_parts = ["agent_id = :agent_id", "status = 'validated'"]
+        params: dict = {"agent_id": agent_id}
+        if category:
+            where_parts.append("category = :category")
+            params["category"] = category
+
+        ranked = await hybrid_memory_search(
+            db=self._db,
+            table="nmem_long_term_memory",
+            query_embedding=query_embedding,
+            query_text=query,
+            where_clause=" AND ".join(where_parts),
+            params=params,
+            top_k=top_k,
+        )
+
+        if not ranked:
+            return []
+
+        ranked_ids = [r[0] for r in ranked]
+
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(LTMModel).where(LTMModel.id.in_(ranked_ids))
+            )
+            entries_by_id = {e.id: e for e in result.scalars().all()}
+
+            now = datetime.utcnow()
+            results = []
+            for eid in ranked_ids:
+                e = entries_by_id.get(eid)
+                if not e:
+                    continue
+                e.access_count += 1
+                e.last_accessed_at = now
+                results.append(self._row_to_entry(e))
+
+        return results
 
     async def get(self, agent_id: str, key: str) -> LTMEntry | None:
         """Get a specific LTM entry by key. O(1) lookup.

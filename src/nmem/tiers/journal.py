@@ -7,13 +7,20 @@ High-importance entries auto-promote to LTM. Hybrid search (vector + FTS).
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, and_
 
 from nmem.db.models import JournalEntryModel
+from nmem.search import (
+    hybrid_memory_search,
+    populate_tsvector,
+    assign_context_thread,
+    cosine_similarity,
+)
 from nmem.types import JournalEntry
 
 if TYPE_CHECKING:
@@ -39,6 +46,8 @@ class JournalTier:
         self._config = config
         self._embedding = embedding
         self._llm = llm
+        # Consolidation signal callback (set by MemorySystem)
+        self._on_high_importance: callable | None = None
 
     async def add(
         self,
@@ -54,17 +63,14 @@ class JournalTier:
         grounding: str = "inferred",
         compress: bool = True,
     ) -> JournalEntry:
-        """Add a journal entry.
-
-        If importance >= auto_promote_importance, signals the consolidator
-        for a reactive micro-cycle.
+        """Add a journal entry with embedding, compression, dedup, and context threading.
 
         Args:
             agent_id: Agent identifier.
             entry_type: Entry type (e.g., "session_summary", "decision", "outcome").
             title: Short descriptive title.
             content: Full entry content.
-            importance: Importance 1-10 (default 5).
+            importance: Importance 1-10 (default 5). Clamped to [1, 10].
             session_id: Optional session ID.
             tags: Optional tags for filtering.
             record_type: "evidence", "fact", "judgment", "task", "rule", "summary".
@@ -72,21 +78,30 @@ class JournalTier:
             compress: Whether to LLM-compress content (default True).
 
         Returns:
-            The created JournalEntry.
+            The created JournalEntry, or existing entry if deduplicated.
         """
-        # TODO: Phase 2 — implement dedup check, embedding, compression, context threading
-        import asyncio
+        importance = min(max(importance, 1), 10)
 
-        # Compute embedding in thread pool
-        embedding = await asyncio.to_thread(
+        # Embed from RAW content (full semantic richness before compression)
+        emb = await asyncio.to_thread(
             self._embedding.embed, f"{title} {content[:500]}"
         )
 
-        # Compress if enabled and content is long
+        # Dedup check: skip near-identical entries from last 24 hours
+        dedup_result = await self._check_dedup(agent_id, emb)
+        if dedup_result is not None:
+            return dedup_result
+
+        # Compress content to distilled fact (embed first, compress second)
         if compress and len(content) > self._config.llm.compression_max_chars:
             compressed = await self._compress(title, content)
         else:
             compressed = content
+
+        # Assign context thread
+        thread_id = assign_context_thread(
+            emb, agent_id, self._config.clustering.similarity_threshold
+        )
 
         expires_at = datetime.utcnow() + timedelta(
             days=self._config.journal.default_expiry_days
@@ -97,28 +112,43 @@ class JournalTier:
                 agent_id=agent_id,
                 session_id=session_id,
                 entry_type=entry_type,
-                title=title,
+                title=title[:300],
                 content=compressed,
                 importance=importance,
+                relevance_score=min(importance / 10.0, 1.0),
                 expires_at=expires_at,
+                context_thread_id=thread_id,
                 tags=tags,
                 record_type=record_type,
                 grounding=grounding,
-                embedding=embedding,
+                embedding=emb,
             )
             session.add(record)
             await session.flush()
             entry_id = record.id
             created_at = record.created_at
 
+        # Populate TSVECTOR (fire-and-forget, non-blocking)
+        await populate_tsvector(
+            self._db, "nmem_journal_entries", entry_id,
+            f"{title} {compressed[:2000]}",
+        )
+
+        # Signal consolidator for high-importance entries
+        if importance >= self._config.journal.auto_promote_importance:
+            if self._on_high_importance:
+                self._on_high_importance(f"journal_{entry_type}_imp{importance}")
+
         return JournalEntry(
             id=entry_id,
             agent_id=agent_id,
             entry_type=entry_type,
-            title=title,
+            title=title[:300],
             content=compressed,
             importance=importance,
+            relevance_score=min(importance / 10.0, 1.0),
             expires_at=expires_at,
+            context_thread_id=thread_id,
             tags=tags,
             record_type=record_type,
             grounding=grounding,
@@ -148,30 +178,65 @@ class JournalTier:
         Returns:
             List of JournalEntry objects, ranked by relevance.
         """
-        # TODO: Phase 2 — implement hybrid search with CTE
-        import asyncio
-
         query_embedding = await asyncio.to_thread(self._embedding.embed, query)
 
+        # Build WHERE clause for hybrid search
+        where_parts = [
+            "agent_id = :agent_id",
+            "promoted_to_ltm = FALSE",
+            "importance >= :min_importance",
+        ]
+        params: dict = {"agent_id": agent_id, "min_importance": min_importance}
+        if entry_type:
+            where_parts.append("entry_type = :entry_type")
+            params["entry_type"] = entry_type
+
+        # Run hybrid search
+        ranked = await hybrid_memory_search(
+            db=self._db,
+            table="nmem_journal_entries",
+            query_embedding=query_embedding,
+            query_text=query,
+            where_clause=" AND ".join(where_parts),
+            params=params,
+            top_k=top_k,
+        )
+
+        if not ranked:
+            return []
+
+        ranked_ids = [r[0] for r in ranked]
+        scores = {r[0]: r[1] for r in ranked}
+
+        # Fetch full ORM objects and bump access stats
         async with self._db.session() as session:
-            stmt = (
-                select(JournalEntryModel)
-                .where(
-                    and_(
-                        JournalEntryModel.agent_id == agent_id,
-                        JournalEntryModel.importance >= min_importance,
-                    )
-                )
-                .order_by(JournalEntryModel.importance.desc())
-                .limit(top_k)
+            result = await session.execute(
+                select(JournalEntryModel).where(JournalEntryModel.id.in_(ranked_ids))
             )
-            if entry_type:
-                stmt = stmt.where(JournalEntryModel.entry_type == entry_type)
+            entries_by_id = {e.id: e for e in result.scalars().all()}
 
-            result = await session.execute(stmt)
-            rows = result.scalars().all()
+            now = datetime.utcnow()
+            results = []
+            for eid in ranked_ids:
+                e = entries_by_id.get(eid)
+                if not e:
+                    continue
+                e.access_count += 1
+                e.last_accessed_at = now
+                e.relevance_score = min((e.relevance_score or 0) + 0.05, 1.0)
+                entry = self._row_to_entry(e)
+                # Override relevance_score with hybrid search score
+                results.append(JournalEntry(
+                    id=entry.id, agent_id=entry.agent_id, entry_type=entry.entry_type,
+                    title=entry.title, content=entry.content, importance=entry.importance,
+                    relevance_score=scores.get(eid, 0.0), access_count=entry.access_count,
+                    expires_at=entry.expires_at, promoted_to_ltm=entry.promoted_to_ltm,
+                    context_thread_id=entry.context_thread_id, record_type=entry.record_type,
+                    grounding=entry.grounding, status=entry.status, tags=entry.tags,
+                    pointers=entry.pointers, created_at=entry.created_at,
+                ))
 
-            return [self._row_to_entry(row) for row in rows]
+        return results
 
     async def recent(
         self, agent_id: str, days: int = 7, limit: int = 10
@@ -203,15 +268,7 @@ class JournalTier:
             return [self._row_to_entry(row) for row in result.scalars().all()]
 
     async def activity_summary(self, agent_id: str, days: int = 1) -> str:
-        """Get a text summary of recent activity.
-
-        Args:
-            agent_id: Agent identifier.
-            days: Look back N days.
-
-        Returns:
-            Formatted activity summary string.
-        """
+        """Get a text summary of recent activity."""
         entries = await self.recent(agent_id, days=days, limit=20)
         if not entries:
             return f"No activity in the last {days} day(s)."
@@ -223,19 +280,16 @@ class JournalTier:
     async def build_prompt(
         self, agent_id: str, max_chars: int | None = None, query: str | None = None
     ) -> str:
-        """Build a prompt section from journal entries.
+        """Build prompt section from journal entries.
 
-        If query is provided, uses relevance-ranked search. Otherwise falls back
-        to chronological (last 3 days).
-
-        Returns:
-            Formatted journal text with tiered verbosity (title stubs).
+        Relevance-ranked when query provided, otherwise chronological (last 3 days).
+        Tiered verbosity: title stubs only.
         """
         max_chars = max_chars or self._config.journal.max_chars_in_prompt
         if query:
-            entries = await self.search(agent_id, query, top_k=10)
+            entries = await self.search(agent_id, query, top_k=8)
         else:
-            entries = await self.recent(agent_id, days=3, limit=10)
+            entries = await self.recent(agent_id, days=3, limit=5)
 
         if not entries:
             return ""
@@ -243,12 +297,58 @@ class JournalTier:
         lines: list[str] = []
         chars = 0
         for e in entries:
-            line = f"- [{e.entry_type}] {e.title}"
+            ts = e.created_at.strftime("%Y-%m-%d") if e.created_at else "?"
+            line = f"- [{ts}] ({e.entry_type}) {e.title[:60]}"
             if chars + len(line) > max_chars:
                 break
             lines.append(line)
-            chars += len(line)
+            chars += len(line) + 1
         return "\n".join(lines)
+
+    async def _check_dedup(
+        self, agent_id: str, embedding: list[float]
+    ) -> JournalEntry | None:
+        """Check for near-duplicate entries in the last 24 hours.
+
+        If a similar entry exists (cosine > dedup threshold), bump it
+        instead of creating a new one.
+
+        Returns:
+            Existing JournalEntry if deduplicated, None otherwise.
+        """
+        threshold = self._config.journal.dedup_similarity_threshold
+        try:
+            since = datetime.utcnow() - timedelta(hours=24)
+            embedding_str = f"[{','.join(str(x) for x in embedding)}]"
+
+            async with self._db.session() as session:
+                result = await session.execute(
+                    select(JournalEntryModel)
+                    .where(
+                        and_(
+                            JournalEntryModel.agent_id == agent_id,
+                            JournalEntryModel.created_at >= since,
+                            JournalEntryModel.embedding.isnot(None),
+                        )
+                    )
+                    .order_by(
+                        JournalEntryModel.embedding.cosine_distance(embedding)
+                    )
+                    .limit(1)
+                )
+                existing = result.scalar_one_or_none()
+                if existing and existing.embedding is not None:
+                    sim = cosine_similarity(embedding, list(existing.embedding))
+                    if sim > threshold:
+                        existing.access_count = (existing.access_count or 0) + 1
+                        logger.debug(
+                            "Journal dedup: sim=%.2f with entry #%d",
+                            sim, existing.id,
+                        )
+                        return self._row_to_entry(existing)
+        except Exception as e:
+            logger.debug("Dedup check failed (non-fatal): %s", e)
+        return None
 
     async def _compress(self, title: str, content: str) -> str:
         """Compress content using LLM distillation."""

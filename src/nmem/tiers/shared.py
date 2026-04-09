@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 
 from nmem.db.models import SharedKnowledgeModel
+from nmem.search import hybrid_memory_search, populate_tsvector
 from nmem.types import SharedEntry
 
 if TYPE_CHECKING:
@@ -85,7 +86,8 @@ class SharedTier:
                 existing.version += 1
                 existing.change_log = log
                 await session.flush()
-                return self._row_to_entry(existing)
+                await session.refresh(existing)
+                entry = self._row_to_entry(existing)
             else:
                 record = SharedKnowledgeModel(
                     key=key,
@@ -100,12 +102,20 @@ class SharedTier:
                 )
                 session.add(record)
                 await session.flush()
-                return self._row_to_entry(record)
+                await session.refresh(record)
+                entry = self._row_to_entry(record)
+
+        # Populate TSVECTOR (outside session to avoid deadlock)
+        await populate_tsvector(
+            self._db, "nmem_shared_knowledge", entry.id,
+            f"{key} {content[:2000]}",
+        )
+        return entry
 
     async def search(
         self, query: str, top_k: int = 5, *, category: str | None = None
     ) -> list[SharedEntry]:
-        """Search shared knowledge using hybrid search.
+        """Search shared knowledge using hybrid vector + FTS search.
 
         Args:
             query: Search query.
@@ -113,19 +123,37 @@ class SharedTier:
             category: Optional category filter.
 
         Returns:
-            List of SharedEntry objects.
+            List of SharedEntry objects, ranked by relevance.
         """
-        # TODO: Phase 2 — implement full hybrid search
+        query_embedding = await asyncio.to_thread(self._embedding.embed, query)
+
+        where_parts = ["status = 'validated'"]
+        params: dict = {}
+        if category:
+            where_parts.append("category = :category")
+            params["category"] = category
+
+        ranked = await hybrid_memory_search(
+            db=self._db,
+            table="nmem_shared_knowledge",
+            query_embedding=query_embedding,
+            query_text=query,
+            where_clause=" AND ".join(where_parts),
+            params=params,
+            top_k=top_k,
+        )
+
+        if not ranked:
+            return []
+
+        ranked_ids = [r[0] for r in ranked]
+
         async with self._db.session() as session:
-            stmt = (
-                select(SharedKnowledgeModel)
-                .order_by(SharedKnowledgeModel.importance.desc())
-                .limit(top_k)
+            result = await session.execute(
+                select(SharedKnowledgeModel).where(SharedKnowledgeModel.id.in_(ranked_ids))
             )
-            if category:
-                stmt = stmt.where(SharedKnowledgeModel.category == category)
-            result = await session.execute(stmt)
-            return [self._row_to_entry(r) for r in result.scalars().all()]
+            entries_by_id = {e.id: e for e in result.scalars().all()}
+            return [self._row_to_entry(entries_by_id[eid]) for eid in ranked_ids if eid in entries_by_id]
 
     async def get(self, key: str) -> SharedEntry | None:
         """Get a shared knowledge entry by key."""

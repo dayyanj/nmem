@@ -53,8 +53,45 @@ class CognitiveEngine:
         Returns:
             List of similar past DelegationRecord objects.
         """
-        # TODO: Phase 4 — implement vector search against nmem_delegations
-        return []
+        from sqlalchemy import text as sa_text
+
+        emb = await asyncio.to_thread(self._embedding.embed, instruction[:500])
+        embedding_str = f"[{','.join(str(x) for x in emb)}]"
+
+        try:
+            async with self._db.session() as session:
+                result = await session.execute(
+                    sa_text("""
+                        SELECT id, delegating_agent, target_agent, task_type,
+                               instruction, status, result_summary,
+                               created_at, completed_at,
+                               1 - (embedding <=> CAST(:embedding AS vector)) AS similarity
+                        FROM nmem_delegations
+                        WHERE target_agent = :agent_id
+                          AND embedding IS NOT NULL
+                          AND 1 - (embedding <=> CAST(:embedding AS vector)) > :threshold
+                        ORDER BY embedding <=> CAST(:embedding AS vector)
+                        LIMIT :top_k
+                    """),
+                    {
+                        "embedding": embedding_str,
+                        "agent_id": agent_id,
+                        "threshold": threshold,
+                        "top_k": top_k,
+                    },
+                )
+                rows = result.all()
+                return [
+                    DelegationRecord(
+                        id=r[0], delegating_agent=r[1], target_agent=r[2],
+                        task_type=r[3], instruction=r[4], status=r[5],
+                        result_summary=r[6], created_at=r[7], completed_at=r[8],
+                    )
+                    for r in rows
+                ]
+        except Exception as e:
+            logger.debug("Deja vu search failed: %s", e)
+            return []
 
     async def generate_counterfactual(
         self,

@@ -82,6 +82,9 @@ class MemorySystem:
             self._db, self._config, self._embedding, self._llm
         )
 
+        # Wire journal → consolidator signal
+        self._journal._on_high_importance = self._consolidator.signal
+
         # Event handlers
         self._event_handlers: dict[str, list[Callable]] = {}
 

@@ -9,11 +9,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from typing import TYPE_CHECKING
+
+import numpy as np
+from sqlalchemy import text as sa_text
 
 from nmem.types import SearchResult
 
 if TYPE_CHECKING:
+    from nmem.db.session import DatabaseManager
     from nmem.tiers.journal import JournalTier
     from nmem.tiers.ltm import LTMTier
     from nmem.tiers.shared import SharedTier
@@ -23,6 +28,171 @@ logger = logging.getLogger(__name__)
 
 # Default tiers to search
 DEFAULT_TIERS = ("journal", "ltm", "shared", "entity")
+
+
+# ── Hybrid Search CTE ────────────────────────────────────────────────────────
+
+
+async def hybrid_memory_search(
+    db: DatabaseManager,
+    table: str,
+    query_embedding: list[float],
+    query_text: str,
+    where_clause: str,
+    params: dict,
+    top_k: int,
+    vector_weight: float = 0.6,
+    fts_weight: float = 0.4,
+) -> list[tuple[int, float]]:
+    """Hybrid search (vector + FTS) returning ranked (id, score) pairs.
+
+    Uses a CTE pattern: vector similarity as the primary signal,
+    FTS as a secondary re-ranking factor. Falls back gracefully
+    when content_tsv is NULL (FTS score = 0).
+
+    Args:
+        db: Database manager.
+        table: Table name to search.
+        query_embedding: Query embedding vector.
+        query_text: Query text for FTS.
+        where_clause: SQL WHERE clause fragment (e.g., "agent_id = :agent_id").
+        params: Parameters for the WHERE clause.
+        top_k: Maximum results.
+        vector_weight: Weight for vector similarity (default 0.6).
+        fts_weight: Weight for FTS score (default 0.4).
+
+    Returns:
+        List of (id, combined_score) tuples, ranked by score.
+    """
+    embedding_str = f"[{','.join(str(x) for x in query_embedding)}]"
+    params.update({
+        "embedding_vec": embedding_str,
+        "query_text": query_text,
+        "candidate_limit": top_k * 3,
+        "top_k": top_k,
+    })
+
+    sql = sa_text(f"""
+        WITH vector_scores AS (
+            SELECT id,
+                   1 - (embedding <=> CAST(:embedding_vec AS vector)) AS vec_score
+            FROM {table}
+            WHERE {where_clause}
+              AND embedding IS NOT NULL
+            ORDER BY embedding <=> CAST(:embedding_vec AS vector)
+            LIMIT :candidate_limit
+        ),
+        fts_scores AS (
+            SELECT vs.id,
+                   CASE WHEN t.content_tsv IS NOT NULL
+                        THEN ts_rank_cd(t.content_tsv, plainto_tsquery('english', :query_text))
+                        ELSE 0 END AS fts_score
+            FROM vector_scores vs
+            JOIN {table} t ON vs.id = t.id
+        )
+        SELECT vs.id,
+               ({vector_weight} * vs.vec_score
+                + {fts_weight} * COALESCE(fs.fts_score, 0)) AS combined_score
+        FROM vector_scores vs
+        LEFT JOIN fts_scores fs ON vs.id = fs.id
+        ORDER BY combined_score DESC
+        LIMIT :top_k
+    """)
+
+    async with db.session() as session:
+        result = await session.execute(sql, params)
+        return [(row[0], float(row[1])) for row in result.all()]
+
+
+# ── TSVECTOR Population ──────────────────────────────────────────────────────
+
+
+async def populate_tsvector(
+    db: DatabaseManager, table: str, record_id: int, text_content: str
+) -> None:
+    """Populate the content_tsv column for a record using PostgreSQL to_tsvector.
+
+    Args:
+        db: Database manager.
+        table: Table name.
+        record_id: Record ID.
+        text_content: Text to vectorize.
+    """
+    if not db.is_postgres:
+        return
+    try:
+        async with db.session() as session:
+            await session.execute(
+                sa_text(
+                    f"UPDATE {table} SET content_tsv = to_tsvector('english', :text) WHERE id = :id"
+                ),
+                {"text": text_content[:4000], "id": record_id},
+            )
+    except Exception as e:
+        logger.debug("TSVECTOR population for %s#%d failed (non-fatal): %s", table, record_id, e)
+
+
+# ── Context Thread Assignment ────────────────────────────────────────────────
+
+# In-memory centroid cache: {agent_id: {thread_id: centroid_embedding}}
+_thread_centroids: dict[str, dict[str, list[float]]] = {}
+
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Compute cosine similarity between two embedding vectors."""
+    a_np = np.array(a, dtype=np.float32).flatten()
+    b_np = np.array(b, dtype=np.float32).flatten()
+    if len(a_np) == 0 or len(b_np) == 0:
+        return 0.0
+    dot = float(np.dot(a_np, b_np))
+    norm = float(np.linalg.norm(a_np) * np.linalg.norm(b_np))
+    return dot / norm if norm > 0 else 0.0
+
+
+def assign_context_thread(
+    embedding: list[float], agent_id: str, threshold: float = 0.65
+) -> str:
+    """Assign an entry to a semantic context thread.
+
+    If the embedding is >threshold similar to an existing thread's centroid,
+    join it. Otherwise create a new thread.
+
+    Args:
+        embedding: Entry embedding vector.
+        agent_id: Agent identifier.
+        threshold: Cosine similarity threshold for joining.
+
+    Returns:
+        Thread ID string.
+    """
+    agent_threads = _thread_centroids.get(agent_id, {})
+
+    best_thread = None
+    best_sim = 0.0
+
+    for thread_id, centroid in agent_threads.items():
+        sim = cosine_similarity(embedding, centroid)
+        if sim > best_sim:
+            best_sim = sim
+            best_thread = thread_id
+
+    if best_sim >= threshold and best_thread:
+        # Join existing thread — update centroid (running average)
+        old = np.array(agent_threads[best_thread])
+        new = np.array(embedding)
+        updated = ((old + new) / 2).tolist()
+        agent_threads[best_thread] = updated
+        return best_thread
+    else:
+        # Create new thread
+        thread_id = str(uuid.uuid4())[:8]
+        if agent_id not in _thread_centroids:
+            _thread_centroids[agent_id] = {}
+        _thread_centroids[agent_id][thread_id] = embedding
+        return thread_id
+
+
+# ── Cross-Tier Search ─────────────────────────────────────────────────────────
 
 
 async def cross_tier_search(
@@ -83,7 +253,7 @@ async def _search_journal(
         SearchResult(
             tier="journal",
             id=e.id,
-            score=e.importance / 10.0,  # Normalize to 0-1
+            score=e.relevance_score,
             content=e.content,
             title=e.title,
             agent_id=e.agent_id,
