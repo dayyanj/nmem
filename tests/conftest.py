@@ -28,7 +28,6 @@ def _detect_db_url() -> str:
 
     # Try PostgreSQL
     try:
-        import asyncio
         import asyncpg
 
         async def _check():
@@ -36,7 +35,8 @@ def _detect_db_url() -> str:
             await conn.close()
             return True
 
-        if asyncio.get_event_loop().run_until_complete(_check()):
+        import asyncio
+        if asyncio.run(_check()):
             return _PG_URL
     except Exception:
         pass

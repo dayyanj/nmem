@@ -19,7 +19,10 @@ NMEM_TEST_DSN = os.environ.get(
 
 def _can_connect() -> bool:
     """Check if PostgreSQL is reachable."""
-    import asyncpg
+    try:
+        import asyncpg
+    except ImportError:
+        return False
 
     async def check():
         try:
@@ -29,13 +32,13 @@ def _can_connect() -> bool:
         except Exception:
             return False
 
-    return asyncio.get_event_loop().run_until_complete(check())
+    try:
+        return asyncio.run(check())
+    except Exception:
+        return False
 
 
-try:
-    _pg_available = _can_connect()
-except Exception:
-    _pg_available = False
+_pg_available = _can_connect()
 
 pytestmark = pytest.mark.skipif(not _pg_available, reason="PostgreSQL not available")
 

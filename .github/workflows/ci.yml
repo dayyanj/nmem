@@ -25,7 +25,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e ".[cli,sqlite,mcp-server]"
-          pip install pytest pytest-asyncio pytest-cov pytest-timeout
+          pip install "pytest>=8.0" "pytest-asyncio>=0.23" "pytest-cov>=5.0" "pytest-timeout>=2.0"
 
       - name: Run unit tests
         run: pytest tests/ --ignore=tests/integration -v --timeout=60
@@ -60,7 +60,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e ".[cli,postgres]"
-          pip install pytest pytest-asyncio pytest-cov pytest-timeout
+          pip install "pytest>=8.0" "pytest-asyncio>=0.23" "pytest-cov>=5.0" "pytest-timeout>=2.0"
 
       - name: Run integration tests (mock embeddings)
         env:
