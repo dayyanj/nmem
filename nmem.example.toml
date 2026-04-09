@@ -1,0 +1,64 @@
+# nmem configuration
+# Copy to nmem.toml in your project root, or ~/.config/nmem/nmem.toml
+# All settings can also be set via environment variables with NMEM_ prefix.
+
+# ── Database ─────────────────────────────────────────────────────────────────
+# PostgreSQL + pgvector (production):
+database_url = "postgresql+asyncpg://nmem:nmem@localhost:5433/nmem"
+# SQLite (quick local testing, no Docker needed):
+# database_url = "sqlite+aiosqlite:///nmem.db"
+
+# ── Embedding Provider ───────────────────────────────────────────────────────
+[embedding]
+provider = "sentence-transformers"   # "sentence-transformers", "openai", "noop"
+model = "all-MiniLM-L6-v2"          # HuggingFace model name
+device = "cpu"                       # "cpu" or "cuda" (cpu avoids GPU conflicts with LLM)
+# dimensions = 384                   # Auto-detected from model, override if needed
+
+# OpenAI embeddings (uncomment to use):
+# provider = "openai"
+# model = "text-embedding-3-small"
+# api_key = "sk-..."
+# dimensions = 1536
+
+# ── LLM Provider (for compression + synthesis) ──────────────────────────────
+[llm]
+provider = "openai"                  # "openai" (OpenAI-compatible), "anthropic", "noop"
+base_url = "http://localhost:11434/v1"  # Ollama, vLLM, or any OpenAI-compatible API
+model = "qwen3"
+# api_key = "sk-..."                 # Required for OpenAI cloud / Anthropic
+
+# Compression settings
+# compression_max_chars = 200        # Max chars for compressed content
+# compression_max_tokens = 128       # Max tokens for compression LLM call
+# synthesis_max_tokens = 1024        # Max tokens for nightly synthesis
+
+# ── Journal (Tier 2) ────────────────────────────────────────────────────────
+[journal]
+default_expiry_days = 30             # Journal entries expire after this many days
+auto_promote_importance = 7          # Auto-promote to LTM at this importance level
+auto_promote_access_count = 5        # Or promote after this many accesses
+# dedup_similarity_threshold = 0.92  # Cosine threshold for dedup check
+# max_chars_in_prompt = 1500         # Max chars for journal in prompt injection
+
+# ── Long-Term Memory (Tier 3) ───────────────────────────────────────────────
+[ltm]
+# staleness_days = 90                # Days without access before confidence decay
+# confidence_decay_rate = 0.02       # Decay per consolidation cycle
+# min_confidence = 0.3               # Floor for confidence decay
+# shared_promote_importance = 8      # Min importance for LTM→Shared promotion
+# shared_promote_min_agents = 2      # Min distinct agents that accessed the entry
+# shared_promote_min_access = 3      # Min total access count
+
+# ── Consolidation Engine ─────────────────────────────────────────────────────
+[consolidation]
+enabled = true
+interval_hours = 6                   # Full cycle interval
+# micro_cycle_cooldown_minutes = 5   # Cooldown between micro-cycles
+# nightly_synthesis_hour_utc = 23    # Hour (UTC) for nightly pattern synthesis
+# nightly_synthesis_min_entries = 10  # Min journal entries to trigger synthesis
+# similarity_merge_threshold = 0.85  # Cosine threshold for dedup merging
+
+# ── Context Threading ────────────────────────────────────────────────────────
+# [clustering]
+# similarity_threshold = 0.65        # Cosine threshold for context thread assignment
