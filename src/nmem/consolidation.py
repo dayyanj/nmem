@@ -92,7 +92,7 @@ class Consolidator:
 
         # Timing
         self._last_full_cycle: datetime | None = None
-        self._last_micro: float = 0.0
+        self._last_micro: float = -(60 * 60)  # Ensure first micro-cycle always runs
         self._last_synthesis_date: object = None  # date object
 
     def signal(self, reason: str = "high_importance_entry") -> None:
