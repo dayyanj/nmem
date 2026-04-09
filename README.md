@@ -35,6 +35,7 @@ graph TB
             direction LR
             DECAY[Decay Expired]
             PROMO[Promote to LTM]
+            SHARED_PROMO[Promote to Shared<br/><i>cross-agent access</i>]
             DEDUP[Dedup via<br/>Union-Find + LLM]
             CONF[Confidence<br/>Decay]
             SYNTH[Nightly<br/>Synthesis]
@@ -59,6 +60,8 @@ graph TB
 
     T2 -- "importance ≥ 7" --> PROMO
     PROMO --> T3
+    T3 -- "≥ 2 agents accessed" --> SHARED_PROMO
+    SHARED_PROMO --> T4
     SYNTH -- "patterns" --> T4
     Consolidator --> LLM
     Consolidator --> EMB
@@ -136,7 +139,7 @@ mem.start_consolidation()
 |------|---------|----------|-----------|
 | **Working** | Current session context | Session | → Journal on close |
 | **Journal** | Activity log | 30 days | → LTM at importance ≥7 |
-| **LTM** | Permanent knowledge | Forever | Confidence-decayed |
+| **LTM** | Permanent knowledge | Forever | → Shared when ≥2 agents access |
 | **Shared** | Cross-agent facts | Forever | Canonical source |
 | **Entity** | Per-object workspace | Forever | Collaborative |
 | **Policy** | Governance rules | Forever | Writer-controlled |

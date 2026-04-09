@@ -107,6 +107,15 @@ class LTMConfig(BaseModel):
     min_confidence: float = 0.3
     """Minimum confidence before entry is flagged for review."""
 
+    shared_promote_importance: int = 8
+    """Minimum importance for LTM→Shared promotion."""
+
+    shared_promote_min_agents: int = 2
+    """Minimum distinct agents that must have accessed the entry."""
+
+    shared_promote_min_access: int = 3
+    """Minimum total access count for LTM→Shared promotion."""
+
 
 class SharedConfig(BaseModel):
     """Tier 4: Shared knowledge settings."""

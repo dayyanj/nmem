@@ -150,29 +150,32 @@ class Consolidator:
         # Step 2: Promote high-importance journal entries to LTM
         stats.promoted_to_ltm = await self._promote_important_entries()
 
-        # Step 3: Deduplicate similar LTM entries
+        # Step 3: Promote cross-agent LTM entries to shared knowledge
+        stats.promoted_to_shared = await self._promote_ltm_to_shared()
+
+        # Step 4: Deduplicate similar LTM entries
         stats.duplicates_merged = await self._dedup_similar_memories()
 
-        # Step 4: Confidence decay on stale LTM
+        # Step 5: Confidence decay on stale LTM
         stats.confidence_decayed = await self._update_confidence_scores()
 
-        # Step 5: Custom hooks
+        # Step 6: Custom hooks
         for name, fn in self._full_cycle_hooks:
             try:
                 await fn()
             except Exception as e:
                 logger.warning("Custom consolidation step '%s' failed: %s", name, e)
 
-        # Step 6: Curiosity signal decay
+        # Step 7: Curiosity signal decay
         stats.curiosity_decayed = await self._decay_curiosity_signals()
 
         stats.duration_seconds = time.monotonic() - start
         self._last_full_cycle = datetime.utcnow()
         logger.info(
             "Full consolidation completed in %.1fs: expired_del=%d, expired_promo=%d, "
-            "promoted=%d, deduped=%d, conf_decayed=%d, curiosity_decayed=%d",
+            "promoted_ltm=%d, promoted_shared=%d, deduped=%d, conf_decayed=%d, curiosity=%d",
             stats.duration_seconds, stats.expired_deleted, stats.expired_promoted,
-            stats.promoted_to_ltm, stats.duplicates_merged,
+            stats.promoted_to_ltm, stats.promoted_to_shared, stats.duplicates_merged,
             stats.confidence_decayed, stats.curiosity_decayed,
         )
         return stats
@@ -384,6 +387,99 @@ class Consolidator:
         for entry in entries:
             await self._promote_entry(entry)
             promoted += 1
+
+        return promoted
+
+    async def _promote_ltm_to_shared(self) -> int:
+        """Promote LTM entries to shared knowledge based on cross-agent access.
+
+        An LTM entry is promoted when ALL of these are true:
+          - importance >= shared_promote_importance (default 8)
+          - accessed by >= shared_promote_min_agents distinct agents (default 2)
+          - access_count >= shared_promote_min_access (default 3)
+          - not already promoted to shared
+
+        No LLM involved — promotion is driven entirely by observed
+        cross-agent access patterns. The agents vote with their searches.
+        """
+        min_importance = self._config.ltm.shared_promote_importance
+        min_agents = self._config.ltm.shared_promote_min_agents
+        min_access = self._config.ltm.shared_promote_min_access
+        promoted = 0
+
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(LTMModel).where(
+                    LTMModel.promoted_to_shared == False,
+                    LTMModel.status == "validated",
+                    LTMModel.importance >= min_importance,
+                    LTMModel.access_count >= min_access,
+                    LTMModel.accessed_by_agents.isnot(None),
+                ).limit(20)
+            )
+            candidates = result.scalars().all()
+
+        for entry in candidates:
+            agents = entry.accessed_by_agents or []
+            if len(agents) < min_agents:
+                continue
+
+            # Promote to shared knowledge
+            from nmem.search import populate_tsvector
+
+            emb = await asyncio.to_thread(
+                self._embedding.embed, f"{entry.key} {entry.content[:500]}"
+            )
+
+            async with self._db.session() as session:
+                # Check if shared key already exists
+                existing = await session.execute(
+                    select(SharedKnowledgeModel).where(
+                        SharedKnowledgeModel.key == entry.key
+                    )
+                )
+                if existing.scalar_one_or_none():
+                    # Already exists — just mark as promoted
+                    ltm_row = await session.execute(
+                        select(LTMModel).where(LTMModel.id == entry.id)
+                    )
+                    row = ltm_row.scalar_one_or_none()
+                    if row:
+                        row.promoted_to_shared = True
+                    continue
+
+                shared = SharedKnowledgeModel(
+                    key=entry.key,
+                    content=entry.content,
+                    category=entry.category,
+                    created_by=entry.agent_id,
+                    last_updated_by="consolidator",
+                    importance=entry.importance,
+                    embedding=emb,
+                )
+                session.add(shared)
+                await session.flush()
+                shared_id = shared.id
+
+            await populate_tsvector(
+                self._db, "nmem_shared_knowledge", shared_id,
+                f"{entry.key} {entry.content[:2000]}",
+            )
+
+            # Mark LTM entry as promoted
+            async with self._db.session() as session:
+                ltm_row = await session.execute(
+                    select(LTMModel).where(LTMModel.id == entry.id)
+                )
+                row = ltm_row.scalar_one_or_none()
+                if row:
+                    row.promoted_to_shared = True
+
+            promoted += 1
+            logger.info(
+                "Promoted LTM '%s' to shared (agents: %s, access: %d)",
+                entry.key[:40], agents, entry.access_count,
+            )
 
         return promoted
 

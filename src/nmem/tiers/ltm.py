@@ -185,6 +185,10 @@ class LTMTier:
                     continue
                 e.access_count += 1
                 e.last_accessed_at = now
+                # Track which agents have accessed this entry
+                agents = set(e.accessed_by_agents or [])
+                agents.add(agent_id)
+                e.accessed_by_agents = sorted(agents)
                 results.append(self._row_to_entry(e))
 
         return results

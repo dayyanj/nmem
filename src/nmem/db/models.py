@@ -155,6 +155,10 @@ class LTMModel(Base):
     access_count: Mapped[int] = mapped_column(Integer, default=0)
     last_accessed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_validated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    accessed_by_agents: Mapped[list | None] = mapped_column(nullable=True)
+
+    # Shared promotion tracking
+    promoted_to_shared: Mapped[bool] = mapped_column(default=False)
 
     # Source tracking
     source: Mapped[str] = mapped_column(String(30), default="agent")

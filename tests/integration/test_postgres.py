@@ -269,6 +269,62 @@ class TestConsolidation:
         decayed = await mem.consolidation._update_confidence_scores()
         assert decayed >= 1
 
+    async def test_ltm_to_shared_promotion(self, mem: MemorySystem):
+        """LTM entries accessed by multiple agents should promote to shared."""
+        from sqlalchemy import text
+
+        # Save a high-importance LTM entry
+        await mem.ltm.save(
+            "agent-alpha", "procedure", "deploy_checklist",
+            "Always run migrations, seed cache, then verify health checks",
+            importance=8,
+        )
+
+        # Simulate access from multiple agents by updating accessed_by_agents
+        async with mem._db.session() as session:
+            await session.execute(
+                text("""
+                    UPDATE nmem_long_term_memory
+                    SET accessed_by_agents = '["agent-alpha", "agent-beta", "agent-gamma"]'::jsonb,
+                        access_count = 5
+                    WHERE key = 'deploy_checklist'
+                """)
+            )
+
+        # Run consolidation — should promote to shared
+        stats = await mem.consolidation.run_full_cycle()
+        assert stats.promoted_to_shared >= 1
+
+        # Verify it exists in shared knowledge
+        results = await mem.shared.search("deploy migrations checklist")
+        assert len(results) > 0
+        assert any("deploy_checklist" in r.key for r in results)
+
+    async def test_ltm_not_promoted_without_cross_agent_access(self, mem: MemorySystem):
+        """LTM entries accessed by only one agent should NOT promote."""
+        from sqlalchemy import text
+
+        await mem.ltm.save(
+            "agent-solo", "fact", "solo_knowledge",
+            "Only one agent cares about this particular piece of knowledge",
+            importance=9,
+        )
+
+        # Only 1 agent accessed it
+        async with mem._db.session() as session:
+            await session.execute(
+                text("""
+                    UPDATE nmem_long_term_memory
+                    SET accessed_by_agents = '["agent-solo"]'::jsonb,
+                        access_count = 10
+                    WHERE key = 'solo_knowledge'
+                """)
+            )
+
+        stats = await mem.consolidation.run_full_cycle()
+        # Should NOT promote — only 1 agent accessed it
+        assert stats.promoted_to_shared == 0
+
     async def test_full_cycle(self, mem: MemorySystem):
         """Full consolidation cycle should complete without errors."""
         stats = await mem.consolidation.run_full_cycle()

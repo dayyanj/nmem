@@ -225,6 +225,7 @@ class ConsolidationStats:
     expired_deleted: int = 0
     expired_promoted: int = 0
     promoted_to_ltm: int = 0
+    promoted_to_shared: int = 0
     duplicates_merged: int = 0
     confidence_decayed: int = 0
     curiosity_decayed: int = 0
