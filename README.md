@@ -185,4 +185,7 @@ MIT — see [LICENSE](LICENSE)
 
 ## Credits
 
-Adapted from Dayyan James' cognitive memory architecture, battle-tested in production AI agent systems.
+Created by [Dayyan James](https://dj-ai.ai) — extracted from the cognitive memory architecture powering [Spwig](https://spwig.com)'s production AI agent systems.
+
+- [dj-ai.ai](https://dj-ai.ai) — AI research and engineering blog
+- [spwig.com](https://spwig.com) — where nmem runs in commercial production

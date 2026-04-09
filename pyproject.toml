@@ -41,10 +41,10 @@ nmem = "nmem.cli.main:app"
 nmem-mcp = "nmem.mcp.server:main"
 
 [project.urls]
-Homepage = "https://github.com/spwig/nmem"
-Documentation = "https://github.com/spwig/nmem#readme"
-Repository = "https://github.com/spwig/nmem"
-Issues = "https://github.com/spwig/nmem/issues"
+Homepage = "https://github.com/dayyanj/nmem"
+Documentation = "https://github.com/dayyanj/nmem#readme"
+Repository = "https://github.com/dayyanj/nmem"
+Issues = "https://github.com/dayyanj/nmem/issues"
 
 [project.optional-dependencies]
 postgres = ["asyncpg>=0.29", "pgvector>=0.3"]
