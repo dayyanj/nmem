@@ -4,6 +4,85 @@
 
 nmem gives your agents a brain that learns. Not just storage and retrieval — active cognition with automatic promotion, confidence decay, conflict detection, and nightly synthesis.
 
+## Architecture
+
+```mermaid
+graph TB
+    subgraph Agent["Your Agent / Framework"]
+        LC[LangChain Adapter]
+        CR[CrewAI Adapter]
+        PY[Plain Python]
+    end
+
+    subgraph nmem["nmem — Cognitive Memory System"]
+        direction TB
+
+        MS[MemorySystem]
+        PB[Prompt Builder]
+        CE[Cognitive Engine]
+
+        subgraph Tiers["Memory Tiers"]
+            direction LR
+            T1["<b>Working</b><br/><i>ephemeral</i><br/>session slots"]
+            T2["<b>Journal</b><br/><i>30 days</i><br/>activity log"]
+            T3["<b>LTM</b><br/><i>permanent</i><br/>per-agent knowledge"]
+            T4["<b>Shared</b><br/><i>permanent</i><br/>cross-agent facts"]
+            T5["<b>Entity</b><br/><i>permanent</i><br/>per-object workspace"]
+            T6["<b>Policy</b><br/><i>permanent</i><br/>governance rules"]
+        end
+
+        subgraph Consolidator["Consolidation Engine (background)"]
+            direction LR
+            DECAY[Decay Expired]
+            PROMO[Promote to LTM]
+            DEDUP[Dedup via<br/>Union-Find + LLM]
+            CONF[Confidence<br/>Decay]
+            SYNTH[Nightly<br/>Synthesis]
+        end
+
+        HS[Hybrid Search<br/>60/40 Vector + FTS]
+    end
+
+    subgraph Providers["Pluggable Providers"]
+        EMB["Embedding<br/>sentence-transformers<br/>OpenAI · no-op"]
+        LLM["LLM<br/>vLLM · Ollama · OpenAI<br/>Anthropic · no-op"]
+        DB["Database<br/>PostgreSQL + pgvector<br/>SQLite (dev)"]
+    end
+
+    LC & CR & PY --> MS
+    MS --> PB
+    MS --> CE
+    MS --> Tiers
+    Tiers --> HS
+    HS --> DB
+    HS --> EMB
+
+    T2 -- "importance ≥ 7" --> PROMO
+    PROMO --> T3
+    SYNTH -- "patterns" --> T4
+    Consolidator --> LLM
+    Consolidator --> EMB
+
+    style T1 fill:#e8f5e9,stroke:#4caf50
+    style T2 fill:#fff3e0,stroke:#ff9800
+    style T3 fill:#e3f2fd,stroke:#2196f3
+    style T4 fill:#f3e5f5,stroke:#9c27b0
+    style T5 fill:#fce4ec,stroke:#e91e63
+    style T6 fill:#efebe9,stroke:#795548
+    style Consolidator fill:#fff8e1,stroke:#ffc107
+    style HS fill:#e0f7fa,stroke:#00bcd4
+```
+
+### How it works
+
+1. **Write** — agents store observations, decisions, and outcomes in their journal. Write-time compression distills verbose content into dense facts. Dedup prevents redundant entries.
+
+2. **Search** — hybrid search combines pgvector cosine similarity (60%) with PostgreSQL full-text search (40%) across all tiers simultaneously. Access stats are updated on every retrieval.
+
+3. **Consolidate** — a background engine promotes high-importance journal entries to permanent LTM, clusters and merges duplicates via union-find + LLM, decays confidence on stale entries, and runs nightly cross-agent pattern synthesis.
+
+4. **Inject** — the prompt builder assembles relevant memory context with tiered verbosity (policies get full text, journal gets title stubs) and injects it into your agent's system prompt.
+
 ## Features
 
 - **6-tier memory hierarchy** — working memory, journal, long-term memory, shared knowledge, entity memory, policy memory
