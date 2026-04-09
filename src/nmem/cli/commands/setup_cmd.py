@@ -44,6 +44,48 @@ This project uses nmem for persistent cognitive memory via MCP. You have access 
 - Anything already in this CLAUDE.md file
 '''.strip()
 
+# AGENTS.md content — framework-agnostic AI agent instructions
+AGENTS_MD_CONTENT = '''# AI Agent Instructions
+
+## Memory System
+
+This project uses [nmem](https://github.com/spwig/nmem) for persistent cognitive memory.
+nmem is available as an MCP server — check your tool list for `memory_*` tools.
+
+### Available memory tools
+
+| Tool | When to use |
+|------|-------------|
+| `memory_search(query)` | Before starting work — check for relevant past context |
+| `memory_store(title, content, importance)` | After completing work — save what you learned |
+| `memory_save_ltm(key, content, category)` | For permanent knowledge (procedures, architecture, lessons) |
+| `memory_save_shared(key, content)` | For knowledge all agents should know |
+| `memory_recall(agent_id, days)` | To see recent activity |
+| `memory_context(query)` | To get full memory context for a topic |
+| `memory_stats()` | To see what's stored |
+
+### Memory workflow
+
+1. **Before debugging/implementing/refactoring**: Search memory for relevant context
+2. **After bug fixes**: Store the root cause and fix (importance 7+)
+3. **After design decisions**: Save to LTM with category "architecture" (importance 8+)
+4. **After discovering constraints**: Save to LTM with category "constraint"
+5. **For team-wide facts**: Save to shared knowledge
+
+### Importance scale
+
+- **1-4**: Transient — will expire in 30 days
+- **5-6**: Useful — may promote if accessed frequently
+- **7-8**: Important — auto-promotes to permanent long-term memory
+- **9-10**: Critical — architecture decisions, incident learnings
+
+### What NOT to store
+
+- Code (it's in git)
+- Ephemeral debugging state
+- Anything already documented in project files
+'''.strip()
+
 
 def setup(
     database_url: Annotated[str | None, typer.Option("--database-url", "-d",
@@ -54,8 +96,10 @@ def setup(
         help="Project directory (for .claude.json and CLAUDE.md)")] = Path.cwd(),
     auto_append: Annotated[bool, typer.Option("--auto-append",
         help="Auto-append memory instructions to CLAUDE.md")] = False,
+    agents_md: Annotated[bool, typer.Option("--agents-md",
+        help="Generate AGENTS.md for AI agent instructions")] = False,
 ):
-    """Configure nmem MCP server for Claude Code and generate CLAUDE.md instructions."""
+    """Configure MCP server, generate CLAUDE.md snippet, and optionally create AGENTS.md."""
     # Determine database URL
     db_url = database_url or "postgresql+asyncpg://nmem:nmem@localhost:5433/nmem"
 
@@ -112,7 +156,21 @@ def setup(
             border_style="cyan",
         ))
 
-    # ── 3. Print summary ─────────────────────────────────────────────
+    # ── 3. Generate AGENTS.md (if requested) ─────────────────────────
+    agents_md_path = project_dir / "AGENTS.md"
+    if agents_md:
+        if agents_md_path.exists():
+            existing = agents_md_path.read_text()
+            if "nmem" not in existing.lower():
+                agents_md_path.write_text(existing.rstrip() + "\n\n" + AGENTS_MD_CONTENT + "\n")
+                console.print(f"[green]nmem instructions appended to {agents_md_path}[/green]")
+            else:
+                console.print(f"[yellow]AGENTS.md already contains nmem instructions[/yellow]")
+        else:
+            agents_md_path.write_text(AGENTS_MD_CONTENT + "\n")
+            console.print(f"[green]Created {agents_md_path}[/green]")
+
+    # ── 4. Print summary ─────────────────────────────────────────────
     console.print()
     console.print("[bold]Setup complete![/bold]")
     console.print()
