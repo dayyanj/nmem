@@ -25,6 +25,16 @@ def run_async(coro):
     except KeyboardInterrupt:
         console.print("\n[dim]Interrupted[/dim]")
         sys.exit(1)
+    except Exception as e:
+        err = str(e)
+        if "does not exist" in err or "no such table" in err:
+            console.print("[red]Database not initialized.[/red] Run [bold]nmem init[/bold] first.")
+            sys.exit(1)
+        if "password authentication failed" in err or "Connection refused" in err:
+            console.print(f"[red]Database connection failed:[/red] {err}")
+            console.print("[dim]Check NMEM_DATABASE_URL or use --sqlite for local testing.[/dim]")
+            sys.exit(1)
+        raise
 
 
 @asynccontextmanager

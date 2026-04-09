@@ -32,6 +32,15 @@ def demo():
             console.print()
 
         async with get_mem(**overrides) as mem:
+            # ── Clean previous demo data ─────────────────────────
+            from sqlalchemy import text
+            for table in ["nmem_journal_entries", "nmem_long_term_memory", "nmem_shared_knowledge"]:
+                try:
+                    async with mem._db.session() as session:
+                        await session.execute(text(f"DELETE FROM {table}"))
+                except Exception:
+                    pass
+
             # ── Load Dataset ──────────────────────────────────────
             console.print("[bold cyan]Loading demo dataset...[/bold cyan]")
 
