@@ -20,6 +20,7 @@ from nmem.cli.commands.stats_cmd import stats
 from nmem.cli.commands.demo_cmd import demo
 from nmem.cli.commands.consolidate_cmd import consolidate
 from nmem.cli.commands.setup_cmd import setup
+from nmem.cli.commands.benchmark_cmd import benchmark
 from nmem.cli.commands.import_cmd import import_app
 
 app = typer.Typer(
@@ -53,6 +54,7 @@ app.command()(stats)
 app.command()(demo)
 app.command()(consolidate)
 app.command()(setup)
+app.command()(benchmark)
 app.add_typer(import_app, name="import")
 
 
