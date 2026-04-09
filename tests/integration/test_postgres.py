@@ -49,7 +49,7 @@ async def _clean_tables(system: MemorySystem):
             "nmem_journal_entries",
             "nmem_long_term_memory",
             "nmem_shared_knowledge",
-            "nmem_entity_records",
+            "nmem_entity_memory",
             "nmem_delegations",
             "nmem_curiosity_signals",
         ]:

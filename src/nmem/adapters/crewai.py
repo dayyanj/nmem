@@ -15,10 +15,6 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from nmem.memory import MemorySystem
 
-# Stub for future implementation
-# TODO: Phase 5 — implement full CrewAI memory interface
-
-
 class NmemCrewAIMemory:
     """CrewAI-compatible memory backed by nmem.
 

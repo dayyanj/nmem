@@ -260,6 +260,7 @@ class EntityMemoryModel(Base):
     evidence_refs: Mapped[list | None] = mapped_column(nullable=True)
     tags: Mapped[list | None] = mapped_column(nullable=True)
     embedding = VectorColumn(384)
+    content_tsv = mapped_column(TSVType, nullable=True)
     context_thread_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     version: Mapped[int] = mapped_column(Integer, default=1)

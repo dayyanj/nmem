@@ -15,6 +15,7 @@ from sqlalchemy import select, and_
 
 from nmem.db.models import EntityMemoryModel
 from nmem.exceptions import PermissionError
+from nmem.search import hybrid_memory_search, populate_tsvector
 from nmem.types import EntityRecord
 
 if TYPE_CHECKING:
@@ -108,7 +109,16 @@ class EntityTier:
             )
             session.add(record)
             await session.flush()
-            return self._row_to_record(record)
+            entry_id = record.id
+            await session.refresh(record)
+            entity_record = self._row_to_record(record)
+
+        # Populate TSVECTOR (outside session to avoid deadlock)
+        await populate_tsvector(
+            self._db, "nmem_entity_memory", entry_id,
+            f"{entity_name} {content[:2000]}",
+        )
+        return entity_record
 
     async def get(
         self,
@@ -154,7 +164,7 @@ class EntityTier:
         entity_id: str | None = None,
         top_k: int = 5,
     ) -> list[EntityRecord]:
-        """Search entity memory using vector similarity.
+        """Search entity memory using hybrid vector + FTS search.
 
         Args:
             query: Search query.
@@ -163,19 +173,40 @@ class EntityTier:
             top_k: Maximum results.
 
         Returns:
-            List of EntityRecord objects.
+            List of EntityRecord objects, ranked by relevance.
         """
-        # TODO: Phase 3 — implement vector search
+        query_embedding = await asyncio.to_thread(self._embedding.embed, query)
+
+        where_parts = ["1=1"]
+        params: dict = {}
+        if entity_type:
+            where_parts.append("entity_type = :entity_type")
+            params["entity_type"] = entity_type
+        if entity_id:
+            where_parts.append("entity_id = :entity_id")
+            params["entity_id"] = entity_id
+
+        ranked = await hybrid_memory_search(
+            db=self._db,
+            table="nmem_entity_memory",
+            query_embedding=query_embedding,
+            query_text=query,
+            where_clause=" AND ".join(where_parts),
+            params=params,
+            top_k=top_k,
+        )
+
+        if not ranked:
+            return []
+
+        ranked_ids = [r[0] for r in ranked]
+
         async with self._db.session() as session:
-            stmt = select(EntityMemoryModel).order_by(
-                EntityMemoryModel.created_at.desc()
-            ).limit(top_k)
-            if entity_type:
-                stmt = stmt.where(EntityMemoryModel.entity_type == entity_type)
-            if entity_id:
-                stmt = stmt.where(EntityMemoryModel.entity_id == entity_id)
-            result = await session.execute(stmt)
-            return [self._row_to_record(r) for r in result.scalars().all()]
+            result = await session.execute(
+                select(EntityMemoryModel).where(EntityMemoryModel.id.in_(ranked_ids))
+            )
+            records_by_id = {r.id: r for r in result.scalars().all()}
+            return [self._row_to_record(records_by_id[eid]) for eid in ranked_ids if eid in records_by_id]
 
     async def get_summary(
         self, entity_type: str, entity_id: str
