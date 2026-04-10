@@ -12,7 +12,7 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 
 from nmem.db.models import SharedKnowledgeModel
 from nmem.search import hybrid_memory_search, populate_tsvector
@@ -45,6 +45,7 @@ class SharedTier:
         *,
         record_type: str = "fact",
         grounding: str = "confirmed",
+        project_scope: str | None = ...,
     ) -> SharedEntry:
         """Save or update a shared knowledge entry.
 
@@ -56,14 +57,23 @@ class SharedTier:
             importance: Importance 1-10.
             record_type: "fact", "policy", "procedure", etc.
             grounding: "confirmed", "inferred", etc.
+            project_scope: Scope filter.
 
         Returns:
             The created/updated SharedEntry.
         """
+        if project_scope is ...:
+            project_scope = self._config.project_scope
+
         emb = await asyncio.to_thread(self._embedding.embed, f"{key} {content[:500]}")
 
         async with self._db.session() as session:
-            stmt = select(SharedKnowledgeModel).where(SharedKnowledgeModel.key == key)
+            filters = [SharedKnowledgeModel.key == key]
+            if project_scope is not None:
+                filters.append(SharedKnowledgeModel.project_scope == project_scope)
+            else:
+                filters.append(SharedKnowledgeModel.project_scope.is_(None))
+            stmt = select(SharedKnowledgeModel).where(and_(*filters))
             result = await session.execute(stmt)
             existing = result.scalar_one_or_none()
 
@@ -99,6 +109,7 @@ class SharedTier:
                     embedding=emb,
                     record_type=record_type,
                     grounding=grounding,
+                    project_scope=project_scope,
                 )
                 session.add(record)
                 await session.flush()
@@ -113,18 +124,27 @@ class SharedTier:
         return entry
 
     async def search(
-        self, query: str, top_k: int = 5, *, category: str | None = None
+        self, query: str, top_k: int = 5, *,
+        category: str | None = None,
+        project_scope: str | None = ...,
     ) -> list[SharedEntry]:
         """Search shared knowledge using hybrid vector + FTS search.
+
+        Shared knowledge is typically global, but can be project-scoped.
+        When scope is set, includes both scoped and global entries.
 
         Args:
             query: Search query.
             top_k: Maximum results.
             category: Optional category filter.
+            project_scope: Scope filter.
 
         Returns:
             List of SharedEntry objects, ranked by relevance.
         """
+        if project_scope is ...:
+            project_scope = self._config.project_scope
+
         query_embedding = await asyncio.to_thread(self._embedding.embed, query)
 
         where_parts = ["status = 'validated'"]
@@ -132,6 +152,9 @@ class SharedTier:
         if category:
             where_parts.append("category = :category")
             params["category"] = category
+        if project_scope is not None:
+            where_parts.append("(project_scope = :project_scope OR project_scope IS NULL)")
+            params["project_scope"] = project_scope
 
         ranked = await hybrid_memory_search(
             db=self._db,
@@ -216,6 +239,7 @@ class SharedTier:
             status=row.status,
             version=row.version,
             change_log=row.change_log,
+            project_scope=row.project_scope,
             created_at=row.created_at,
             updated_at=row.updated_at,
         )

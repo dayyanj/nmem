@@ -39,10 +39,16 @@ async def lifespan(server: FastMCP):
     from nmem.cli.config_loader import load_config
 
     config = load_config()
+    # Inject project scope from environment if set
+    import os
+    env_scope = os.environ.get("NMEM_PROJECT_SCOPE")
+    if env_scope and not config.project_scope:
+        config = config.model_copy(update={"project_scope": env_scope})
     mem = MemorySystem(config)
     await mem.initialize()
     _shared_mem = mem
-    logger.info("nmem MCP server initialized")
+    scope_info = f", scope={config.project_scope}" if config.project_scope else ""
+    logger.info("nmem MCP server initialized%s", scope_info)
     try:
         yield {"mem": mem}
     finally:
@@ -227,6 +233,45 @@ async def memory_save_shared(
         key=key, content=content, importance=importance,
     )
     return f"Saved shared knowledge: {entry.key} (v{entry.version})"
+
+
+@mcp.tool()
+async def memory_linked(
+    ctx: Context,
+    entry_id: int,
+    tier: str,
+    link_types: str | None = None,
+) -> str:
+    """Find entries linked to a specific memory entry via associative knowledge links.
+
+    Unlike semantic search, knowledge links connect entries that share entities,
+    tags, temporal proximity, or causal relationships — even when they aren't
+    semantically similar. Use this to discover orthogonal but contextually related
+    knowledge (e.g., "what else happened around the time of this bug?").
+
+    Args:
+        entry_id: The source entry ID.
+        tier: Source tier — one of "journal", "ltm", "shared", "entity".
+        link_types: Optional comma-separated filter: "shared_entity,shared_tag,temporal,causal,pattern".
+    """
+    mem = _get_mem(ctx)
+    types_filter = [t.strip() for t in link_types.split(",")] if link_types else None
+
+    links = await mem.links.get_linked(
+        entry_id=entry_id,
+        tier=tier,
+        link_types=types_filter,
+    )
+
+    if not links:
+        return f"No links found for {tier}#{entry_id}."
+
+    lines = [f"Found {len(links)} linked entries:\n"]
+    for link in links:
+        lines.append(f"  [{link.link_type}|{link.strength:.2f}] → {link.target_tier}#{link.target_id}")
+        if link.evidence:
+            lines.append(f"    {link.evidence}")
+    return "\n".join(lines)
 
 
 @mcp.tool()

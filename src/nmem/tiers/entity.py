@@ -33,6 +33,8 @@ class EntityTier:
         self._db = db
         self._config = config
         self._embedding = embedding
+        # Auto-journal callback (set by MemorySystem)
+        self._auto_journal_callback: callable | None = None
 
     def _check_permission(self, agent_id: str, entity_type: str) -> None:
         """Check if agent has write permission for this entity type."""
@@ -62,6 +64,7 @@ class EntityTier:
         grounding: str = "inferred",
         tags: list[str] | None = None,
         evidence_refs: list[dict] | None = None,
+        project_scope: str | None = ...,
     ) -> EntityRecord:
         """Save an entity memory record.
 
@@ -81,6 +84,9 @@ class EntityTier:
             The created EntityRecord.
         """
         self._check_permission(agent_id, entity_type)
+
+        if project_scope is ...:
+            project_scope = self._config.project_scope
 
         # Force judgment confidence below 1.0
         if record_type == "judgment" and confidence >= 1.0:
@@ -106,6 +112,7 @@ class EntityTier:
                 tags=tags,
                 evidence_refs=evidence_refs,
                 embedding=emb,
+                project_scope=project_scope,
             )
             session.add(record)
             await session.flush()
@@ -163,6 +170,8 @@ class EntityTier:
         entity_type: str | None = None,
         entity_id: str | None = None,
         top_k: int = 5,
+        project_scope: str | None = ...,
+        agent_id: str | None = None,
     ) -> list[EntityRecord]:
         """Search entity memory using hybrid vector + FTS search.
 
@@ -175,6 +184,9 @@ class EntityTier:
         Returns:
             List of EntityRecord objects, ranked by relevance.
         """
+        if project_scope is ...:
+            project_scope = self._config.project_scope
+
         query_embedding = await asyncio.to_thread(self._embedding.embed, query)
 
         where_parts = ["1=1"]
@@ -185,6 +197,9 @@ class EntityTier:
         if entity_id:
             where_parts.append("entity_id = :entity_id")
             params["entity_id"] = entity_id
+        if project_scope is not None:
+            where_parts.append("(project_scope = :project_scope OR project_scope IS NULL)")
+            params["project_scope"] = project_scope
 
         ranked = await hybrid_memory_search(
             db=self._db,
@@ -206,7 +221,31 @@ class EntityTier:
                 select(EntityMemoryModel).where(EntityMemoryModel.id.in_(ranked_ids))
             )
             records_by_id = {r.id: r for r in result.scalars().all()}
-            return [self._row_to_record(records_by_id[eid]) for eid in ranked_ids if eid in records_by_id]
+            records = [self._row_to_record(records_by_id[eid]) for eid in ranked_ids if eid in records_by_id]
+
+        # Auto-journal entity access (background, non-blocking)
+        if (
+            records
+            and agent_id
+            and self._auto_journal_callback
+            and self._config.entity.auto_journal_on_search
+        ):
+            meaningful = [r for r in records if r.confidence >= self._config.entity.auto_journal_min_score]
+            if len(meaningful) >= self._config.entity.auto_journal_min_results:
+                top = meaningful[0]
+                asyncio.create_task(
+                    self._auto_journal_callback(
+                        agent_id=agent_id,
+                        entity_type=top.entity_type,
+                        entity_id=top.entity_id,
+                        entity_name=top.entity_name,
+                        result_count=len(meaningful),
+                        top_content=top.content[:150],
+                        project_scope=top.project_scope,
+                    )
+                )
+
+        return records
 
     async def get_summary(
         self, entity_type: str, entity_id: str
@@ -277,6 +316,7 @@ class EntityTier:
             tags=row.tags,
             context_thread_id=row.context_thread_id,
             version=row.version,
+            project_scope=row.project_scope,
             created_at=row.created_at,
             updated_at=row.updated_at,
         )

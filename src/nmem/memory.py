@@ -77,13 +77,21 @@ class MemorySystem:
         # Initialize cognitive engine
         self._cognitive = CognitiveEngine(self._db, self._embedding, self._llm)
 
+        # Initialize knowledge link engine
+        from nmem.links import KnowledgeLinkEngine
+        self._link_engine = KnowledgeLinkEngine(self._db, self._config)
+
         # Initialize consolidator
         self._consolidator = Consolidator(
             self._db, self._config, self._embedding, self._llm
         )
+        self._consolidator._link_engine = self._link_engine
 
         # Wire journal → consolidator signal
         self._journal._on_high_importance = self._consolidator.signal
+
+        # Wire entity → auto-journal callback
+        self._entity._auto_journal_callback = self._auto_journal_entity_access
 
         # Event handlers
         self._event_handlers: dict[str, list[Callable]] = {}
@@ -121,6 +129,11 @@ class MemorySystem:
         return self._policy
 
     @property
+    def links(self):
+        """Knowledge link engine for associative linking."""
+        return self._link_engine
+
+    @property
     def prompt(self) -> PromptBuilder:
         """Prompt builder for memory context injection."""
         return self._prompt
@@ -134,6 +147,28 @@ class MemorySystem:
     def consolidation(self) -> Consolidator:
         """Background consolidation engine."""
         return self._consolidator
+
+    # ── Entity Auto-Journal ─────────────────────────────────────────────
+
+    async def _auto_journal_entity_access(
+        self, agent_id: str, entity_type: str, entity_id: str,
+        entity_name: str, result_count: int, top_content: str,
+        project_scope: str | None = None,
+    ) -> None:
+        """Auto-create a journal entry when entity is accessed via search."""
+        try:
+            await self._journal.add(
+                agent_id=agent_id,
+                entry_type="entity_reference",
+                title=f"Referenced {entity_name} ({entity_type}/{entity_id})",
+                content=f"Accessed entity records via search. {result_count} results found. Key info: {top_content}",
+                importance=self._config.entity.auto_journal_importance,
+                tags=["entity_access", f"entity:{entity_type}/{entity_id}"],
+                compress=False,
+                project_scope=project_scope,
+            )
+        except Exception as e:
+            logger.debug("Auto-journal for entity access failed (non-fatal): %s", e)
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 

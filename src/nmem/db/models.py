@@ -110,6 +110,7 @@ class WorkingMemory(Base):
     content: Mapped[str] = mapped_column(Text)
     priority: Mapped[int] = mapped_column(Integer, default=5)  # 1=highest
     context_thread_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    project_scope: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -161,6 +162,9 @@ class JournalEntryModel(Base):
     grounding: Mapped[str] = mapped_column(String(20), default="inferred")
     status: Mapped[str] = mapped_column(String(20), default="draft")
 
+    # Project scoping
+    project_scope: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (
@@ -172,6 +176,7 @@ class JournalEntryModel(Base):
         Index("ix_nmem_journal_thread", "context_thread_id"),
         Index("ix_nmem_journal_record_type", "record_type"),
         Index("ix_nmem_journal_status", "status"),
+        Index("ix_nmem_journal_project_scope", "project_scope", "agent_id"),
     )
 
 
@@ -214,6 +219,9 @@ class LTMModel(Base):
     grounding: Mapped[str] = mapped_column(String(20), default="inferred")
     status: Mapped[str] = mapped_column(String(20), default="validated")
 
+    # Project scoping
+    project_scope: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
     # Versioning
     version: Mapped[int] = mapped_column(Integer, default=1)
     supersedes_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -225,12 +233,13 @@ class LTMModel(Base):
 
     __table_args__ = (
         Index("ix_nmem_ltm_agent_category", "agent_id", "category"),
-        Index("ix_nmem_ltm_agent_key", "agent_id", "key", unique=True),
+        Index("ix_nmem_ltm_agent_key_scope", "agent_id", "key", "project_scope", unique=True),
         Index("ix_nmem_ltm_importance", "agent_id", "importance"),
         Index("ix_nmem_ltm_updated", "updated_at"),
         Index("ix_nmem_ltm_thread", "context_thread_id"),
         Index("ix_nmem_ltm_record_type", "record_type"),
         Index("ix_nmem_ltm_status", "status"),
+        Index("ix_nmem_ltm_project_scope", "project_scope", "agent_id"),
     )
 
 
@@ -244,7 +253,7 @@ class SharedKnowledgeModel(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     category: Mapped[str] = mapped_column(String(50))
-    key: Mapped[str] = mapped_column(String(200), unique=True)
+    key: Mapped[str] = mapped_column(String(200))
     content: Mapped[str] = mapped_column(Text)
     content_tsv = mapped_column(TSVType, nullable=True)
 
@@ -268,6 +277,9 @@ class SharedKnowledgeModel(Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     change_log: Mapped[list | None] = mapped_column(nullable=True)
 
+    # Project scoping
+    project_scope: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
@@ -278,6 +290,8 @@ class SharedKnowledgeModel(Base):
         Index("ix_nmem_shared_importance", "importance"),
         Index("ix_nmem_shared_status", "status"),
         Index("ix_nmem_shared_updated", "updated_at"),
+        Index("ix_nmem_shared_project_scope", "project_scope"),
+        Index("ix_nmem_shared_key_scope", "key", "project_scope", unique=True),
     )
 
 
@@ -311,6 +325,9 @@ class EntityMemoryModel(Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     superseded_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Project scoping
+    project_scope: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
@@ -321,6 +338,7 @@ class EntityMemoryModel(Base):
         Index("ix_nmem_entity_agent", "agent_id"),
         Index("ix_nmem_entity_status", "entity_type", "status"),
         Index("ix_nmem_entity_record", "record_type"),
+        Index("ix_nmem_entity_project_scope", "project_scope"),
     )
 
 
@@ -411,6 +429,7 @@ class CuriositySignalModel(Base):
     resolution_outcome: Mapped[str | None] = mapped_column(String(30), nullable=True)
     resolved_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
     delegation_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    project_scope: Mapped[str | None] = mapped_column(String(300), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -445,6 +464,7 @@ class DelegationModel(Base):
 
     embedding = VectorColumn(384)
     content_tsv = mapped_column(TSVType, nullable=True)
+    project_scope: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
     __table_args__ = (
         Index("ix_nmem_deleg_agents", "delegating_agent", "target_agent"),
@@ -454,6 +474,43 @@ class DelegationModel(Base):
 
 
 # ── Performance Scores ──────────────────────────────────────────────────────
+
+
+# ── Knowledge Links ───────────────────────────────────────────────────────
+
+
+class KnowledgeLinkModel(Base):
+    """Associative links between memory entries across tiers.
+
+    Unlike context threads (similarity-based, 1:1), knowledge links are
+    evidence-based (shared entities, tags, temporal proximity, causal chains)
+    and many-to-many.
+    """
+
+    __tablename__ = "nmem_knowledge_links"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_id: Mapped[int] = mapped_column(Integer)
+    source_tier: Mapped[str] = mapped_column(String(30))
+    target_id: Mapped[int] = mapped_column(Integer)
+    target_tier: Mapped[str] = mapped_column(String(30))
+    link_type: Mapped[str] = mapped_column(String(30))
+    strength: Mapped[float] = mapped_column(Float, default=0.5)
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    project_scope: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_nmem_kl_source", "source_tier", "source_id"),
+        Index("ix_nmem_kl_target", "target_tier", "target_id"),
+        Index("ix_nmem_kl_type", "link_type"),
+        Index("ix_nmem_kl_unique", "source_id", "source_tier", "target_id",
+              "target_tier", "link_type", unique=True),
+    )
+
+
+# ── Performance Scores ──────────────────────────────────────────────────
 
 
 class PerformanceScoreModel(Base):

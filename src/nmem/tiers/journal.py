@@ -62,6 +62,7 @@ class JournalTier:
         record_type: str = "evidence",
         grounding: str = "inferred",
         compress: bool = True,
+        project_scope: str | None = ...,
     ) -> JournalEntry:
         """Add a journal entry with embedding, compression, dedup, and context threading.
 
@@ -82,13 +83,17 @@ class JournalTier:
         """
         importance = min(max(importance, 1), 10)
 
+        # Resolve project scope: sentinel (...) means "use config default"
+        if project_scope is ...:
+            project_scope = self._config.project_scope
+
         # Embed from RAW content (full semantic richness before compression)
         emb = await asyncio.to_thread(
             self._embedding.embed, f"{title} {content[:500]}"
         )
 
         # Dedup check: skip near-identical entries from last 24 hours
-        dedup_result = await self._check_dedup(agent_id, emb)
+        dedup_result = await self._check_dedup(agent_id, emb, project_scope=project_scope)
         if dedup_result is not None:
             return dedup_result
 
@@ -122,6 +127,7 @@ class JournalTier:
                 record_type=record_type,
                 grounding=grounding,
                 embedding=emb,
+                project_scope=project_scope,
             )
             session.add(record)
             await session.flush()
@@ -152,6 +158,7 @@ class JournalTier:
             tags=tags,
             record_type=record_type,
             grounding=grounding,
+            project_scope=project_scope,
             created_at=created_at,
         )
 
@@ -163,10 +170,12 @@ class JournalTier:
         *,
         entry_type: str | None = None,
         min_importance: int = 0,
+        project_scope: str | None = ...,
     ) -> list[JournalEntry]:
         """Search journal entries using hybrid vector + FTS search.
 
         Bumps access_count on returned entries.
+        When project_scope is set, includes both scoped and global entries.
 
         Args:
             agent_id: Agent identifier.
@@ -174,10 +183,14 @@ class JournalTier:
             top_k: Maximum results to return.
             entry_type: Filter by entry type.
             min_importance: Minimum importance threshold.
+            project_scope: Scope filter. Sentinel (...) = use config default.
 
         Returns:
             List of JournalEntry objects, ranked by relevance.
         """
+        if project_scope is ...:
+            project_scope = self._config.project_scope
+
         query_embedding = await asyncio.to_thread(self._embedding.embed, query)
 
         # Build WHERE clause for hybrid search
@@ -190,6 +203,9 @@ class JournalTier:
         if entry_type:
             where_parts.append("entry_type = :entry_type")
             params["entry_type"] = entry_type
+        if project_scope is not None:
+            where_parts.append("(project_scope = :project_scope OR project_scope IS NULL)")
+            params["project_scope"] = project_scope
 
         # Run hybrid search
         ranked = await hybrid_memory_search(
@@ -239,7 +255,8 @@ class JournalTier:
         return results
 
     async def recent(
-        self, agent_id: str, days: int = 7, limit: int = 10
+        self, agent_id: str, days: int = 7, limit: int = 10,
+        *, project_scope: str | None = ...,
     ) -> list[JournalEntry]:
         """Get recent journal entries.
 
@@ -251,16 +268,24 @@ class JournalTier:
         Returns:
             List of JournalEntry objects, newest first.
         """
+        if project_scope is ...:
+            project_scope = self._config.project_scope
+
         cutoff = datetime.utcnow() - timedelta(days=days)
         async with self._db.session() as session:
+            filters = [
+                JournalEntryModel.agent_id == agent_id,
+                JournalEntryModel.created_at >= cutoff,
+            ]
+            if project_scope is not None:
+                from sqlalchemy import or_
+                filters.append(or_(
+                    JournalEntryModel.project_scope == project_scope,
+                    JournalEntryModel.project_scope.is_(None),
+                ))
             stmt = (
                 select(JournalEntryModel)
-                .where(
-                    and_(
-                        JournalEntryModel.agent_id == agent_id,
-                        JournalEntryModel.created_at >= cutoff,
-                    )
-                )
+                .where(and_(*filters))
                 .order_by(JournalEntryModel.created_at.desc(), JournalEntryModel.id.desc())
                 .limit(limit)
             )
@@ -306,12 +331,13 @@ class JournalTier:
         return "\n".join(lines)
 
     async def _check_dedup(
-        self, agent_id: str, embedding: list[float]
+        self, agent_id: str, embedding: list[float],
+        *, project_scope: str | None = None,
     ) -> JournalEntry | None:
         """Check for near-duplicate entries in the last 24 hours.
 
         If a similar entry exists (cosine > dedup threshold), bump it
-        instead of creating a new one.
+        instead of creating a new one. Only deduplicates within same scope.
 
         Returns:
             Existing JournalEntry if deduplicated, None otherwise.
@@ -322,15 +348,19 @@ class JournalTier:
             embedding_str = f"[{','.join(str(x) for x in embedding)}]"
 
             async with self._db.session() as session:
+                filters = [
+                    JournalEntryModel.agent_id == agent_id,
+                    JournalEntryModel.created_at >= since,
+                    JournalEntryModel.embedding.isnot(None),
+                ]
+                if project_scope is not None:
+                    filters.append(JournalEntryModel.project_scope == project_scope)
+                else:
+                    filters.append(JournalEntryModel.project_scope.is_(None))
+
                 result = await session.execute(
                     select(JournalEntryModel)
-                    .where(
-                        and_(
-                            JournalEntryModel.agent_id == agent_id,
-                            JournalEntryModel.created_at >= since,
-                            JournalEntryModel.embedding.isnot(None),
-                        )
-                    )
+                    .where(and_(*filters))
                     .order_by(
                         JournalEntryModel.embedding.cosine_distance(embedding)
                     )
@@ -392,5 +422,6 @@ class JournalTier:
             status=row.status,
             tags=row.tags,
             pointers=row.pointers,
+            project_scope=row.project_scope,
             created_at=row.created_at,
         )

@@ -49,6 +49,7 @@ class JournalEntry:
     status: str = "draft"
     tags: list[str] | None = None
     pointers: list[dict[str, Any]] | None = None
+    project_scope: str | None = None
     created_at: datetime | None = None
 
 
@@ -70,6 +71,7 @@ class LTMEntry:
     status: str = "validated"
     version: int = 1
     context_thread_id: str | None = None
+    project_scope: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -91,6 +93,7 @@ class SharedEntry:
     status: str = "validated"
     version: int = 1
     change_log: list[dict[str, Any]] | None = None
+    project_scope: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -113,6 +116,7 @@ class EntityRecord:
     tags: list[str] | None = None
     context_thread_id: str | None = None
     version: int = 1
+    project_scope: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -230,7 +234,23 @@ class ConsolidationStats:
     confidence_decayed: int = 0
     curiosity_decayed: int = 0
     patterns_synthesized: int = 0
+    links_created: int = 0
     duration_seconds: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeLink:
+    """An associative link between two memory entries."""
+
+    id: int
+    source_id: int
+    source_tier: str
+    target_id: int
+    target_tier: str
+    link_type: str
+    strength: float
+    evidence: str | None = None
+    created_at: datetime | None = None
 
 
 # ── Curiosity Signal ─────────────────────────────────────────────────────────

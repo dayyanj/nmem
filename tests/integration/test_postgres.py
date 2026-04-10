@@ -332,3 +332,313 @@ class TestConsolidation:
         """Full consolidation cycle should complete without errors."""
         stats = await mem.consolidation.run_full_cycle()
         assert stats.duration_seconds >= 0
+
+
+class TestProjectScope:
+    """Tests for project-scoped memory isolation."""
+
+    async def test_journal_scope_isolation(self, mem: MemorySystem):
+        """Journal entries in different scopes should not interfere."""
+        await mem.journal.add(
+            "agent-a", "observation", "Project A fact",
+            "This is specific to project A",
+            importance=5, project_scope="project:A",
+        )
+        await mem.journal.add(
+            "agent-a", "observation", "Project B fact",
+            "This is specific to project B",
+            importance=5, project_scope="project:B",
+        )
+
+        # Search within scope A should not find scope B
+        results_a = await mem.journal.search(
+            "agent-a", "project fact", project_scope="project:A"
+        )
+        assert all("Project A" in e.title or "Project B" not in e.title
+                    for e in results_a)
+
+    async def test_global_entries_visible_in_scope(self, mem: MemorySystem):
+        """Global entries (no scope) should be visible in scoped searches."""
+        await mem.journal.add(
+            "agent-a", "rule", "Global rule",
+            "This applies everywhere", importance=8,
+            project_scope=None,
+        )
+        await mem.journal.add(
+            "agent-a", "observation", "Scoped fact",
+            "This is project-specific", importance=5,
+            project_scope="project:X",
+        )
+
+        # Search within scope X should find both
+        results = await mem.journal.search(
+            "agent-a", "rule fact", project_scope="project:X"
+        )
+        assert len(results) >= 1  # At least the global rule
+
+    async def test_ltm_scope_key_uniqueness(self, mem: MemorySystem):
+        """Same key in different scopes should create separate entries."""
+        await mem.ltm.save(
+            "agent-a", "fact", "db_host",
+            "Database is at db-a.example.com",
+            importance=5, project_scope="project:A",
+        )
+        await mem.ltm.save(
+            "agent-a", "fact", "db_host",
+            "Database is at db-b.example.com",
+            importance=5, project_scope="project:B",
+        )
+
+        entry_a = await mem.ltm.get("agent-a", "db_host", project_scope="project:A")
+        entry_b = await mem.ltm.get("agent-a", "db_host", project_scope="project:B")
+
+        assert entry_a is not None
+        assert entry_b is not None
+        assert entry_a.content != entry_b.content
+        assert "db-a" in entry_a.content
+        assert "db-b" in entry_b.content
+
+    async def test_dedup_within_scope_only(self, mem: MemorySystem):
+        """Dedup should only match entries within the same scope."""
+        entry_a = await mem.journal.add(
+            "agent-a", "observation", "Same title same content",
+            "Exactly the same text here for dedup testing",
+            importance=5, project_scope="project:A",
+        )
+
+        # Same content in different scope should NOT dedup
+        entry_b = await mem.journal.add(
+            "agent-a", "observation", "Same title same content",
+            "Exactly the same text here for dedup testing",
+            importance=5, project_scope="project:B",
+        )
+
+        # Both should have been created (different scopes)
+        assert entry_a.id != entry_b.id
+
+    async def test_backward_compat_no_scope(self, mem: MemorySystem):
+        """Entries without scope should work identically to v0.1.0."""
+        await mem.ltm.save(
+            "agent-a", "fact", "global_fact",
+            "This has no scope", importance=5,
+            project_scope=None,
+        )
+
+        entry = await mem.ltm.get("agent-a", "global_fact", project_scope=None)
+        assert entry is not None
+        assert entry.project_scope is None
+
+
+class TestEntityAutoJournal:
+    """Tests for entity access auto-journaling."""
+
+    async def test_entity_search_creates_journal(self, mem: MemorySystem):
+        """Searching entities with agent_id should create a journal entry."""
+        import asyncio
+
+        # Save an entity record
+        await mem.entity.save(
+            "customer", "cust_001", "Acme Corp",
+            "agent-support", "Acme Corp is a enterprise customer with 500 seats",
+        )
+
+        # Search with agent_id to trigger auto-journal
+        results = await mem.entity.search(
+            "Acme Corp enterprise", agent_id="agent-support",
+        )
+        assert len(results) >= 1
+
+        # Give the background task time to complete
+        await asyncio.sleep(0.5)
+
+        # Check that a journal entry was created
+        journal_entries = await mem.journal.recent("agent-support", days=1)
+        entity_refs = [e for e in journal_entries if e.entry_type == "entity_reference"]
+        assert len(entity_refs) >= 1
+        assert "Acme Corp" in entity_refs[0].title
+        assert entity_refs[0].importance == 3  # Low importance
+
+    async def test_no_journal_without_agent_id(self, mem: MemorySystem):
+        """Entity search without agent_id should NOT create journal entries."""
+        import asyncio
+
+        await mem.entity.save(
+            "customer", "cust_002", "Beta Corp",
+            "agent-sales", "Beta Corp is a prospect",
+        )
+
+        # Search WITHOUT agent_id
+        results = await mem.entity.search("Beta Corp prospect")
+        assert len(results) >= 1
+
+        await asyncio.sleep(0.5)
+
+        # No journal entries should exist for entity_reference
+        journal_entries = await mem.journal.recent("agent-sales", days=1)
+        entity_refs = [e for e in journal_entries if e.entry_type == "entity_reference"]
+        assert len(entity_refs) == 0
+
+    async def test_auto_journal_config_toggle(self, mem: MemorySystem):
+        """Disabling auto_journal_on_search should prevent journaling."""
+        import asyncio
+
+        # Disable auto-journaling
+        mem._config.entity.auto_journal_on_search = False
+
+        await mem.entity.save(
+            "customer", "cust_003", "Gamma Corp",
+            "agent-eng", "Gamma Corp uses our API",
+        )
+
+        results = await mem.entity.search(
+            "Gamma Corp API", agent_id="agent-eng",
+        )
+        await asyncio.sleep(0.5)
+
+        journal_entries = await mem.journal.recent("agent-eng", days=1)
+        entity_refs = [e for e in journal_entries if e.entry_type == "entity_reference"]
+        assert len(entity_refs) == 0
+
+        # Re-enable for other tests
+        mem._config.entity.auto_journal_on_search = True
+
+
+class TestKnowledgeLinks:
+    """Tests for associative knowledge linking."""
+
+    async def test_shared_entity_links(self, mem: MemorySystem):
+        """Entries with the same entity tag should be linked."""
+        # Create 3 journal entries all referencing the same entity
+        e1 = await mem.journal.add(
+            "agent-a", "observation", "First Acme note",
+            "Customer Acme had an issue",
+            tags=["entity:customer/acme_001"],
+        )
+        e2 = await mem.journal.add(
+            "agent-a", "decision", "Second Acme note",
+            "Decided to escalate Acme issue",
+            tags=["entity:customer/acme_001"],
+        )
+        e3 = await mem.journal.add(
+            "agent-a", "outcome", "Third Acme note",
+            "Acme issue resolved successfully",
+            tags=["entity:customer/acme_001"],
+        )
+
+        # Build links
+        created = await mem.links.build_links()
+        # 3 entries → 3 pairwise links (e1-e2, e1-e3, e2-e3)
+        assert created >= 3
+
+        # Verify e1 has 2 linked entries
+        linked = await mem.links.get_linked(e1.id, "journal")
+        entity_links = [l for l in linked if l.link_type == "shared_entity"]
+        assert len(entity_links) >= 2
+
+    async def test_shared_tag_links(self, mem: MemorySystem):
+        """Entries sharing a non-meta tag should be linked."""
+        e1 = await mem.journal.add(
+            "agent-b", "observation", "Payment issue 1",
+            "Stripe webhook failed", tags=["payment", "webhook"],
+        )
+        e2 = await mem.journal.add(
+            "agent-b", "observation", "Payment issue 2",
+            "Payment processing slow", tags=["payment", "performance"],
+        )
+
+        await mem.links.build_links()
+
+        linked = await mem.links.get_linked(e1.id, "journal")
+        tag_links = [l for l in linked if l.link_type == "shared_tag"]
+        assert len(tag_links) >= 1
+
+    async def test_temporal_proximity_links(self, mem: MemorySystem):
+        """Journal entries in the same session within N minutes should be linked."""
+        e1 = await mem.journal.add(
+            "agent-c", "observation", "Event A",
+            "Something happened", session_id="session-1",
+        )
+        e2 = await mem.journal.add(
+            "agent-c", "observation", "Event B",
+            "Something else happened", session_id="session-1",
+        )
+
+        await mem.links.build_links()
+
+        linked = await mem.links.get_linked(e1.id, "journal")
+        temporal_links = [l for l in linked if l.link_type == "temporal"]
+        assert len(temporal_links) >= 1
+
+    async def test_links_not_duplicated(self, mem: MemorySystem):
+        """Running build_links twice should not create duplicates."""
+        await mem.journal.add(
+            "agent-d", "observation", "Entry one",
+            "Content", tags=["entity:project/alpha"],
+        )
+        await mem.journal.add(
+            "agent-d", "observation", "Entry two",
+            "Content", tags=["entity:project/alpha"],
+        )
+
+        created_first = await mem.links.build_links()
+        created_second = await mem.links.build_links()
+
+        assert created_first >= 1
+        assert created_second == 0  # No new links on second run
+
+    async def test_search_expansion(self, mem: MemorySystem):
+        """Knowledge links should expand search results with related entries."""
+        # Create entries linked by entity tag
+        e1 = await mem.journal.add(
+            "agent-e", "observation", "Database migration started",
+            "Running ALTER TABLE on users", importance=6,
+            tags=["entity:project/migration_042"],
+        )
+        e2 = await mem.journal.add(
+            "agent-e", "outcome", "Deployment pipeline update",
+            "Changed Kubernetes manifests for rollout", importance=6,
+            tags=["entity:project/migration_042"],
+        )
+
+        # Build links so they're connected
+        await mem.links.build_links()
+
+        # Use top_k=1 to force only e1 to come back from search
+        results = await mem.journal.search(
+            "agent-e", "database migration ALTER TABLE users", top_k=1,
+        )
+        assert len(results) == 1
+        assert results[0].id == e1.id
+
+        # Build SearchResult list for expansion test
+        from nmem.types import SearchResult
+        search_results = [
+            SearchResult(tier="journal", id=r.id, score=r.relevance_score,
+                        content=r.content, title=r.title)
+            for r in results
+        ]
+
+        expanded = await mem.links.expand_search_results(search_results)
+        # Should include the linked entry via knowledge link expansion
+        expanded_flags = [r for r in expanded if r.metadata.get("expanded_via_link")]
+        assert len(expanded_flags) >= 1
+        assert expanded_flags[0].id == e2.id
+
+    async def test_config_toggle_disables_linking(self, mem: MemorySystem):
+        """Disabling knowledge_links config should prevent link creation."""
+        mem._config.knowledge_links.enabled = False
+
+        await mem.journal.add(
+            "agent-f", "observation", "Test entry",
+            "Content", tags=["entity:test/thing"],
+        )
+        await mem.journal.add(
+            "agent-f", "observation", "Test entry 2",
+            "Content", tags=["entity:test/thing"],
+        )
+
+        created = await mem.links.build_links()
+        assert created == 0
+
+        # Re-enable for other tests
+        mem._config.knowledge_links.enabled = True

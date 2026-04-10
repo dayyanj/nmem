@@ -97,6 +97,67 @@ class DatabaseManager:
                         embedding_dimensions,
                     )
 
+            # Run schema migrations
+            await self._migrate_schema(session)
+
+    async def _migrate_schema(self, session: AsyncSession) -> None:
+        """Run incremental schema migrations based on schema_version."""
+        result = await session.execute(
+            text("SELECT value FROM nmem_metadata WHERE key = 'schema_version'")
+        )
+        version = int(result.scalar_one_or_none() or "1")
+
+        if version < 2:
+            # v2: Add project_scope column to all tier tables
+            tables_needing_scope = [
+                "nmem_working_memory",
+                "nmem_journal_entries",
+                "nmem_long_term_memory",
+                "nmem_shared_knowledge",
+                "nmem_entity_memory",
+                "nmem_curiosity_signals",
+                "nmem_delegations",
+            ]
+            for table in tables_needing_scope:
+                try:
+                    await session.execute(text(
+                        f"ALTER TABLE {table} ADD COLUMN project_scope VARCHAR(300)"
+                    ))
+                    logger.info("Migration v2: added project_scope to %s", table)
+                except Exception:
+                    pass  # Column already exists (fresh install)
+
+            # Update LTM unique index: (agent_id, key) → (agent_id, key, project_scope)
+            if self._is_postgres:
+                try:
+                    await session.execute(text(
+                        "DROP INDEX IF EXISTS ix_nmem_ltm_agent_key"
+                    ))
+                    await session.execute(text(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS ix_nmem_ltm_agent_key_scope "
+                        "ON nmem_long_term_memory (agent_id, key, project_scope)"
+                    ))
+                except Exception as e:
+                    logger.debug("LTM index migration: %s", e)
+
+            # Update shared key unique index
+            if self._is_postgres:
+                try:
+                    await session.execute(text(
+                        "DROP INDEX IF EXISTS ix_nmem_shared_key_scope"
+                    ))
+                    await session.execute(text(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS ix_nmem_shared_key_scope "
+                        "ON nmem_shared_knowledge (key, project_scope)"
+                    ))
+                except Exception as e:
+                    logger.debug("Shared index migration: %s", e)
+
+            await session.execute(text(
+                "UPDATE nmem_metadata SET value = '2' WHERE key = 'schema_version'"
+            ))
+            logger.info("Schema migrated to version 2 (project_scope)")
+
     async def _create_postgres_indexes(self, dimensions: int) -> None:
         """Create PostgreSQL-specific HNSW and GIN indexes."""
         if not HAS_PGVECTOR:

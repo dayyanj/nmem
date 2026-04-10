@@ -82,6 +82,9 @@ class Consolidator:
         self._signal = asyncio.Event()
         self._signal_reason: str = ""
 
+        # Knowledge link engine (set by MemorySystem)
+        self._link_engine = None
+
         # Custom consolidation hooks
         self._full_cycle_hooks: list[tuple[str, Callable[[], Awaitable[None]]]] = []
         self._nightly_hooks: list[tuple[str, Callable[[], Awaitable[None]]]] = []
@@ -166,7 +169,14 @@ class Consolidator:
             except Exception as e:
                 logger.warning("Custom consolidation step '%s' failed: %s", name, e)
 
-        # Step 7: Curiosity signal decay
+        # Step 7: Build knowledge links
+        if self._link_engine:
+            try:
+                stats.links_created = await self._link_engine.build_links()
+            except Exception as e:
+                logger.warning("Knowledge link building failed: %s", e)
+
+        # Step 8: Curiosity signal decay
         stats.curiosity_decayed = await self._decay_curiosity_signals()
 
         stats.duration_seconds = time.monotonic() - start
@@ -456,6 +466,7 @@ class Consolidator:
                     last_updated_by="consolidator",
                     importance=entry.importance,
                     embedding=emb,
+                    project_scope=getattr(entry, 'project_scope', None),
                 )
                 session.add(shared)
                 await session.flush()
@@ -495,14 +506,19 @@ class Consolidator:
             self._embedding.embed, f"{key} {content[:500]}"
         )
 
+        scope = getattr(entry, 'project_scope', None)
+
         async with self._db.session() as session:
-            # Check if key already exists for this agent
-            existing = await session.execute(
-                select(LTMModel).where(
-                    LTMModel.agent_id == entry.agent_id,
-                    LTMModel.key == key,
-                )
-            )
+            # Check if key already exists for this agent + scope
+            filters = [
+                LTMModel.agent_id == entry.agent_id,
+                LTMModel.key == key,
+            ]
+            if scope is not None:
+                filters.append(LTMModel.project_scope == scope)
+            else:
+                filters.append(LTMModel.project_scope.is_(None))
+            existing = await session.execute(select(LTMModel).where(*filters))
             row = existing.scalar_one_or_none()
 
             if row:
@@ -524,6 +540,7 @@ class Consolidator:
                     source="promotion",
                     source_journal_id=entry.id,
                     embedding=emb,
+                    project_scope=scope,
                 )
                 session.add(ltm)
                 await session.flush()
@@ -581,6 +598,7 @@ class Consolidator:
                                 AND a.id < b.id
                                 AND a.status = 'validated' AND b.status = 'validated'
                                 AND a.embedding IS NOT NULL AND b.embedding IS NOT NULL
+                                AND a.project_scope IS NOT DISTINCT FROM b.project_scope
                             WHERE a.agent_id = :agent_id
                                 AND 1 - (a.embedding <=> b.embedding) > :threshold
                             ORDER BY similarity DESC

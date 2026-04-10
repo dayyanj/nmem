@@ -23,6 +23,30 @@ _TYPE_MAP = {
     "user": ("user_context", 5),
 }
 
+
+def _unmangle_project_path(mangled: str) -> str:
+    """Convert Claude Code mangled project dir name back to a real path.
+
+    Claude Code creates project dirs by replacing '/' with '-' and
+    dropping the leading '/'. E.g., '-mnt-nas_projects-web-shop-dev'
+    came from '/mnt/nas_projects/web/shop-dev'.
+
+    Since this is lossy (real hyphens vs path separators are ambiguous),
+    we use a heuristic: leading '-' becomes '/', then we try to resolve
+    to a real path. Falls back to using the mangled name as-is.
+    """
+    if not mangled.startswith("-"):
+        return f"project:{mangled}"
+    # Replace leading '-' with '/', then remaining '-' with '/'
+    # but keep underscores and other chars
+    candidate = mangled.replace("-", "/")
+    # Check if this path actually exists on disk
+    from pathlib import Path
+    if Path(candidate).exists():
+        return f"project:{candidate}"
+    # Fallback: use mangled name as scope identifier
+    return f"project:{mangled}"
+
 # Regex for simple YAML frontmatter (3 flat key: value lines)
 _FRONTMATTER_RE = re.compile(
     r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL
@@ -133,7 +157,7 @@ async def import_claude_code(
 
     # Phase 1: Parse all files and collect LTM batch + shared entries
     ltm_batch: list[dict] = []
-    shared_entries: list[tuple[str, str]] = []  # (key, content)
+    shared_entries: list[tuple[str, str, str | None]] = []  # (key, content, scope)
 
     for project_label, file_path, file_type in tqdm(files, desc="Parsing", unit="file"):
         try:
@@ -151,12 +175,14 @@ async def import_claude_code(
                 if parsed["description"]:
                     content = f"{parsed['description']}\n\n{content}"
 
+                scope = _unmangle_project_path(project_label)
                 ltm_batch.append({
                     "agent_id": agent_id,
                     "category": category,
                     "key": f"{project_label}/{key}",
                     "content": content,
                     "importance": importance,
+                    "project_scope": scope,
                 })
                 result.details.append(f"[LTM/{category}] {project_label}/{key}")
 
@@ -165,7 +191,8 @@ async def import_claude_code(
                 if not content:
                     result.skipped += 1
                     continue
-                shared_entries.append((f"claude_md/{project_label}", content[:4000]))
+                scope = _unmangle_project_path(project_label) if project_label != "global" else None
+                shared_entries.append((f"claude_md/{project_label}", content[:4000], scope))
 
         except Exception as e:
             result.errors += 1
@@ -181,11 +208,12 @@ async def import_claude_code(
             result.details.append(f"Batch save failed: {e}")
 
     # Phase 3: Save shared entries (small count, no batching needed)
-    for key, content in shared_entries:
+    for key, content, scope in shared_entries:
         try:
             await mem.shared.save(
                 agent_id=agent_id, category="instructions",
                 key=key, content=content, importance=8,
+                project_scope=scope,
             )
             result.imported += 1
             result.details.append(f"[Shared/instructions] {key}")

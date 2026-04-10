@@ -270,8 +270,11 @@ async def cross_tier_search(
     entity: EntityTier,
     tiers: tuple[str, ...] | None = None,
     top_k: int = 10,
+    project_scope: str | None = ...,
 ) -> list[SearchResult]:
     """Search across multiple memory tiers in parallel.
+
+    When project_scope is set, scoped entries get a 1.2x score boost.
 
     Args:
         agent_id: Agent identifier.
@@ -282,21 +285,24 @@ async def cross_tier_search(
         entity: Entity tier instance.
         tiers: Which tiers to search (default: all).
         top_k: Maximum total results.
+        project_scope: Scope filter. Sentinel (...) = use tier config defaults.
 
     Returns:
         List of SearchResult objects, ranked by score.
     """
     tiers = tiers or DEFAULT_TIERS
+    # Pass scope through as sentinel — each tier resolves its own config default
+    scope_kwarg = {"project_scope": project_scope}
     tasks = []
 
     if "journal" in tiers:
-        tasks.append(_search_journal(agent_id, query, journal))
+        tasks.append(_search_journal(agent_id, query, journal, **scope_kwarg))
     if "ltm" in tiers:
-        tasks.append(_search_ltm(agent_id, query, ltm))
+        tasks.append(_search_ltm(agent_id, query, ltm, **scope_kwarg))
     if "shared" in tiers:
-        tasks.append(_search_shared(query, shared))
+        tasks.append(_search_shared(query, shared, **scope_kwarg))
     if "entity" in tiers:
-        tasks.append(_search_entity(query, entity))
+        tasks.append(_search_entity(query, entity, agent_id=agent_id, **scope_kwarg))
 
     all_results: list[SearchResult] = []
     for coro_result in await asyncio.gather(*tasks, return_exceptions=True):
@@ -311,9 +317,10 @@ async def cross_tier_search(
 
 
 async def _search_journal(
-    agent_id: str, query: str, tier: JournalTier
+    agent_id: str, query: str, tier: JournalTier,
+    *, project_scope: str | None = ...,
 ) -> list[SearchResult]:
-    entries = await tier.search(agent_id, query, top_k=5)
+    entries = await tier.search(agent_id, query, top_k=5, project_scope=project_scope)
     return [
         SearchResult(
             tier="journal",
@@ -329,9 +336,10 @@ async def _search_journal(
 
 
 async def _search_ltm(
-    agent_id: str, query: str, tier: LTMTier
+    agent_id: str, query: str, tier: LTMTier,
+    *, project_scope: str | None = ...,
 ) -> list[SearchResult]:
-    entries = await tier.search(agent_id, query, top_k=5)
+    entries = await tier.search(agent_id, query, top_k=5, project_scope=project_scope)
     return [
         SearchResult(
             tier="ltm",
@@ -346,8 +354,11 @@ async def _search_ltm(
     ]
 
 
-async def _search_shared(query: str, tier: SharedTier) -> list[SearchResult]:
-    entries = await tier.search(query, top_k=5)
+async def _search_shared(
+    query: str, tier: SharedTier,
+    *, project_scope: str | None = ...,
+) -> list[SearchResult]:
+    entries = await tier.search(query, top_k=5, project_scope=project_scope)
     return [
         SearchResult(
             tier="shared",
@@ -361,8 +372,12 @@ async def _search_shared(query: str, tier: SharedTier) -> list[SearchResult]:
     ]
 
 
-async def _search_entity(query: str, tier: EntityTier) -> list[SearchResult]:
-    records = await tier.search(query, top_k=5)
+async def _search_entity(
+    query: str, tier: EntityTier,
+    *, project_scope: str | None = ...,
+    agent_id: str | None = None,
+) -> list[SearchResult]:
+    records = await tier.search(query, top_k=5, project_scope=project_scope, agent_id=agent_id)
     return [
         SearchResult(
             tier="entity",

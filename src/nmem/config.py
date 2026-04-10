@@ -133,6 +133,18 @@ class EntityConfig(BaseModel):
     write_permissions: dict[str, list[str]] = {}
     """Per-agent write permissions: {"agent_id": ["entity_type", ...]}. Empty = full access."""
 
+    auto_journal_on_search: bool = True
+    """Auto-create journal entries when entity search returns results."""
+
+    auto_journal_min_results: int = 1
+    """Minimum meaningful results to trigger auto-journaling."""
+
+    auto_journal_min_score: float = 0.3
+    """Minimum confidence/score for a result to count as meaningful."""
+
+    auto_journal_importance: int = 3
+    """Importance for auto-generated entity reference journal entries (low)."""
+
 
 class PolicyConfig(BaseModel):
     """Tier 6: Policy memory settings."""
@@ -145,6 +157,28 @@ class PolicyConfig(BaseModel):
 
     proposers: set[str] = set()
     """Agent IDs allowed to propose policies (status='proposed', requires approval)."""
+
+
+class KnowledgeLinksConfig(BaseModel):
+    """Associative knowledge linking settings."""
+
+    enabled: bool = True
+    """Enable knowledge link construction during consolidation."""
+
+    temporal_window_minutes: int = 5
+    """Window for temporal proximity links (entries within this window are linked)."""
+
+    min_shared_tags: int = 1
+    """Minimum shared tags to create a tag-based link."""
+
+    search_expansion_enabled: bool = True
+    """Whether to expand search results with linked entries."""
+
+    search_expansion_max: int = 3
+    """Maximum additional entries to add via link expansion."""
+
+    search_expansion_min_strength: float = 0.5
+    """Minimum link strength for search expansion."""
 
 
 class ClusteringConfig(BaseModel):
@@ -215,6 +249,13 @@ class NmemConfig(BaseSettings):
 
     policy: PolicyConfig = PolicyConfig()
     """Tier 6: Policy memory settings."""
+
+    project_scope: str | None = None
+    """Project scope for memory isolation. None = global (all projects).
+    Set via NMEM_PROJECT_SCOPE env var for per-project MCP instances."""
+
+    knowledge_links: KnowledgeLinksConfig = KnowledgeLinksConfig()
+    """Associative knowledge linking settings."""
 
     clustering: ClusteringConfig = ClusteringConfig()
     """Semantic clustering settings."""

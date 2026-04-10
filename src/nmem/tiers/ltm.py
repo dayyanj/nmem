@@ -55,10 +55,11 @@ class LTMTier:
         record_type: str = "fact",
         grounding: str = "inferred",
         compress: bool = True,
+        project_scope: str | None = ...,
     ) -> LTMEntry:
         """Save or update a long-term memory entry.
 
-        Upserts by (agent_id, key). If key exists, creates new version.
+        Upserts by (agent_id, key, project_scope). If key exists, creates new version.
 
         Args:
             agent_id: Agent identifier.
@@ -75,6 +76,9 @@ class LTMTier:
         Returns:
             The created/updated LTMEntry.
         """
+        if project_scope is ...:
+            project_scope = self._config.project_scope
+
         emb = await asyncio.to_thread(
             self._embedding.embed, f"{key} {content[:500]}"
         )
@@ -83,9 +87,13 @@ class LTMTier:
             content = await self._compress(key, content)
 
         async with self._db.session() as session:
-            stmt = select(LTMModel).where(
-                and_(LTMModel.agent_id == agent_id, LTMModel.key == key)
-            )
+            # Upsert by (agent_id, key, project_scope)
+            filters = [LTMModel.agent_id == agent_id, LTMModel.key == key]
+            if project_scope is not None:
+                filters.append(LTMModel.project_scope == project_scope)
+            else:
+                filters.append(LTMModel.project_scope.is_(None))
+            stmt = select(LTMModel).where(and_(*filters))
             result = await session.execute(stmt)
             existing = result.scalar_one_or_none()
 
@@ -114,6 +122,7 @@ class LTMTier:
                     record_type=record_type,
                     grounding=grounding,
                     embedding=emb,
+                    project_scope=project_scope,
                 )
                 session.add(record)
                 await session.flush()
@@ -163,14 +172,18 @@ class LTMTier:
             source = entry_dict.get("source", "agent")
             record_type = entry_dict.get("record_type", "fact")
             grounding = entry_dict.get("grounding", "inferred")
+            scope = entry_dict.get("project_scope", self._config.project_scope)
 
             if compress and len(content) > self._config.llm.compression_max_chars:
                 content = await self._compress(key, content)
 
             async with self._db.session() as session:
-                stmt = select(LTMModel).where(
-                    and_(LTMModel.agent_id == agent_id, LTMModel.key == key)
-                )
+                filters = [LTMModel.agent_id == agent_id, LTMModel.key == key]
+                if scope is not None:
+                    filters.append(LTMModel.project_scope == scope)
+                else:
+                    filters.append(LTMModel.project_scope.is_(None))
+                stmt = select(LTMModel).where(and_(*filters))
                 result = await session.execute(stmt)
                 existing = result.scalar_one_or_none()
 
@@ -198,6 +211,7 @@ class LTMTier:
                         record_type=record_type,
                         grounding=grounding,
                         embedding=emb,
+                        project_scope=scope,
                     )
                     session.add(record)
                     await session.flush()
@@ -219,20 +233,26 @@ class LTMTier:
         top_k: int = 5,
         *,
         category: str | None = None,
+        project_scope: str | None = ...,
     ) -> list[LTMEntry]:
         """Search LTM using hybrid vector + FTS search.
 
         Bumps access_count on returned entries.
+        When project_scope is set, includes both scoped and global entries.
 
         Args:
             agent_id: Agent identifier.
             query: Search query text.
             top_k: Maximum results.
             category: Filter by category.
+            project_scope: Scope filter. Sentinel (...) = use config default.
 
         Returns:
             List of LTMEntry objects, ranked by relevance.
         """
+        if project_scope is ...:
+            project_scope = self._config.project_scope
+
         query_embedding = await asyncio.to_thread(self._embedding.embed, query)
 
         where_parts = ["agent_id = :agent_id", "status = 'validated'"]
@@ -240,6 +260,9 @@ class LTMTier:
         if category:
             where_parts.append("category = :category")
             params["category"] = category
+        if project_scope is not None:
+            where_parts.append("(project_scope = :project_scope OR project_scope IS NULL)")
+            params["project_scope"] = project_scope
 
         ranked = await hybrid_memory_search(
             db=self._db,
@@ -278,20 +301,29 @@ class LTMTier:
 
         return results
 
-    async def get(self, agent_id: str, key: str) -> LTMEntry | None:
+    async def get(
+        self, agent_id: str, key: str, *, project_scope: str | None = ...,
+    ) -> LTMEntry | None:
         """Get a specific LTM entry by key. O(1) lookup.
 
         Args:
             agent_id: Agent identifier.
             key: Entry key.
+            project_scope: Scope filter.
 
         Returns:
             LTMEntry or None if not found.
         """
+        if project_scope is ...:
+            project_scope = self._config.project_scope
+
         async with self._db.session() as session:
-            stmt = select(LTMModel).where(
-                and_(LTMModel.agent_id == agent_id, LTMModel.key == key)
-            )
+            filters = [LTMModel.agent_id == agent_id, LTMModel.key == key]
+            if project_scope is not None:
+                filters.append(LTMModel.project_scope == project_scope)
+            else:
+                filters.append(LTMModel.project_scope.is_(None))
+            stmt = select(LTMModel).where(and_(*filters))
             result = await session.execute(stmt)
             row = result.scalar_one_or_none()
             if row:
@@ -301,22 +333,33 @@ class LTMTier:
             return None
 
     async def list_keys(
-        self, agent_id: str, category: str | None = None
+        self, agent_id: str, category: str | None = None,
+        *, project_scope: str | None = ...,
     ) -> list[str]:
         """List all LTM keys for an agent.
 
         Args:
             agent_id: Agent identifier.
             category: Optional category filter.
+            project_scope: Scope filter.
 
         Returns:
             List of key strings.
         """
+        if project_scope is ...:
+            project_scope = self._config.project_scope
+
         async with self._db.session() as session:
-            stmt = select(LTMModel.key).where(LTMModel.agent_id == agent_id)
+            filters = [LTMModel.agent_id == agent_id]
             if category:
-                stmt = stmt.where(LTMModel.category == category)
-            stmt = stmt.order_by(LTMModel.key)
+                filters.append(LTMModel.category == category)
+            if project_scope is not None:
+                from sqlalchemy import or_
+                filters.append(or_(
+                    LTMModel.project_scope == project_scope,
+                    LTMModel.project_scope.is_(None),
+                ))
+            stmt = select(LTMModel.key).where(and_(*filters)).order_by(LTMModel.key)
             result = await session.execute(stmt)
             return [row[0] for row in result.all()]
 
@@ -414,6 +457,7 @@ class LTMTier:
             status=row.status,
             version=row.version,
             context_thread_id=row.context_thread_id,
+            project_scope=row.project_scope,
             created_at=row.created_at,
             updated_at=row.updated_at,
         )

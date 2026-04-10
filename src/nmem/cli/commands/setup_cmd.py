@@ -123,11 +123,17 @@ def setup(
             pass
 
     mcp_servers = claude_config.setdefault("mcpServers", {})
+    # Detect project scope from CWD
+    import os
+    cwd = os.getcwd()
+    project_scope = f"project:{cwd}"
+
     mcp_servers["nmem"] = {
         "command": "nmem-mcp",
         "env": {
             "NMEM_DATABASE_URL": db_url,
             "NMEM_EMBEDDING__PROVIDER": embedding_provider,
+            "NMEM_PROJECT_SCOPE": project_scope,
         },
     }
 
