@@ -4,16 +4,19 @@ nmem ships an MCP (Model Context Protocol) server that lets Claude Code, Cursor,
 
 ## Setup
 
+> **Note**: nmem is not yet on PyPI. Clone and install from source:
+
 ### 1. Install nmem with MCP support
 
 ```bash
-pip install nmem[cli,postgres,st,mcp-server]
+git clone https://github.com/dayyanj/nmem.git
+cd nmem
+pip install -e ".[cli,postgres,st,mcp-server]"
 ```
 
 ### 2. Start the database
 
 ```bash
-cd /path/to/nmem
 docker compose up -d
 nmem init
 ```
@@ -110,7 +113,7 @@ Build full memory context for prompt injection. Returns a formatted block with r
 
 ### `memory_save_ltm`
 
-Save permanent knowledge. Upserts by `(agent_id, key)` — re-saving the same key updates the entry.
+Save permanent knowledge. Upserts by `(agent_id, key)`: re-saving the same key updates the entry.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -170,20 +173,20 @@ This project uses nmem for persistent cognitive memory via MCP.
 - `memory_save_shared(key="deploy_process", content="...", importance=8)`
 
 ### Importance guide
-- 1-4: Low — transient observations
-- 5-6: Medium — useful context
-- 7-8: High — auto-promotes to permanent memory
-- 9-10: Critical — architecture decisions, incident post-mortems
+- 1-4: Low: transient observations
+- 5-6: Medium: useful context
+- 7-8: High: auto-promotes to permanent memory
+- 9-10: Critical: architecture decisions, incident post-mortems
 ```
 
 ## How it works in practice
 
-1. **Claude starts a conversation** — the MCP server initializes nmem
-2. **Claude reads CLAUDE.md** — sees the memory instructions
-3. **Before complex work** — Claude calls `memory_search` to check for relevant past context
-4. **After significant work** — Claude calls `memory_store` to save learnings
-5. **Next conversation** — Claude searches again and finds what it learned last time
-6. **Over time** — the consolidation engine promotes important knowledge, decays stale entries, and deduplicates
+1. **Claude starts a conversation**: the MCP server initializes nmem
+2. **Claude reads CLAUDE.md**: sees the memory instructions
+3. **Before complex work**: Claude calls `memory_search` to check for relevant past context
+4. **After significant work**: Claude calls `memory_store` to save learnings
+5. **Next conversation**: Claude searches again and finds what it learned last time
+6. **Over time**: the consolidation engine promotes important knowledge, decays stale entries, and deduplicates
 
 The net effect: Claude genuinely gets smarter about your codebase with each conversation.
 

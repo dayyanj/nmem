@@ -2,10 +2,17 @@
 
 Get nmem running with real data in under 5 minutes.
 
+> **Note**: nmem is not yet on PyPI. All install commands below use `pip install -e` from a local clone:
+>
+> ```bash
+> git clone https://github.com/dayyanj/nmem.git
+> cd nmem
+> ```
+
 ## Option A: Zero-config demo (30 seconds)
 
 ```bash
-pip install nmem[cli]
+pip install -e ".[cli]"
 nmem demo
 ```
 
@@ -14,7 +21,7 @@ This uses SQLite (no Docker needed) and loads a built-in dataset showing 3 agent
 ## Option B: Import your Claude Code memories (2 minutes)
 
 ```bash
-pip install nmem[cli,sqlite]
+pip install -e ".[cli,sqlite]"
 nmem init --sqlite
 nmem import claude-code
 nmem search "your topic"
@@ -28,8 +35,7 @@ This imports your existing `~/.claude/` memory files into nmem. Each memory file
 ### 1. Start PostgreSQL + pgvector
 
 ```bash
-pip install nmem[cli,postgres,st]
-cd /path/to/nmem
+pip install -e ".[cli,postgres,st]"
 docker compose up -d
 ```
 
@@ -115,7 +121,7 @@ asyncio.run(main())
 
 ## What's next?
 
-- [Concepts](concepts.md) — understand the 6-tier memory hierarchy
-- [Configuration](configuration.md) — tune thresholds and providers
-- [MCP Integration](mcp-integration.md) — connect to Claude Code / Cursor
-- [API Reference](api-reference.md) — full method documentation
+- [Concepts](concepts.md): understand the 6-tier memory hierarchy
+- [Configuration](configuration.md): tune thresholds and providers
+- [MCP Integration](mcp-integration.md): connect to Claude Code / Cursor
+- [API Reference](api-reference.md): full method documentation

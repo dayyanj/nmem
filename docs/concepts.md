@@ -1,6 +1,6 @@
 # Concepts
 
-nmem is a hierarchical memory system for AI agents. This page explains the mental model — what each tier is for, how entries flow between tiers, and how the consolidation engine works.
+nmem is a hierarchical memory system for AI agents. This page explains the mental model: what each tier is for, how entries flow between tiers, and how the consolidation engine works.
 
 ## The 6-tier hierarchy
 
@@ -31,7 +31,7 @@ await mem.working.set("session-1", "agent-1", "current_task", "Debugging payment
 
 **What it is:** A 30-day activity log. Every significant observation, decision, and outcome gets recorded here.
 
-**Use it for:** Session summaries, decisions made, lessons learned, things you noticed. This is the primary write target — most agent interactions should create journal entries.
+**Use it for:** Session summaries, decisions made, lessons learned, things you noticed. This is the primary write target: most agent interactions should create journal entries.
 
 **Example:**
 ```python
@@ -52,7 +52,7 @@ await mem.journal.add(
 
 **What it is:** Permanent per-agent knowledge. Facts, procedures, lessons that have proven their value.
 
-**Use it for:** Knowledge that should persist permanently — procedures ("how to deploy"), facts ("team standup is at 9:30"), lessons ("never deploy on Fridays").
+**Use it for:** Knowledge that should persist permanently: procedures ("how to deploy"), facts ("team standup is at 9:30"), lessons ("never deploy on Fridays").
 
 **Example:**
 ```python
@@ -73,7 +73,7 @@ await mem.ltm.save(
 
 **What it is:** Cross-agent canonical facts. Visible to ALL agents.
 
-**Use it for:** Company-wide knowledge — policies, vendor contacts, escalation procedures, architecture decisions that affect everyone.
+**Use it for:** Company-wide knowledge: policies, vendor contacts, escalation procedures, architecture decisions that affect everyone.
 
 **Example:**
 ```python
@@ -87,15 +87,15 @@ await mem.shared.save(
 ```
 
 **Lifespan:** Permanent. Versioned with change log. Two paths to creation:
-1. **Direct save** — an agent saves shared knowledge explicitly
-2. **Promotion** — an LTM entry is accessed by ≥2 distinct agents, proving cross-agent relevance
-3. **Nightly synthesis** — the consolidation engine discovers cross-cutting patterns
+1. **Direct save**: an agent saves shared knowledge explicitly
+2. **Promotion**: an LTM entry is accessed by ≥2 distinct agents, proving cross-agent relevance
+3. **Nightly synthesis**: the consolidation engine discovers cross-cutting patterns
 
 ### Tier 5: Entity Memory
 
 **What it is:** A collaborative notebook per business object (customer, bug, deployment, etc.). Multiple agents read and write.
 
-**Use it for:** Building a dossier about a specific entity. Support notes about a customer, engineering notes about a bug, sales notes about a prospect — all in one place.
+**Use it for:** Building a dossier about a specific entity. Support notes about a customer, engineering notes about a bug, sales notes about a prospect, all in one place.
 
 **Example:**
 ```python
@@ -112,22 +112,22 @@ await mem.entity.save(
 ```
 
 **Record types:**
-- `evidence` — observed facts from source material (highest confidence)
-- `judgment` — inferred conclusions (forced confidence <1.0)
-- `task` — actions to take
-- `summary` — aggregated summary of all records
+- `evidence`: observed facts from source material (highest confidence)
+- `judgment`: inferred conclusions (forced confidence <1.0)
+- `task`: actions to take
+- `summary`: aggregated summary of all records
 
 **Grounding levels:**
-- `source_material` — directly from primary source
-- `inferred` — derived by reasoning
-- `confirmed` — verified by multiple sources
-- `disputed` — contradicted by another record
+- `source_material`: directly from primary source
+- `inferred`: derived by reasoning
+- `confirmed`: verified by multiple sources
+- `disputed`: contradicted by another record
 
 ### Tier 6: Policy Memory
 
 **What it is:** Governance rules with writer/proposer permissions.
 
-**Use it for:** Hard rules the system must follow — access controls, safety guardrails, operational constraints. Only designated "writer" agents can create active policies; others can propose.
+**Use it for:** Hard rules the system must follow: access controls, safety guardrails, operational constraints. Only designated "writer" agents can create active policies; others can propose.
 
 **Example:**
 ```python
@@ -167,7 +167,7 @@ await mem.policy.save(
          └──────────────────────────────────────────────┘
 ```
 
-Key principle: **entries earn their way up**. Nothing is promoted by an LLM's guess about "universality" — promotion is driven by importance scores set by authors and access patterns from other agents.
+Key principle: **entries earn their way up**. Nothing is promoted by an LLM's guess about "universality". Promotion is driven by importance scores set by authors and access patterns from other agents.
 
 ## Consolidation engine
 
@@ -191,8 +191,8 @@ The consolidation engine runs in the background (every 6 hours by default) and p
 
 Every search in nmem combines two signals:
 
-- **Vector similarity (60%)** — pgvector cosine distance against embeddings
-- **Full-text search (40%)** — PostgreSQL `tsvector` / `ts_rank_cd`
+- **Vector similarity (60%)**: pgvector cosine distance against embeddings
+- **Full-text search (40%)**: PostgreSQL `tsvector` / `ts_rank_cd`
 
 This means a search for "deploy process" finds entries that:
 - Are semantically similar (vector catches "deployment procedure", "release workflow")
@@ -216,10 +216,10 @@ system_prompt = f"You are a support agent.\n\n{ctx.full_injection}"
 ```
 
 The injection uses **tiered verbosity**:
-- **Policies** — full text (rules must be complete)
-- **Shared knowledge** — truncated stubs with keys
-- **LTM** — category + key + truncated content
-- **Journal** — date + type + title only (use `memory_search` for details)
-- **Working memory** — slot name + content
+- **Policies**: full text (rules must be complete)
+- **Shared knowledge**: truncated stubs with keys
+- **LTM**: category + key + truncated content
+- **Journal**: date + type + title only (use `memory_search` for details)
+- **Working memory**: slot name + content
 
 This keeps the injection compact (~300-500 tokens) while giving the agent access to the most relevant context.

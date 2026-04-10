@@ -34,13 +34,13 @@ results = await mem.search(
 ```
 
 Returns `list[SearchResult]` ranked by score. Each `SearchResult` has:
-- `tier` — which tier the result came from
-- `id` — entry ID
-- `score` — relevance score (0.0 to 1.0)
-- `content` — entry content
-- `title` / `key` — entry title or key
-- `agent_id` — owning agent (if applicable)
-- `metadata` — tier-specific metadata dict
+- `tier`: which tier the result came from
+- `id`: entry ID
+- `score`: relevance score (0.0 to 1.0)
+- `content`: entry content
+- `title` / `key`: entry title or key
+- `agent_id`: owning agent (if applicable)
+- `metadata`: tier-specific metadata dict
 
 ### Prompt building
 

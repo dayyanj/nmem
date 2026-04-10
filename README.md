@@ -1,12 +1,12 @@
 # nmem
 
-**Cognitive memory for AI agents** — hierarchical, self-refining, and framework-agnostic.
+**Cognitive memory for AI agents**: hierarchical, self-refining, and framework-agnostic.
 
-nmem gives your agents a brain that learns. Not just storage and retrieval — active cognition with automatic promotion, confidence decay, conflict detection, and nightly synthesis.
+nmem gives your agents a brain that learns. Not just storage and retrieval, but active cognition with automatic promotion, confidence decay, conflict detection, and nightly synthesis.
 
 ## How it works
 
-### Memory flows upward — entries earn their way
+### Memory flows upward: entries earn their way
 
 ```mermaid
 graph LR
@@ -95,31 +95,35 @@ Your Agent (LangChain / CrewAI / Plain Python)
    └─────────┘  └──────────┘  └─────────┘
 ```
 
-**Write** — agents store observations, decisions, and outcomes in their journal. Write-time compression distills verbose content into dense facts. Dedup prevents redundant entries.
+**Write**: agents store observations, decisions, and outcomes in their journal. Write-time compression distills verbose content into dense facts. Dedup prevents redundant entries.
 
-**Search** — hybrid search combines pgvector cosine similarity (60%) with PostgreSQL full-text search (40%) across all tiers simultaneously. Access stats are updated on every retrieval.
+**Search**: hybrid search combines pgvector cosine similarity (60%) with PostgreSQL full-text search (40%) across all tiers simultaneously. Access stats are updated on every retrieval.
 
-**Consolidate** — a background engine promotes high-importance journal entries to permanent LTM, clusters and merges duplicates via union-find + LLM, decays confidence on stale entries, and synthesizes cross-agent patterns nightly.
+**Consolidate**: a background engine promotes high-importance journal entries to permanent LTM, clusters and merges duplicates via union-find + LLM, decays confidence on stale entries, and synthesizes cross-agent patterns nightly.
 
-**Promote** — no LLM decides what's "universal." Entries promote to shared knowledge when multiple agents actually search for them. The agents vote with their queries.
+**Promote**: no LLM decides what's "universal." Entries promote to shared knowledge when multiple agents actually search for them. The agents vote with their queries.
 
 ## Features
 
-- **6-tier memory hierarchy** — working memory, journal, long-term memory, shared knowledge, entity memory, policy memory
-- **Write-time compression** — LLM distills verbose content into dense facts
-- **Hybrid search** — 60/40 vector + full-text search across all tiers
-- **Background consolidation** — auto-promotes important entries, deduplicates, decays stale knowledge
-- **Cognitive capabilities** — deja vu (past experience matching), counterfactual reasoning, curiosity signals
-- **Governance** — policy memory with writer/proposer permissions, entity memory with grounding levels
-- **Framework-agnostic** — works with LangChain, CrewAI, or plain Python
-- **Pluggable providers** — bring your own LLM, embedding model, and database
+- **6-tier memory hierarchy**: working memory, journal, long-term memory, shared knowledge, entity memory, policy memory
+- **Write-time compression**: LLM distills verbose content into dense facts
+- **Hybrid search**: 60/40 vector + full-text search across all tiers
+- **Background consolidation**: auto-promotes important entries, deduplicates, decays stale knowledge
+- **Cognitive capabilities**: deja vu (past experience matching), counterfactual reasoning, curiosity signals
+- **Governance**: policy memory with writer/proposer permissions, entity memory with grounding levels
+- **Framework-agnostic**: works with LangChain, CrewAI, or plain Python
+- **Pluggable providers**: bring your own LLM, embedding model, and database
 
 ## Quick Start
 
-```bash
-pip install nmem[postgres,st]
-docker compose up -d  # PostgreSQL + pgvector
-```
+> **Note**: nmem is not yet on PyPI. Install from source:
+>
+> ```bash
+> git clone https://github.com/dayyanj/nmem.git
+> cd nmem
+> pip install -e ".[postgres,st]"
+> docker compose up -d  # PostgreSQL + pgvector
+> ```
 
 ```python
 from nmem import MemorySystem, NmemConfig
@@ -198,11 +202,11 @@ nmem import jsonl <file>          # Import structured JSONL
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
+MIT, see [LICENSE](LICENSE)
 
 ## Credits
 
-Created by [Dayyan James](https://dj-ai.ai) — extracted from the cognitive memory architecture powering [Spwig](https://spwig.com)'s production AI agent systems.
+Created by [Dayyan James](https://dj-ai.ai), extracted from the cognitive memory architecture powering [Spwig](https://spwig.com)'s production AI agent systems.
 
-- [dj-ai.ai](https://dj-ai.ai) — AI research and engineering blog
-- [spwig.com](https://spwig.com) — where nmem runs in commercial production
+- [dj-ai.ai](https://dj-ai.ai): AI research and engineering blog
+- [spwig.com](https://spwig.com): where nmem runs in commercial production

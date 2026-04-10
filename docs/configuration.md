@@ -1,15 +1,15 @@
 # Configuration
 
-nmem is configured via Python, environment variables, or a TOML file. All settings have sensible defaults — you only need to set what you want to change.
+nmem is configured via Python, environment variables, or a TOML file. All settings have sensible defaults, so you only need to set what you want to change.
 
 ## Configuration sources
 
 Priority (highest wins):
 
-1. **Python constructor** — `NmemConfig(database_url="...")`
-2. **Environment variables** — `NMEM_DATABASE_URL=...`
+1. **Python constructor**: `NmemConfig(database_url="...")`
+2. **Environment variables**: `NMEM_DATABASE_URL=...`
 3. **`nmem.toml`** in current directory
-4. **`~/.config/nmem/nmem.toml`** — user-level config
+4. **`~/.config/nmem/nmem.toml`**: user-level config
 5. **Defaults**
 
 Nested settings use `__` delimiter in env vars:
@@ -67,13 +67,13 @@ model = "qwen3"
 ```
 
 The LLM is used for three operations:
-1. **Content compression** — distill verbose text into dense facts on write
-2. **Nightly synthesis** — extract cross-cutting patterns from journal entries
-3. **Dedup merging** — combine similar LTM entries into a single merged entry
+1. **Content compression**: distill verbose text into dense facts on write
+2. **Nightly synthesis**: extract cross-cutting patterns from journal entries
+3. **Dedup merging**: combine similar LTM entries into a single merged entry
 
 | Provider | Setup | Notes |
 |----------|-------|-------|
-| `openai` | Works with OpenAI, vLLM, Ollama, LiteLLM — any OpenAI-compatible API | Set `base_url` for local servers. Use `api_key = "EMPTY"` for keyless servers. |
+| `openai` | Works with OpenAI, vLLM, Ollama, LiteLLM (any OpenAI-compatible API) | Set `base_url` for local servers. Use `api_key = "EMPTY"` for keyless servers. |
 | `anthropic` | Anthropic Claude API | Requires `api_key`. |
 | `noop` | Disables LLM features | Compression falls back to truncation. Synthesis is skipped. Dedup uses simple concatenation. |
 
@@ -121,11 +121,11 @@ max_chars_in_prompt = 4000
 
 **`confidence_decay_rate`** (default: 0.02): Confidence points subtracted per consolidation cycle for unaccessed entries. At the default 6-hour cycle interval, an unaccessed entry drops from 1.0 to 0.3 (minimum) in about 5 months.
 
-**`min_confidence`** (default: 0.3): Floor for confidence decay. Entries never drop below this — they remain searchable but rank lower.
+**`min_confidence`** (default: 0.3): Floor for confidence decay. Entries never drop below this, so they remain searchable but rank lower.
 
 **`shared_promote_importance`** (default: 8): Minimum importance for LTM→Shared promotion.
 
-**`shared_promote_min_agents`** (default: 2): Minimum distinct agents that must have accessed the LTM entry for it to promote to shared. This ensures only genuinely cross-agent knowledge promotes — no LLM guessing.
+**`shared_promote_min_agents`** (default: 2): Minimum distinct agents that must have accessed the LTM entry for it to promote to shared. This ensures only genuinely cross-agent knowledge promotes, no LLM guessing.
 
 **`shared_promote_min_access`** (default: 3): Minimum total accesses. Prevents single-access flukes from triggering promotion.
 
