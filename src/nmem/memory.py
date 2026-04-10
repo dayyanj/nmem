@@ -213,6 +213,7 @@ class MemorySystem:
         *,
         tiers: tuple[str, ...] | None = None,
         top_k: int = 10,
+        project_scope: str | None = ...,
     ) -> list[SearchResult]:
         """Search across multiple memory tiers in parallel.
 
@@ -221,6 +222,8 @@ class MemorySystem:
             query: Search query text.
             tiers: Which tiers to search (default: all).
             top_k: Maximum total results.
+            project_scope: Scope filter. None = global only, "*" = all scopes,
+                str = specific scope + global, ... = use config default.
 
         Returns:
             List of SearchResult objects, ranked by score.
@@ -236,6 +239,7 @@ class MemorySystem:
             entity=self._entity,
             tiers=tiers,
             top_k=top_k,
+            project_scope=project_scope,
         )
 
     # ── Event System ─────────────────────────────────────────────────────

@@ -104,19 +104,28 @@ async def memory_search(
     agent_id: str = "default",
     tiers: str | None = None,
     top_k: int = 10,
+    all_scopes: bool = False,
 ) -> str:
     """Search across all memory tiers using hybrid vector + full-text search.
+
+    By default, searches within the current project_scope (if set) plus global
+    entries. Set all_scopes=True to search every scope — useful for finding
+    cross-project patterns, portfolio-wide insights, or past lessons from
+    other projects/customers.
 
     Args:
         query: Natural language search query.
         agent_id: Agent perspective for search.
         tiers: Comma-separated tier filter: journal,ltm,shared,entity.
         top_k: Maximum results to return.
+        all_scopes: If True, search across ALL project scopes (ignores current scope).
     """
     mem = _get_mem(ctx)
     tier_tuple = tuple(tiers.split(",")) if tiers else None
+    scope_arg = "*" if all_scopes else ...
     results = await mem.search(
         agent_id=agent_id, query=query, tiers=tier_tuple, top_k=top_k,
+        project_scope=scope_arg,
     )
 
     if not results:

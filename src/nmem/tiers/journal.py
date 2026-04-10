@@ -203,7 +203,9 @@ class JournalTier:
         if entry_type:
             where_parts.append("entry_type = :entry_type")
             params["entry_type"] = entry_type
-        if project_scope is not None:
+        if project_scope == "*":
+            pass  # Cross-scope search: no scope filter
+        elif project_scope is not None:
             where_parts.append("(project_scope = :project_scope OR project_scope IS NULL)")
             params["project_scope"] = project_scope
 
@@ -277,7 +279,9 @@ class JournalTier:
                 JournalEntryModel.agent_id == agent_id,
                 JournalEntryModel.created_at >= cutoff,
             ]
-            if project_scope is not None:
+            if project_scope == "*":
+                pass  # Cross-scope: no filter
+            elif project_scope is not None:
                 from sqlalchemy import or_
                 filters.append(or_(
                     JournalEntryModel.project_scope == project_scope,

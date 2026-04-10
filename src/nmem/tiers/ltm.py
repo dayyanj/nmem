@@ -260,7 +260,9 @@ class LTMTier:
         if category:
             where_parts.append("category = :category")
             params["category"] = category
-        if project_scope is not None:
+        if project_scope == "*":
+            pass  # Cross-scope search: no scope filter
+        elif project_scope is not None:
             where_parts.append("(project_scope = :project_scope OR project_scope IS NULL)")
             params["project_scope"] = project_scope
 
@@ -319,11 +321,14 @@ class LTMTier:
 
         async with self._db.session() as session:
             filters = [LTMModel.agent_id == agent_id, LTMModel.key == key]
-            if project_scope is not None:
+            if project_scope == "*":
+                # Cross-scope: return first match (ambiguous but useful for lookups)
+                pass
+            elif project_scope is not None:
                 filters.append(LTMModel.project_scope == project_scope)
             else:
                 filters.append(LTMModel.project_scope.is_(None))
-            stmt = select(LTMModel).where(and_(*filters))
+            stmt = select(LTMModel).where(and_(*filters)).limit(1)
             result = await session.execute(stmt)
             row = result.scalar_one_or_none()
             if row:
@@ -353,7 +358,9 @@ class LTMTier:
             filters = [LTMModel.agent_id == agent_id]
             if category:
                 filters.append(LTMModel.category == category)
-            if project_scope is not None:
+            if project_scope == "*":
+                pass  # Cross-scope: no filter
+            elif project_scope is not None:
                 from sqlalchemy import or_
                 filters.append(or_(
                     LTMModel.project_scope == project_scope,

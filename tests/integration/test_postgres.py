@@ -416,6 +416,43 @@ class TestProjectScope:
         # Both should have been created (different scopes)
         assert entry_a.id != entry_b.id
 
+    async def test_cross_scope_search(self, mem: MemorySystem):
+        """Searching with project_scope='*' should find entries across ALL scopes."""
+        # Create entries in different scopes
+        await mem.ltm.save(
+            "agent-a", "lesson", "payment_timeout_cause_1",
+            "Checkout timeout was due to stripe webhook delays",
+            importance=7, project_scope="customer:acme",
+        )
+        await mem.ltm.save(
+            "agent-a", "lesson", "payment_timeout_cause_2",
+            "Checkout timeout was due to database lock contention",
+            importance=7, project_scope="customer:beta",
+        )
+        await mem.ltm.save(
+            "agent-a", "lesson", "payment_timeout_cause_3",
+            "Checkout timeout was due to CDN routing issue",
+            importance=7, project_scope="customer:gamma",
+        )
+
+        # Default search from within one scope — finds only that scope
+        scoped_results = await mem.ltm.search(
+            "agent-a", "checkout timeout cause", project_scope="customer:acme",
+        )
+        # Should find acme entry but not beta/gamma
+        assert any("stripe" in r.content for r in scoped_results)
+        assert not any("database lock" in r.content for r in scoped_results)
+
+        # Cross-scope search — finds all three
+        all_results = await mem.ltm.search(
+            "agent-a", "checkout timeout cause", project_scope="*",
+        )
+        # Should find all three different causes
+        contents = " ".join(r.content for r in all_results)
+        assert "stripe" in contents
+        assert "database lock" in contents
+        assert "CDN routing" in contents
+
     async def test_backward_compat_no_scope(self, mem: MemorySystem):
         """Entries without scope should work identically to v0.1.0."""
         await mem.ltm.save(

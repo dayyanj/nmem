@@ -197,7 +197,9 @@ class EntityTier:
         if entity_id:
             where_parts.append("entity_id = :entity_id")
             params["entity_id"] = entity_id
-        if project_scope is not None:
+        if project_scope == "*":
+            pass  # Cross-scope search: no scope filter
+        elif project_scope is not None:
             where_parts.append("(project_scope = :project_scope OR project_scope IS NULL)")
             params["project_scope"] = project_scope
 

@@ -152,7 +152,9 @@ class SharedTier:
         if category:
             where_parts.append("category = :category")
             params["category"] = category
-        if project_scope is not None:
+        if project_scope == "*":
+            pass  # Cross-scope search: no scope filter
+        elif project_scope is not None:
             where_parts.append("(project_scope = :project_scope OR project_scope IS NULL)")
             params["project_scope"] = project_scope
 
