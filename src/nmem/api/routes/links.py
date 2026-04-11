@@ -7,7 +7,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 
 from nmem import MemorySystem
-from nmem.api.main import get_mem
+from nmem.api.deps import get_mem
 from nmem.api.schemas import KnowledgeLinkResponse, to_dict
 
 router = APIRouter(prefix="/v1/links", tags=["links"])

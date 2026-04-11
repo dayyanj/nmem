@@ -27,34 +27,13 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from nmem import MemorySystem, NmemConfig
+from nmem.api.deps import get_mem  # re-exported for backward compatibility
 from nmem.api.errors import register_error_handlers
 
+# Keep the public name available even though the implementation moved.
+__all__ = ["app", "create_app", "get_mem", "lifespan"]
+
 logger = logging.getLogger(__name__)
-
-
-def get_mem(request: Request) -> MemorySystem:
-    """Dependency: return the MemorySystem bound to this request.
-
-    The MemorySystem is resolved from ``request.state.mem``, which is
-    populated by the ``_inject_mem`` middleware on every request. For the
-    default single-tenant nmem app, the middleware copies a single instance
-    from ``app.state.mem``. Wrapper apps (e.g. nmem-cloud) can replace the
-    middleware to inject a per-tenant instance instead, without having to
-    use ``app.dependency_overrides``.
-
-    Raises:
-        RuntimeError: if ``request.state.mem`` is missing (usually because
-            the app was not constructed via ``create_app`` or a custom
-            wrapper failed to populate it).
-    """
-    mem = getattr(request.state, "mem", None)
-    if mem is None:
-        raise RuntimeError(
-            "MemorySystem not found on request.state. Either the app "
-            "was not constructed via create_app(), or a wrapping middleware "
-            "failed to inject the tenant-specific MemorySystem."
-        )
-    return mem
 
 
 @asynccontextmanager

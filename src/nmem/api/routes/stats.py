@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import text
 
 from nmem import MemorySystem
-from nmem.api.main import get_mem
+from nmem.api.deps import get_mem
 from nmem.api.schemas import HealthResponse, StatsResponse, TierStats, VersionResponse
 
 router = APIRouter(prefix="/v1", tags=["admin"])

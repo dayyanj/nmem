@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from nmem import MemorySystem
-from nmem.api.main import get_mem
+from nmem.api.deps import get_mem
 from nmem.api.schemas import (
     ContextRequest,
     ContextResponse,

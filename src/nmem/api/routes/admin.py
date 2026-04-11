@@ -10,7 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from nmem import MemorySystem
-from nmem.api.main import get_mem
+from nmem.api.deps import get_mem
 from nmem.api.schemas import ConsolidationStatsResponse, to_dict
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
