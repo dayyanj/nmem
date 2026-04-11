@@ -344,11 +344,11 @@ async def _search_ltm(
         SearchResult(
             tier="ltm",
             id=e.id,
-            score=(e.importance / 10.0) * e.confidence,
+            score=(e.importance / 10.0) * e.salience,
             content=e.content,
             key=e.key,
             agent_id=e.agent_id,
-            metadata={"category": e.category, "confidence": e.confidence},
+            metadata={"category": e.category, "salience": e.salience},
         )
         for e in entries
     ]

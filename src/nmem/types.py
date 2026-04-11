@@ -55,7 +55,12 @@ class JournalEntry:
 
 @dataclass(frozen=True, slots=True)
 class LTMEntry:
-    """A long-term memory entry (Tier 3)."""
+    """A long-term memory entry (Tier 3).
+
+    `salience` (formerly `confidence`) reflects how strongly this entry should
+    influence reasoning right now — it decays with staleness. It is NOT a
+    certainty/truth measure; for grounding see the `grounding` field.
+    """
 
     id: int
     agent_id: str
@@ -63,7 +68,7 @@ class LTMEntry:
     key: str
     content: str
     importance: int = 5
-    confidence: float = 1.0
+    salience: float = 1.0
     access_count: int = 0
     source: str = "agent"
     record_type: str = "fact"
@@ -231,7 +236,7 @@ class ConsolidationStats:
     promoted_to_ltm: int = 0
     promoted_to_shared: int = 0
     duplicates_merged: int = 0
-    confidence_decayed: int = 0
+    salience_decayed: int = 0
     curiosity_decayed: int = 0
     patterns_synthesized: int = 0
     links_created: int = 0

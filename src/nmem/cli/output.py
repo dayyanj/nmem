@@ -97,7 +97,7 @@ def print_consolidation_stats(stats) -> None:
     table.add_row("Promoted to LTM", str(stats.promoted_to_ltm))
     table.add_row("Promoted to Shared", str(stats.promoted_to_shared))
     table.add_row("Duplicates merged", str(stats.duplicates_merged))
-    table.add_row("Confidence decayed", str(stats.confidence_decayed))
+    table.add_row("Salience decayed", str(stats.salience_decayed))
     table.add_row("Curiosity decayed", str(stats.curiosity_decayed))
     table.add_row("Duration", f"{stats.duration_seconds:.1f}s")
 

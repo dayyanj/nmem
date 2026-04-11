@@ -2,7 +2,7 @@
 
 **Cognitive memory for AI agents**: hierarchical, self-refining, and framework-agnostic.
 
-nmem gives your agents a brain that learns. Not just storage and retrieval, but active cognition with automatic promotion, confidence decay, conflict detection, and nightly synthesis.
+nmem gives your agents a brain that learns. Not just storage and retrieval, but active cognition with automatic promotion, salience decay, conflict detection, and nightly synthesis.
 
 > **We're actively looking for contributors.** nmem is intentionally built as a community-driven project. Code, docs, ideas, bug reports, independent benchmarks, and adversarial testing are all welcome. See [Contributing](#contributing) below.
 
@@ -101,7 +101,7 @@ Your Agent (LangChain / CrewAI / Plain Python)
 
 **Search**: hybrid search combines pgvector cosine similarity (60%) with PostgreSQL full-text search (40%) across all tiers simultaneously. Access stats are updated on every retrieval.
 
-**Consolidate**: a background engine promotes high-importance journal entries to permanent LTM, clusters and merges duplicates via union-find + LLM, decays confidence on stale entries, and synthesizes cross-agent patterns nightly.
+**Consolidate**: a background engine promotes high-importance journal entries to permanent LTM, clusters and merges duplicates via union-find + LLM, decays salience on stale entries, and synthesizes cross-agent patterns nightly.
 
 **Promote**: no LLM decides what's "universal." Entries promote to shared knowledge when multiple agents actually search for them. The agents vote with their queries.
 

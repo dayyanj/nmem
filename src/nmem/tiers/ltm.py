@@ -101,7 +101,7 @@ class LTMTier:
                 existing.content = content
                 existing.category = category
                 existing.importance = max(existing.importance, importance)
-                existing.confidence = 1.0
+                existing.salience = 1.0
                 existing.embedding = emb
                 existing.record_type = record_type
                 existing.grounding = grounding
@@ -191,7 +191,7 @@ class LTMTier:
                     existing.content = content
                     existing.category = category
                     existing.importance = max(existing.importance, importance)
-                    existing.confidence = 1.0
+                    existing.salience = 1.0
                     existing.embedding = emb
                     existing.record_type = record_type
                     existing.grounding = grounding
@@ -456,7 +456,7 @@ class LTMTier:
             key=row.key,
             content=row.content,
             importance=row.importance,
-            confidence=row.confidence,
+            salience=row.salience,
             access_count=row.access_count,
             source=row.source,
             record_type=row.record_type,

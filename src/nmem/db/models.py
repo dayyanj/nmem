@@ -184,7 +184,13 @@ class JournalEntryModel(Base):
 
 
 class LTMModel(Base):
-    """Permanent per-agent knowledge — categorized, versioned, confidence decay."""
+    """Permanent per-agent knowledge — categorized, versioned, salience decay.
+
+    `salience` (formerly `confidence`) reflects how strongly this entry should
+    influence current reasoning — it starts at 1.0 and decays with staleness /
+    disuse. It is NOT a certainty/truth measure; for grounding certainty see
+    `grounding` + EntityMemoryModel.confidence.
+    """
 
     __tablename__ = "nmem_long_term_memory"
 
@@ -195,9 +201,9 @@ class LTMModel(Base):
     content: Mapped[str] = mapped_column(Text)
     content_tsv = mapped_column(TSVType, nullable=True)
 
-    # Importance and staleness
+    # Importance and salience
     importance: Mapped[int] = mapped_column(Integer, default=5)
-    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    salience: Mapped[float] = mapped_column(Float, default=1.0)
     access_count: Mapped[int] = mapped_column(Integer, default=0)
     last_accessed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_validated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -222,9 +228,12 @@ class LTMModel(Base):
     # Project scoping
     project_scope: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
-    # Versioning
+    # Versioning. `superseded_by_id` is a forward pointer: the ID of the
+    # entry that replaces this one (set on the loser, points at the winner).
+    # Historical name was `supersedes_id` which read as a back-pointer but
+    # has always been written as a forward pointer in practice.
     version: Mapped[int] = mapped_column(Integer, default=1)
-    supersedes_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    superseded_by_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

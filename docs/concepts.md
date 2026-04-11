@@ -65,7 +65,9 @@ await mem.ltm.save(
 )
 ```
 
-**Lifespan:** Permanent. Confidence decays if not accessed for 90+ days. Automatically promotes to Shared when ≥2 different agents access it.
+**Lifespan:** Permanent. **Salience** (how strongly the entry influences current reasoning) decays if not accessed for 90+ days — the knowledge isn't deleted, it just ranks lower until something re-activates it. Automatically promotes to Shared when ≥2 different agents access it.
+
+> **Salience vs grounding**: Salience is NOT a truth measure. An entry with low salience may still be true — it's just cold. For truth/grounding certainty, see `record_type` (`evidence` / `judgment` / `fact`) and `grounding` (`source_material` / `confirmed` / `inferred` / `disputed`). Entity memory uses a separate `confidence` field with strict grounding semantics.
 
 **Categories:** `fact`, `procedure`, `lesson`, `pattern`, `policy`, `contact`, `troubleshooting`, `architecture`
 
@@ -179,7 +181,7 @@ The consolidation engine runs in the background (every 6 hours by default) and p
 | 2. Promote to LTM | Move high-importance journal entries to permanent storage | Saves valuable knowledge |
 | 3. Promote to Shared | Move cross-agent LTM entries to shared knowledge | Knowledge that multiple agents need becomes canonical |
 | 4. Dedup LTM | Cluster similar entries (cosine >0.85), merge via LLM | Prevents redundant knowledge |
-| 5. Confidence decay | Reduce confidence on stale entries (not accessed in 90+ days) | Stale knowledge fades |
+| 5. Salience decay | Reduce salience on stale entries (not accessed in 90+ days) | Stale knowledge fades from current reasoning (but isn't deleted — it just ranks lower) |
 | 6. Custom hooks | Run application-specific steps | Extensibility |
 | 7. Curiosity decay | Reduce scores on old unresolved curiosity signals | Prevents signal fatigue |
 

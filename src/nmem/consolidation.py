@@ -10,7 +10,7 @@ Consolidation steps:
   1. Decay expired journal entries (delete low-importance, promote high-importance)
   2. Promote high-importance / high-access journal entries to LTM
   3. Deduplicate similar LTM entries (union-find clustering + LLM merge)
-  4. Decay confidence on stale LTM entries
+  4. Decay salience on stale LTM entries
   5. Run custom hooks (application-specific steps)
   6. Decay curiosity signal scores
 """
@@ -159,8 +159,8 @@ class Consolidator:
         # Step 4: Deduplicate similar LTM entries
         stats.duplicates_merged = await self._dedup_similar_memories()
 
-        # Step 5: Confidence decay on stale LTM
-        stats.confidence_decayed = await self._update_confidence_scores()
+        # Step 5: Salience decay on stale LTM
+        stats.salience_decayed = await self._update_salience_scores()
 
         # Step 6: Custom hooks
         for name, fn in self._full_cycle_hooks:
@@ -183,10 +183,10 @@ class Consolidator:
         self._last_full_cycle = datetime.utcnow()
         logger.info(
             "Full consolidation completed in %.1fs: expired_del=%d, expired_promo=%d, "
-            "promoted_ltm=%d, promoted_shared=%d, deduped=%d, conf_decayed=%d, curiosity=%d",
+            "promoted_ltm=%d, promoted_shared=%d, deduped=%d, salience_decayed=%d, curiosity=%d",
             stats.duration_seconds, stats.expired_deleted, stats.expired_promoted,
             stats.promoted_to_ltm, stats.promoted_to_shared, stats.duplicates_merged,
-            stats.confidence_decayed, stats.curiosity_decayed,
+            stats.salience_decayed, stats.curiosity_decayed,
         )
         return stats
 
@@ -712,7 +712,7 @@ class Consolidator:
                             await session.execute(
                                 sa_text("""
                                     UPDATE nmem_long_term_memory
-                                    SET status = 'superseded', supersedes_id = :keeper_id,
+                                    SET status = 'superseded', superseded_by_id = :keeper_id,
                                         updated_at = NOW()
                                     WHERE id = :id
                                 """),
@@ -728,12 +728,18 @@ class Consolidator:
 
         return merged_total
 
-    async def _update_confidence_scores(self) -> int:
-        """Decay confidence of stale LTM entries."""
+    async def _update_salience_scores(self) -> int:
+        """Decay salience of stale LTM entries.
+
+        Salience reflects how strongly an entry should influence reasoning
+        *now*, not whether it is true. Decay fires when the entry has gone
+        unaccessed beyond `staleness_days`, with a faster rate for entries
+        that have been read but not re-validated.
+        """
         staleness_days = self._config.ltm.staleness_days
-        decay_rate_unaccessed = self._config.ltm.confidence_decay_rate
-        decay_rate_stale = self._config.ltm.confidence_decay_rate_accessed
-        min_confidence = self._config.ltm.min_confidence
+        decay_rate_unaccessed = self._config.ltm.salience_decay_rate
+        decay_rate_stale = self._config.ltm.salience_decay_rate_accessed
+        min_salience = self._config.ltm.min_salience
         now = datetime.utcnow()
         stale_cutoff = now - timedelta(days=staleness_days)
         age_cutoff = now - timedelta(days=30)  # Don't decay brand new entries
@@ -742,7 +748,7 @@ class Consolidator:
         async with self._db.session() as session:
             result = await session.execute(
                 select(LTMModel).where(
-                    LTMModel.confidence > min_confidence,
+                    LTMModel.salience > min_salience,
                     LTMModel.created_at < age_cutoff,
                     LTMModel.status == "validated",
                 )
@@ -752,10 +758,10 @@ class Consolidator:
             for entry in candidates:
                 if entry.access_count and entry.access_count > 0:
                     if entry.last_accessed_at and entry.last_accessed_at < stale_cutoff:
-                        entry.confidence = max(entry.confidence - decay_rate_stale, min_confidence)
+                        entry.salience = max(entry.salience - decay_rate_stale, min_salience)
                         updated += 1
                 else:
-                    entry.confidence = max(entry.confidence - decay_rate_unaccessed, min_confidence)
+                    entry.salience = max(entry.salience - decay_rate_unaccessed, min_salience)
                     updated += 1
 
         return updated

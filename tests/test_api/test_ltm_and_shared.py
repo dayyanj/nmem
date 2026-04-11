@@ -32,6 +32,22 @@ async def test_get_ltm(client):
     assert r.json()["content"] == "Some fact"
 
 
+async def test_ltm_response_shape_uses_salience(client):
+    """Phase 1 guard: LTM responses expose `salience`, not `confidence`."""
+    await client.put("/v1/ltm/shape-agent/shape-key", json={
+        "category": "fact",
+        "content": "shape check",
+        "importance": 5,
+        "compress": False,
+    })
+    r = await client.get("/v1/ltm/shape-agent/shape-key")
+    assert r.status_code == 200
+    body = r.json()
+    assert "salience" in body
+    assert "confidence" not in body
+    assert isinstance(body["salience"], (int, float))
+
+
 async def test_get_ltm_not_found(client):
     r = await client.get("/v1/ltm/nobody/nothing")
     assert r.status_code == 404

@@ -24,7 +24,7 @@ from nmem.db.models import Base, HAS_PGVECTOR
 logger = logging.getLogger(__name__)
 
 # Current schema version. Bump when adding migrations to _migrate_schema.
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 class DatabaseManager:
@@ -126,13 +126,23 @@ class DatabaseManager:
             return
 
         async def _run(sql: str, label: str) -> None:
-            """Run a DDL statement in its own isolated connection."""
+            """Run a DDL statement in its own isolated connection.
+
+            Failures are logged at WARNING (not DEBUG) so re-runs against an
+            already-migrated schema are visible. Idempotent errors ("column
+            already exists", "column does not exist") show up as warnings and
+            can be safely ignored by operators — but real bugs (permission
+            denied, syntax error, mismatched types) are no longer silent.
+            """
             try:
                 async with self._engine.begin() as conn:
                     await conn.execute(text(sql))
                 logger.info("Migration: %s", label)
             except Exception as e:
-                logger.debug("Migration skipped (%s): %s", label, e)
+                logger.warning(
+                    "Migration skipped (%s): %s\n  SQL: %s",
+                    label, e, sql,
+                )
 
         if version < 2:
             tables_needing_scope = [
@@ -169,6 +179,23 @@ class DatabaseManager:
                     "ON nmem_shared_knowledge (key, project_scope)",
                     "v2: create shared (key, project_scope) index",
                 )
+
+        if version < 3:
+            # Rename `confidence` → `salience` on LTM. Entity memory's
+            # `confidence` is untouched (it means grounding certainty there).
+            await _run(
+                "ALTER TABLE nmem_long_term_memory "
+                "RENAME COLUMN confidence TO salience",
+                "v3: rename LTM.confidence to salience",
+            )
+            # Rename `supersedes_id` → `superseded_by_id` on LTM. The column
+            # has always been written as a forward pointer in practice; the
+            # rename aligns the name with the semantics.
+            await _run(
+                "ALTER TABLE nmem_long_term_memory "
+                "RENAME COLUMN supersedes_id TO superseded_by_id",
+                "v3: rename LTM.supersedes_id to superseded_by_id",
+            )
 
         # Bump schema version in its own session
         async with self.session() as session:

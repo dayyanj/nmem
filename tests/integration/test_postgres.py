@@ -249,8 +249,8 @@ class TestConsolidation:
         ltm_entries = await mem.ltm.search("test-agent", "input validation")
         assert len(ltm_entries) > 0
 
-    async def test_confidence_decay(self, mem: MemorySystem):
-        """Stale LTM entries should have confidence decayed."""
+    async def test_salience_decay(self, mem: MemorySystem):
+        """Stale LTM entries should have salience decayed."""
         from sqlalchemy import text
 
         await mem.ltm.save(
@@ -269,7 +269,7 @@ class TestConsolidation:
                 """)
             )
 
-        decayed = await mem.consolidation._update_confidence_scores()
+        decayed = await mem.consolidation._update_salience_scores()
         assert decayed >= 1
 
     async def test_ltm_to_shared_promotion(self, mem: MemorySystem):

@@ -108,7 +108,7 @@ class LTMEntryResponse(BaseModel):
     key: str
     content: str
     importance: int
-    confidence: float
+    salience: float
     access_count: int
     source: str
     record_type: str
@@ -305,7 +305,7 @@ class ConsolidationStatsResponse(BaseModel):
     promoted_to_ltm: int = 0
     promoted_to_shared: int = 0
     duplicates_merged: int = 0
-    confidence_decayed: int = 0
+    salience_decayed: int = 0
     curiosity_decayed: int = 0
     patterns_synthesized: int = 0
     links_created: int = 0

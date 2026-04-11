@@ -23,7 +23,7 @@ async def trigger_full_consolidation(
     """Run a full consolidation cycle manually.
 
     Performs: journal decay, promotion (journal→LTM, LTM→shared),
-    deduplication, confidence decay, knowledge link building, curiosity decay.
+    deduplication, salience decay, knowledge link building, curiosity decay.
     """
     stats = await mem.consolidation.run_full_cycle()
     return to_dict(stats)

@@ -43,9 +43,10 @@ auto_promote_access_count = 5        # Or promote after this many accesses
 
 # ── Long-Term Memory (Tier 3) ───────────────────────────────────────────────
 [ltm]
-# staleness_days = 90                # Days without access before confidence decay
-# confidence_decay_rate = 0.02       # Decay per consolidation cycle
-# min_confidence = 0.3               # Floor for confidence decay
+# staleness_days = 90                # Days without access before salience decay
+# salience_decay_rate = 0.02         # Salience decay per consolidation cycle
+# salience_decay_rate_accessed = 0.05  # Faster decay for accessed-but-unvalidated
+# min_salience = 0.3                 # Floor for salience decay
 # shared_promote_importance = 8      # Min importance for LTM→Shared promotion
 # shared_promote_min_agents = 2      # Min distinct agents that accessed the entry
 # shared_promote_min_access = 3      # Min total access count

@@ -90,22 +90,27 @@ class JournalConfig(BaseModel):
 
 
 class LTMConfig(BaseModel):
-    """Tier 3: Long-term memory settings."""
+    """Tier 3: Long-term memory settings.
+
+    Note: `salience` (formerly `confidence`) is the decayed field. It reflects
+    how strongly an entry should influence reasoning right now, not whether
+    the entry is true. For grounding certainty see `record_type` + `grounding`.
+    """
 
     max_chars_in_prompt: int = 4000
     """Maximum characters for LTM prompt section."""
 
     staleness_days: int = 90
-    """Days without access before confidence decay begins."""
+    """Days without access before salience decay begins."""
 
-    confidence_decay_rate: float = 0.02
-    """Confidence decay per consolidation cycle for stale entries."""
+    salience_decay_rate: float = 0.02
+    """Salience decay per consolidation cycle for never-accessed stale entries."""
 
-    confidence_decay_rate_accessed: float = 0.05
-    """Faster decay rate for entries that were accessed but not validated."""
+    salience_decay_rate_accessed: float = 0.05
+    """Faster salience decay for entries that were accessed but not validated."""
 
-    min_confidence: float = 0.3
-    """Minimum confidence before entry is flagged for review."""
+    min_salience: float = 0.3
+    """Minimum salience before entry is flagged for review."""
 
     shared_promote_importance: int = 8
     """Minimum importance for LTM→Shared promotion."""

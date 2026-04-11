@@ -109,19 +109,24 @@ max_chars_in_prompt = 1500
 ```toml
 [ltm]
 staleness_days = 90
-confidence_decay_rate = 0.02
-min_confidence = 0.3
+salience_decay_rate = 0.02
+salience_decay_rate_accessed = 0.05
+min_salience = 0.3
 shared_promote_importance = 8
 shared_promote_min_agents = 2
 shared_promote_min_access = 3
 max_chars_in_prompt = 4000
 ```
 
-**`staleness_days`** (default: 90): Days without access before confidence decay begins. Knowledge that nobody retrieves for 3 months starts to fade.
+> **Note on terminology**: LTM entries carry a `salience` score (formerly `confidence`). Salience reflects how strongly the entry should influence current reasoning, not whether it is true. It starts at 1.0 and decays with staleness. For truth / grounding certainty, see `record_type` and `grounding` (or use entity memory, which has its own `confidence` field with strict grounding semantics).
 
-**`confidence_decay_rate`** (default: 0.02): Confidence points subtracted per consolidation cycle for unaccessed entries. At the default 6-hour cycle interval, an unaccessed entry drops from 1.0 to 0.3 (minimum) in about 5 months.
+**`staleness_days`** (default: 90): Days without access before salience decay begins. Knowledge that nobody retrieves for 3 months starts to fade.
 
-**`min_confidence`** (default: 0.3): Floor for confidence decay. Entries never drop below this, so they remain searchable but rank lower.
+**`salience_decay_rate`** (default: 0.02): Salience points subtracted per consolidation cycle for unaccessed entries. At the default 6-hour cycle interval, an unaccessed entry drops from 1.0 to 0.3 (minimum) in about 5 months.
+
+**`salience_decay_rate_accessed`** (default: 0.05): Faster decay rate for entries that were accessed but never re-validated. A read without re-confirmation is weak evidence of relevance.
+
+**`min_salience`** (default: 0.3): Floor for salience decay. Entries never drop below this, so they remain searchable but rank lower.
 
 **`shared_promote_importance`** (default: 8): Minimum importance for LTM→Shared promotion.
 

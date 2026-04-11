@@ -13,7 +13,7 @@ def consolidate(
     nightly: Annotated[bool, typer.Option("--nightly",
         help="Run nightly synthesis instead of full cycle")] = False,
 ):
-    """Run a consolidation cycle (decay, promote, dedup, confidence)."""
+    """Run a consolidation cycle (decay, promote, dedup, salience)."""
     async def _consolidate():
         async with get_mem() as mem:
             if nightly:
