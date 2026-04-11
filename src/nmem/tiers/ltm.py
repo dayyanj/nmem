@@ -48,7 +48,7 @@ class LTMTier:
         category: str,
         key: str,
         content: str,
-        importance: int = 5,
+        importance: int | None = None,
         *,
         source: str = "agent",
         source_journal_id: int | None = None,
@@ -66,7 +66,11 @@ class LTMTier:
             category: Category (e.g., "fact", "procedure", "lesson", "pattern").
             key: Unique key within the agent's memory.
             content: Entry content.
-            importance: Importance 1-10.
+            importance: Importance 1-10. If None (default), the consolidation
+                heuristic scorer will manage this value at cycle time and the
+                row is marked `auto_importance=True`. If the caller passes an
+                explicit int, `auto_importance` flips to False and the scorer
+                leaves the value alone.
             source: "agent", "promotion", "consolidation", "migration".
             source_journal_id: Journal entry that spawned this (if promoted).
             record_type: "fact", "preference", "procedure", "lesson", etc.
@@ -76,6 +80,10 @@ class LTMTier:
         Returns:
             The created/updated LTMEntry.
         """
+        auto_importance = importance is None
+        if auto_importance:
+            importance = 5
+        importance = min(max(importance, 1), 10)
         if project_scope is ...:
             project_scope = self._config.project_scope
 
@@ -100,7 +108,14 @@ class LTMTier:
             if existing:
                 existing.content = content
                 existing.category = category
-                existing.importance = max(existing.importance, importance)
+                # Explicit importance always wins over whatever was there
+                # before (manual or auto) and disables auto-scoring forever.
+                # Auto-importance saves only raise the floor, never lower it.
+                if not auto_importance:
+                    existing.importance = max(existing.importance, importance)
+                    existing.auto_importance = False
+                else:
+                    existing.importance = max(existing.importance, importance)
                 existing.salience = 1.0
                 existing.embedding = emb
                 existing.record_type = record_type
@@ -117,6 +132,7 @@ class LTMTier:
                     key=key,
                     content=content,
                     importance=importance,
+                    auto_importance=auto_importance,
                     source=source,
                     source_journal_id=source_journal_id,
                     record_type=record_type,
@@ -168,7 +184,10 @@ class LTMTier:
             category = entry_dict.get("category", "fact")
             key = entry_dict["key"]
             content = entry_dict["content"]
-            importance = entry_dict.get("importance", 5)
+            # Three-way branch: missing key OR explicit None = auto; int = manual.
+            raw_importance = entry_dict.get("importance")
+            auto_importance = raw_importance is None
+            importance = 5 if auto_importance else min(max(int(raw_importance), 1), 10)
             source = entry_dict.get("source", "agent")
             record_type = entry_dict.get("record_type", "fact")
             grounding = entry_dict.get("grounding", "inferred")
@@ -191,6 +210,8 @@ class LTMTier:
                     existing.content = content
                     existing.category = category
                     existing.importance = max(existing.importance, importance)
+                    if not auto_importance:
+                        existing.auto_importance = False
                     existing.salience = 1.0
                     existing.embedding = emb
                     existing.record_type = record_type
@@ -207,6 +228,7 @@ class LTMTier:
                         key=key,
                         content=content,
                         importance=importance,
+                        auto_importance=auto_importance,
                         source=source,
                         record_type=record_type,
                         grounding=grounding,
@@ -456,6 +478,7 @@ class LTMTier:
             key=row.key,
             content=row.content,
             importance=row.importance,
+            auto_importance=row.auto_importance,
             salience=row.salience,
             access_count=row.access_count,
             source=row.source,

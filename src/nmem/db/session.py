@@ -196,6 +196,29 @@ class DatabaseManager:
                 "RENAME COLUMN supersedes_id TO superseded_by_id",
                 "v3: rename LTM.supersedes_id to superseded_by_id",
             )
+            # Add `auto_importance` to journal + LTM. Existing rows default
+            # to FALSE (preserve whatever importance the author set) — new
+            # rows default to TRUE so the consolidation scorer takes over.
+            await _run(
+                "ALTER TABLE nmem_journal_entries "
+                "ADD COLUMN IF NOT EXISTS auto_importance BOOLEAN DEFAULT FALSE NOT NULL",
+                "v3: add auto_importance to nmem_journal_entries",
+            )
+            await _run(
+                "ALTER TABLE nmem_journal_entries "
+                "ALTER COLUMN auto_importance SET DEFAULT TRUE",
+                "v3: flip auto_importance default to TRUE for new journal rows",
+            )
+            await _run(
+                "ALTER TABLE nmem_long_term_memory "
+                "ADD COLUMN IF NOT EXISTS auto_importance BOOLEAN DEFAULT FALSE NOT NULL",
+                "v3: add auto_importance to nmem_long_term_memory",
+            )
+            await _run(
+                "ALTER TABLE nmem_long_term_memory "
+                "ALTER COLUMN auto_importance SET DEFAULT TRUE",
+                "v3: flip auto_importance default to TRUE for new LTM rows",
+            )
 
         # Bump schema version in its own session
         async with self.session() as session:

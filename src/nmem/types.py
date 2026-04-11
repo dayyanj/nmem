@@ -39,6 +39,7 @@ class JournalEntry:
     title: str
     content: str
     importance: int = 5
+    auto_importance: bool = True
     relevance_score: float = 0.5
     access_count: int = 0
     expires_at: datetime | None = None
@@ -60,6 +61,11 @@ class LTMEntry:
     `salience` (formerly `confidence`) reflects how strongly this entry should
     influence reasoning right now — it decays with staleness. It is NOT a
     certainty/truth measure; for grounding see the `grounding` field.
+
+    `auto_importance` marks entries whose importance is managed by the
+    consolidation heuristic scorer. If the caller passed an explicit
+    importance at save time, this flag is False and the scorer will leave
+    the value alone.
     """
 
     id: int
@@ -68,6 +74,7 @@ class LTMEntry:
     key: str
     content: str
     importance: int = 5
+    auto_importance: bool = True
     salience: float = 1.0
     access_count: int = 0
     source: str = "agent"
@@ -236,6 +243,7 @@ class ConsolidationStats:
     promoted_to_ltm: int = 0
     promoted_to_shared: int = 0
     duplicates_merged: int = 0
+    auto_importance_rescored: int = 0
     salience_decayed: int = 0
     curiosity_decayed: int = 0
     patterns_synthesized: int = 0

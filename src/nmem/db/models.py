@@ -140,8 +140,12 @@ class JournalEntryModel(Base):
     content: Mapped[str] = mapped_column(Text)
     content_tsv = mapped_column(TSVType, nullable=True)
 
-    # Importance and decay
+    # Importance and decay.
+    # `auto_importance=True` marks entries whose importance is managed by the
+    # consolidation heuristic scorer. Explicit author-set importance is kept
+    # sovereign by flipping this to False at write time.
     importance: Mapped[int] = mapped_column(Integer, default=5)
+    auto_importance: Mapped[bool] = mapped_column(Boolean, default=True)
     relevance_score: Mapped[float] = mapped_column(Float, default=0.5)
     access_count: Mapped[int] = mapped_column(Integer, default=0)
     last_accessed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -201,8 +205,11 @@ class LTMModel(Base):
     content: Mapped[str] = mapped_column(Text)
     content_tsv = mapped_column(TSVType, nullable=True)
 
-    # Importance and salience
+    # Importance and salience. See JournalEntryModel for the `auto_importance`
+    # semantics — explicit author-set importance flips the flag off and is
+    # preserved verbatim by the consolidation scorer.
     importance: Mapped[int] = mapped_column(Integer, default=5)
+    auto_importance: Mapped[bool] = mapped_column(Boolean, default=True)
     salience: Mapped[float] = mapped_column(Float, default=1.0)
     access_count: Mapped[int] = mapped_column(Integer, default=0)
     last_accessed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

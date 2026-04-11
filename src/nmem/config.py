@@ -215,6 +215,27 @@ class ConsolidationConfig(BaseModel):
     """Minimum journal entries in 24h to trigger synthesis."""
 
 
+class ImportanceConfig(BaseModel):
+    """Automatic importance scoring (consolidation time, heuristic-based).
+
+    When a journal or LTM entry is written with `importance=None` (the
+    default), the row is marked `auto_importance=True`. During every full
+    consolidation cycle, the heuristic scorer rescores all such rows based
+    on record_type, grounding, and access velocity. Rows written with an
+    explicit importance integer are marked `auto_importance=False` and are
+    never touched by the scorer.
+    """
+
+    enabled: bool = True
+    """Enable/disable auto-importance rescoring at consolidation time."""
+
+    llm_rescore_enabled: bool = False
+    """Placeholder for future LLM-based rescoring. Not implemented in v1."""
+
+    rescore_batch_size: int = 50
+    """Maximum rows to rescore per consolidation cycle (bounds runtime)."""
+
+
 class NmemConfig(BaseSettings):
     """Root configuration for nmem.
 
@@ -267,5 +288,8 @@ class NmemConfig(BaseSettings):
 
     consolidation: ConsolidationConfig = ConsolidationConfig()
     """Background consolidation engine settings."""
+
+    importance: ImportanceConfig = ImportanceConfig()
+    """Automatic importance scoring settings."""
 
     model_config = {"env_prefix": "NMEM_", "env_nested_delimiter": "__"}

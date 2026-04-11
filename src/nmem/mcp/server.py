@@ -74,7 +74,7 @@ async def memory_store(
     title: str,
     content: str,
     agent_id: str = "default",
-    importance: int = 5,
+    importance: int | None = None,
     entry_type: str = "observation",
     tags: list[str] | None = None,
 ) -> str:
@@ -84,7 +84,9 @@ async def memory_store(
         title: Short descriptive title.
         content: Full memory content.
         agent_id: Agent storing the memory.
-        importance: 1-10 (7+ auto-promotes to LTM).
+        importance: 1-10 — or leave unset (default) to let the consolidation
+            heuristic scorer manage it. Explicit values are preserved verbatim
+            forever and never silently adjusted.
         entry_type: Type: observation, decision, lesson_learned, session_summary.
         tags: Optional tags for filtering.
     """
@@ -198,7 +200,7 @@ async def memory_save_ltm(
     content: str,
     agent_id: str = "default",
     category: str = "fact",
-    importance: int = 5,
+    importance: int | None = None,
 ) -> str:
     """Save permanent knowledge to long-term memory. Upserts by (agent_id, key).
 
@@ -210,7 +212,8 @@ async def memory_save_ltm(
         content: Knowledge content.
         agent_id: Agent saving the knowledge.
         category: Category: fact, procedure, lesson, pattern, policy, contact, troubleshooting.
-        importance: 1-10 (8+ may promote to shared knowledge).
+        importance: 1-10 (8+ may promote to shared knowledge) — or leave unset
+            to let the consolidation heuristic scorer manage it.
     """
     mem = _get_mem(ctx)
     entry = await mem.ltm.save(

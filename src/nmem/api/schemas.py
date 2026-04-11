@@ -53,7 +53,9 @@ class JournalEntryCreate(BaseModel):
     entry_type: str = "observation"
     title: str
     content: str
-    importance: int = Field(default=5, ge=1, le=10)
+    importance: int | None = Field(default=None, ge=1, le=10)
+    """If None, the consolidation heuristic scorer will manage this value.
+    If an explicit int is passed, it is preserved verbatim forever."""
     session_id: str | None = None
     tags: list[str] | None = None
     record_type: str = "evidence"
@@ -71,6 +73,7 @@ class JournalEntryResponse(BaseModel):
     title: str
     content: str
     importance: int
+    auto_importance: bool = True
     relevance_score: float
     access_count: int
     expires_at: datetime | None = None
@@ -91,7 +94,9 @@ class JournalEntryResponse(BaseModel):
 class LTMEntryCreate(BaseModel):
     category: str = "fact"
     content: str
-    importance: int = Field(default=5, ge=1, le=10)
+    importance: int | None = Field(default=None, ge=1, le=10)
+    """If None, the consolidation heuristic scorer will manage this value.
+    If an explicit int is passed, it is preserved verbatim forever."""
     source: str = "agent"
     record_type: str = "fact"
     grounding: str = "inferred"
@@ -108,6 +113,7 @@ class LTMEntryResponse(BaseModel):
     key: str
     content: str
     importance: int
+    auto_importance: bool = True
     salience: float
     access_count: int
     source: str
@@ -305,6 +311,7 @@ class ConsolidationStatsResponse(BaseModel):
     promoted_to_ltm: int = 0
     promoted_to_shared: int = 0
     duplicates_merged: int = 0
+    auto_importance_rescored: int = 0
     salience_decayed: int = 0
     curiosity_decayed: int = 0
     patterns_synthesized: int = 0

@@ -55,7 +55,7 @@ class JournalTier:
         entry_type: str,
         title: str,
         content: str,
-        importance: int = 5,
+        importance: int | None = None,
         *,
         session_id: str | None = None,
         tags: list[str] | None = None,
@@ -71,7 +71,11 @@ class JournalTier:
             entry_type: Entry type (e.g., "session_summary", "decision", "outcome").
             title: Short descriptive title.
             content: Full entry content.
-            importance: Importance 1-10 (default 5). Clamped to [1, 10].
+            importance: Importance 1-10. If None (default), the consolidation
+                heuristic scorer will manage this value at cycle time and the
+                row is marked `auto_importance=True`. If the caller passes an
+                explicit int, `auto_importance` flips to False and the scorer
+                leaves the value alone forever.
             session_id: Optional session ID.
             tags: Optional tags for filtering.
             record_type: "evidence", "fact", "judgment", "task", "rule", "summary".
@@ -81,6 +85,11 @@ class JournalTier:
         Returns:
             The created JournalEntry, or existing entry if deduplicated.
         """
+        # Explicit importance flips auto_importance off. Missing / None means
+        # "let the consolidator score this" and gets the default of 5 for now.
+        auto_importance = importance is None
+        if auto_importance:
+            importance = 5
         importance = min(max(importance, 1), 10)
 
         # Resolve project scope: sentinel (...) means "use config default"
@@ -120,6 +129,7 @@ class JournalTier:
                 title=title[:300],
                 content=compressed,
                 importance=importance,
+                auto_importance=auto_importance,
                 relevance_score=min(importance / 10.0, 1.0),
                 expires_at=expires_at,
                 context_thread_id=thread_id,
@@ -152,6 +162,7 @@ class JournalTier:
             title=title[:300],
             content=compressed,
             importance=importance,
+            auto_importance=auto_importance,
             relevance_score=min(importance / 10.0, 1.0),
             expires_at=expires_at,
             context_thread_id=thread_id,
@@ -247,6 +258,7 @@ class JournalTier:
                 results.append(JournalEntry(
                     id=entry.id, agent_id=entry.agent_id, entry_type=entry.entry_type,
                     title=entry.title, content=entry.content, importance=entry.importance,
+                    auto_importance=entry.auto_importance,
                     relevance_score=scores.get(eid, 0.0), access_count=entry.access_count,
                     expires_at=entry.expires_at, promoted_to_ltm=entry.promoted_to_ltm,
                     context_thread_id=entry.context_thread_id, record_type=entry.record_type,
@@ -416,6 +428,7 @@ class JournalTier:
             title=row.title,
             content=row.content,
             importance=row.importance,
+            auto_importance=row.auto_importance,
             relevance_score=row.relevance_score,
             access_count=row.access_count,
             expires_at=row.expires_at,

@@ -7,6 +7,8 @@ Run: pytest tests/integration/ -v
 
 import asyncio
 import os
+from datetime import datetime, timedelta
+
 import pytest
 
 from nmem import MemorySystem, NmemConfig
@@ -332,6 +334,132 @@ class TestConsolidation:
         """Full consolidation cycle should complete without errors."""
         stats = await mem.consolidation.run_full_cycle()
         assert stats.duration_seconds >= 0
+
+
+class TestAutoImportanceScoring:
+    """Phase 2 — heuristic importance scoring at consolidation time."""
+
+    async def test_auto_importance_default_on_journal(self, mem: MemorySystem):
+        """Journal entries with no explicit importance are auto-scored."""
+        entry = await mem.journal.add(
+            "test-agent", "observation", "Something happened",
+            "Some event worth logging",
+        )
+        assert entry.auto_importance is True
+        assert entry.importance == 5  # Default floor before rescoring
+
+    async def test_explicit_importance_preserved_on_journal(self, mem: MemorySystem):
+        """Explicit importance flips auto_importance off and sticks."""
+        entry = await mem.journal.add(
+            "test-agent", "observation", "Important event",
+            "Critical observation",
+            importance=8,
+        )
+        assert entry.auto_importance is False
+        assert entry.importance == 8
+
+    async def test_auto_importance_default_on_ltm(self, mem: MemorySystem):
+        """LTM entries with no explicit importance are auto-scored."""
+        entry = await mem.ltm.save(
+            "test-agent", "fact", "auto_key",
+            "Some fact the agent discovered",
+        )
+        assert entry.auto_importance is True
+        assert entry.importance == 5
+
+    async def test_explicit_importance_preserved_on_ltm(self, mem: MemorySystem):
+        """Explicit LTM importance is never silently adjusted."""
+        entry = await mem.ltm.save(
+            "test-agent", "fact", "manual_key",
+            "Fact with author-set importance",
+            importance=9,
+        )
+        assert entry.auto_importance is False
+        assert entry.importance == 9
+
+    async def test_score_auto_importance_rescores_heuristic(self, mem: MemorySystem):
+        """Heuristic scorer rescores auto entries, leaves manual alone."""
+        from sqlalchemy import text
+
+        # Manual entry — importance should NEVER move
+        manual = await mem.ltm.save(
+            "t", "fact", "manual_evidence",
+            "High-grounding manual entry that should stay at 2",
+            importance=2,
+            record_type="evidence",
+            grounding="source_material",
+        )
+        # Auto entry — importance should get rescored high (evidence + source)
+        auto = await mem.ltm.save(
+            "t", "fact", "auto_evidence",
+            "High-grounding auto entry",
+            record_type="evidence",
+            grounding="source_material",
+        )
+
+        rescored = await mem.consolidation._score_auto_importance()
+        assert rescored >= 1
+
+        # Re-fetch both
+        refreshed_manual = await mem.ltm.get("t", "manual_evidence")
+        refreshed_auto = await mem.ltm.get("t", "auto_evidence")
+        assert refreshed_manual.importance == 2, (
+            "Manual importance must not change"
+        )
+        assert refreshed_manual.auto_importance is False
+        assert refreshed_auto.importance >= 7, (
+            f"Auto importance for evidence+source should be >=7, got {refreshed_auto.importance}"
+        )
+        assert refreshed_auto.auto_importance is True
+
+    async def test_retroactive_boost_skips_manual(self, mem: MemorySystem):
+        """Nightly _retroactive_boost must not touch author-set importance."""
+        from sqlalchemy import text
+
+        # Seed a manual journal entry
+        await mem.journal.add(
+            "t", "observation", "Manual observation", "content",
+            importance=3,
+        )
+
+        # Simulate the _retroactive_boost SQL path directly: fake a pattern
+        # that matches the entry's content and verify the guard holds.
+        await mem.consolidation._retroactive_boost(
+            patterns=[{"observation": "Manual observation content"}],
+            since=datetime.utcnow() - timedelta(days=1),
+        )
+
+        # Manual importance should NOT be boosted
+        async with mem._db.session() as session:
+            result = await session.execute(
+                text("SELECT importance, auto_importance FROM nmem_journal_entries "
+                     "WHERE title = 'Manual observation'")
+            )
+            row = result.first()
+            assert row is not None
+            assert row[0] == 3, f"Manual importance was boosted to {row[0]}"
+            assert row[1] is False
+
+    async def test_rescore_batch_bounded(self, mem: MemorySystem):
+        """Rescore respects rescore_batch_size (processes at most N rows per cycle)."""
+        # Seed many auto entries
+        for i in range(5):
+            await mem.ltm.save(
+                "batch-agent", "fact", f"batch_key_{i}",
+                f"content {i}",
+                record_type="observation",
+                grounding="inferred",
+            )
+
+        # Temporarily lower the batch size
+        original = mem.consolidation._config.importance.rescore_batch_size
+        mem.consolidation._config.importance.rescore_batch_size = 2
+        try:
+            # First pass should process at most 2
+            rescored1 = await mem.consolidation._score_auto_importance()
+            assert rescored1 <= 2
+        finally:
+            mem.consolidation._config.importance.rescore_batch_size = original
 
 
 class TestProjectScope:

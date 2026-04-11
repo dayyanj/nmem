@@ -10,9 +10,10 @@ Consolidation steps:
   1. Decay expired journal entries (delete low-importance, promote high-importance)
   2. Promote high-importance / high-access journal entries to LTM
   3. Deduplicate similar LTM entries (union-find clustering + LLM merge)
-  4. Decay salience on stale LTM entries
-  5. Run custom hooks (application-specific steps)
-  6. Decay curiosity signal scores
+  4. Rescore auto-importance entries (heuristic, journal + LTM)
+  5. Decay salience on stale LTM entries
+  6. Run custom hooks (application-specific steps)
+  7. Decay curiosity signal scores
 """
 
 from __future__ import annotations
@@ -61,6 +62,75 @@ def _infer_category(title: str) -> str:
         if any(kw in title_lower for kw in keywords):
             return category
     return "fact"
+
+
+# Heuristic importance scoring (Phase 2).
+#
+# The scorer is intentionally simple and fully deterministic:
+#
+#   base = record_type prior (0-8)
+#     + grounding bonus (0-2)
+#     + access velocity bonus (0-2)
+#     - staleness penalty (0-1)
+#
+# Clamped to [1, 10]. Only runs on rows where `auto_importance=True`.
+#
+# Weights are hardcoded for now; Phase 5 (the profile system) will lift
+# them into config so different domains can tune them.
+
+_RECORD_TYPE_PRIORS: dict[str, int] = {
+    "evidence": 6,
+    "lesson": 7,
+    "lesson_learned": 7,
+    "decision": 6,
+    "rule": 7,
+    "policy": 7,
+    "procedure": 6,
+    "judgment": 5,
+    "fact": 5,
+    "observation": 4,
+    "summary": 4,
+    "task": 4,
+    "preference": 4,
+}
+
+_GROUNDING_BONUS: dict[str, int] = {
+    "source_material": 2,
+    "confirmed": 2,
+    "inferred": 0,
+    "disputed": -1,
+}
+
+
+def _score_heuristic(
+    *,
+    record_type: str,
+    grounding: str,
+    access_count: int,
+    age_days: float,
+) -> int:
+    """Deterministic heuristic importance score, 1-10.
+
+    Inputs come straight off the row — no LLM, no embedding, no network.
+    The function is free to call on every consolidation cycle.
+    """
+    base = _RECORD_TYPE_PRIORS.get(record_type or "", 5)
+    base += _GROUNDING_BONUS.get(grounding or "", 0)
+
+    # Access velocity: an entry that's been read often relative to its age
+    # gets a bump. Clamped so brand-new high-access entries don't explode.
+    if age_days > 0 and access_count > 0:
+        velocity = access_count / max(age_days, 1.0)
+        if velocity >= 1.0:
+            base += 2
+        elif velocity >= 0.3:
+            base += 1
+
+    # Staleness penalty for entries with zero access after their first week.
+    if age_days > 7 and access_count == 0:
+        base -= 1
+
+    return max(1, min(10, base))
 
 
 class Consolidator:
@@ -159,7 +229,10 @@ class Consolidator:
         # Step 4: Deduplicate similar LTM entries
         stats.duplicates_merged = await self._dedup_similar_memories()
 
-        # Step 5: Salience decay on stale LTM
+        # Step 5: Auto-importance rescoring (heuristic, respects auto_importance flag)
+        stats.auto_importance_rescored = await self._score_auto_importance()
+
+        # Step 6: Salience decay on stale LTM
         stats.salience_decayed = await self._update_salience_scores()
 
         # Step 6: Custom hooks
@@ -183,10 +256,11 @@ class Consolidator:
         self._last_full_cycle = datetime.utcnow()
         logger.info(
             "Full consolidation completed in %.1fs: expired_del=%d, expired_promo=%d, "
-            "promoted_ltm=%d, promoted_shared=%d, deduped=%d, salience_decayed=%d, curiosity=%d",
+            "promoted_ltm=%d, promoted_shared=%d, deduped=%d, rescored=%d, "
+            "salience_decayed=%d, curiosity=%d",
             stats.duration_seconds, stats.expired_deleted, stats.expired_promoted,
             stats.promoted_to_ltm, stats.promoted_to_shared, stats.duplicates_merged,
-            stats.salience_decayed, stats.curiosity_decayed,
+            stats.auto_importance_rescored, stats.salience_decayed, stats.curiosity_decayed,
         )
         return stats
 
@@ -521,9 +595,16 @@ class Consolidator:
             existing = await session.execute(select(LTMModel).where(*filters))
             row = existing.scalar_one_or_none()
 
+            # Inherit auto_importance from the source journal entry. If the
+            # author explicitly set the journal importance, the promoted LTM
+            # row keeps that sovereignty forever.
+            source_auto = getattr(entry, "auto_importance", True)
+
             if row:
                 row.content = content
                 row.importance = max(row.importance, entry.importance)
+                if not source_auto:
+                    row.auto_importance = False
                 row.embedding = emb
                 row.source = "promotion"
                 row.source_journal_id = entry.id
@@ -537,6 +618,7 @@ class Consolidator:
                     key=key,
                     content=content,
                     importance=entry.importance,
+                    auto_importance=source_auto,
                     source="promotion",
                     source_journal_id=entry.id,
                     embedding=emb,
@@ -728,6 +810,74 @@ class Consolidator:
 
         return merged_total
 
+    async def _score_auto_importance(self) -> int:
+        """Rescore journal + LTM rows where `auto_importance=True`.
+
+        Heuristic-only in v1 (see `_score_heuristic` for the function). Runs
+        a bounded batch per cycle so a large backlog doesn't starve other
+        consolidation steps. Rows with `auto_importance=False` are NEVER
+        touched — author-set importance stays sovereign forever.
+        """
+        if not getattr(self._config, "importance", None) or not self._config.importance.enabled:
+            return 0
+
+        batch_size = self._config.importance.rescore_batch_size
+        now = datetime.utcnow()
+        rescored = 0
+
+        # Rescore journal entries first (short-lived, high churn).
+        async with self._db.session() as session:
+            journal_rows = (
+                await session.execute(
+                    select(JournalEntryModel)
+                    .where(JournalEntryModel.auto_importance.is_(True))
+                    .order_by(JournalEntryModel.id.desc())
+                    .limit(batch_size)
+                )
+            ).scalars().all()
+
+            for row in journal_rows:
+                age_days = (now - row.created_at).total_seconds() / 86400.0 if row.created_at else 0.0
+                new_importance = _score_heuristic(
+                    record_type=row.record_type or "",
+                    grounding=row.grounding or "",
+                    access_count=row.access_count or 0,
+                    age_days=age_days,
+                )
+                if new_importance != row.importance:
+                    row.importance = new_importance
+                    row.relevance_score = min(new_importance / 10.0, 1.0)
+                    rescored += 1
+
+        # Now rescore LTM entries (long-lived, lower churn — use a smaller
+        # slice so journal rescoring always completes).
+        async with self._db.session() as session:
+            ltm_rows = (
+                await session.execute(
+                    select(LTMModel)
+                    .where(
+                        LTMModel.auto_importance.is_(True),
+                        LTMModel.status == "validated",
+                    )
+                    .order_by(LTMModel.id.desc())
+                    .limit(batch_size)
+                )
+            ).scalars().all()
+
+            for row in ltm_rows:
+                age_days = (now - row.created_at).total_seconds() / 86400.0 if row.created_at else 0.0
+                new_importance = _score_heuristic(
+                    record_type=row.record_type or "",
+                    grounding=row.grounding or "",
+                    access_count=row.access_count or 0,
+                    age_days=age_days,
+                )
+                if new_importance != row.importance:
+                    row.importance = new_importance
+                    rescored += 1
+
+        return rescored
+
     async def _update_salience_scores(self) -> int:
         """Decay salience of stale LTM entries.
 
@@ -792,7 +942,12 @@ class Consolidator:
         return decayed
 
     async def _retroactive_boost(self, patterns: list[dict], since: datetime) -> None:
-        """Boost importance of journal entries that contributed to discovered patterns."""
+        """Boost importance of journal entries that contributed to discovered patterns.
+
+        Only operates on entries where `auto_importance=True`. Author-set
+        importance is sovereign and must never be silently drifted upward
+        by pattern synthesis.
+        """
         boosted = 0
         for pattern in patterns:
             obs = pattern.get("observation", "")
@@ -810,6 +965,7 @@ class Consolidator:
                             FROM nmem_journal_entries
                             WHERE created_at > :since
                               AND importance < 7
+                              AND auto_importance = TRUE
                               AND embedding IS NOT NULL
                               AND 1 - (embedding <=> CAST(:embedding AS vector)) > 0.75
                             ORDER BY embedding <=> CAST(:embedding AS vector)
@@ -824,6 +980,7 @@ class Consolidator:
                                 UPDATE nmem_journal_entries
                                 SET importance = :importance
                                 WHERE id = :id
+                                  AND auto_importance = TRUE
                             """),
                             {"importance": new_imp, "id": row[0]},
                         )
