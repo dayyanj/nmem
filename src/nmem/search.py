@@ -366,7 +366,12 @@ async def _search_shared(
             score=e.importance / 10.0,
             content=e.content,
             key=e.key,
-            metadata={"category": e.category, "confirmed": e.confirmed},
+            agent_id=e.last_updated_by,
+            metadata={
+                "category": e.category,
+                "confirmed": e.confirmed,
+                "created_by": e.created_by,
+            },
         )
         for e in entries
     ]
@@ -384,9 +389,11 @@ async def _search_entity(
             id=r.id,
             score=r.confidence,
             content=r.content,
+            agent_id=r.agent_id,
             metadata={
                 "entity_type": r.entity_type,
                 "entity_id": r.entity_id,
+                "entity_name": r.entity_name,
                 "record_type": r.record_type,
             },
         )
