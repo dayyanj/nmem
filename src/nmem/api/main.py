@@ -31,33 +31,44 @@ from nmem.api.errors import register_error_handlers
 
 logger = logging.getLogger(__name__)
 
-# Single shared MemorySystem instance for Phase A (single-tenant).
-# Phase B will replace this with a per-tenant pool.
-_shared_mem: MemorySystem | None = None
 
+def get_mem(request: Request) -> MemorySystem:
+    """Dependency: return the MemorySystem bound to this request.
 
-def get_mem() -> MemorySystem:
-    """Dependency — returns the shared MemorySystem instance.
+    The MemorySystem is resolved from ``request.state.mem``, which is
+    populated by the ``_inject_mem`` middleware on every request. For the
+    default single-tenant nmem app, the middleware copies a single instance
+    from ``app.state.mem``. Wrapper apps (e.g. nmem-cloud) can replace the
+    middleware to inject a per-tenant instance instead, without having to
+    use ``app.dependency_overrides``.
 
-    In Phase A this returns a singleton. Phase B will override this
-    dependency to resolve per-tenant instances from a pool.
+    Raises:
+        RuntimeError: if ``request.state.mem`` is missing (usually because
+            the app was not constructed via ``create_app`` or a custom
+            wrapper failed to populate it).
     """
-    if _shared_mem is None:
+    mem = getattr(request.state, "mem", None)
+    if mem is None:
         raise RuntimeError(
-            "MemorySystem not initialized. The FastAPI lifespan should "
-            "have set it. Check that create_app() was called correctly."
+            "MemorySystem not found on request.state. Either the app "
+            "was not constructed via create_app(), or a wrapping middleware "
+            "failed to inject the tenant-specific MemorySystem."
         )
-    return _shared_mem
+    return mem
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[dict]:
-    """Initialize MemorySystem on startup, close on shutdown."""
-    global _shared_mem
+    """Initialize MemorySystem on startup, close on shutdown.
 
+    Stores the instance on ``app.state.mem`` so the per-request middleware
+    can copy it onto ``request.state.mem``.
+    """
     config = getattr(app.state, "nmem_config", None) or NmemConfig()
-    _shared_mem = MemorySystem(config)
-    await _shared_mem.initialize()
+    mem = MemorySystem(config)
+    await mem.initialize()
+    app.state.mem = mem
+    app.state.nmem_config = config
 
     scope_info = (
         f", scope={config.project_scope}" if config.project_scope else ""
@@ -65,11 +76,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[dict]:
     logger.info("nmem REST API initialized%s", scope_info)
 
     try:
-        yield {"mem": _shared_mem, "config": config}
+        yield {"mem": mem, "config": config}
     finally:
-        if _shared_mem is not None:
-            await _shared_mem.close()
-            _shared_mem = None
+        current = getattr(app.state, "mem", None)
+        if current is not None:
+            await current.close()
+            app.state.mem = None
         logger.info("nmem REST API shut down")
 
 
@@ -120,6 +132,16 @@ def create_app(config: NmemConfig | None = None) -> FastAPI:
         response.headers["X-Request-ID"] = rid
         response.headers["X-Response-Time-Ms"] = str(duration_ms)
         return response
+
+    # MemorySystem injection — copies app.state.mem onto request.state.mem.
+    # Wrapper apps (e.g. nmem-cloud) can replace this middleware to inject
+    # a per-tenant MemorySystem resolved from a pool.
+    @app.middleware("http")
+    async def inject_mem(request: Request, call_next):
+        mem = getattr(request.app.state, "mem", None)
+        if mem is not None:
+            request.state.mem = mem
+        return await call_next(request)
 
     # Error handlers
     register_error_handlers(app)
