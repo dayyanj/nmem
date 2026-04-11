@@ -30,6 +30,7 @@ from sqlalchemy import select, func, text as sa_text
 from nmem.db.models import (
     JournalEntryModel,
     LTMModel,
+    MemoryConflictModel,
     SharedKnowledgeModel,
     CuriositySignalModel,
 )
@@ -232,7 +233,12 @@ class Consolidator:
         # Step 5: Auto-importance rescoring (heuristic, respects auto_importance flag)
         stats.auto_importance_rescored = await self._score_auto_importance()
 
-        # Step 6: Salience decay on stale LTM
+        # Step 6: Belief revision — resolve pending conflict rows
+        auto_resolved, needs_review = await self._resolve_conflicts()
+        stats.conflicts_auto_resolved = auto_resolved
+        stats.conflicts_needs_review = needs_review
+
+        # Step 7: Salience decay on stale LTM
         stats.salience_decayed = await self._update_salience_scores()
 
         # Step 6: Custom hooks
@@ -257,10 +263,11 @@ class Consolidator:
         logger.info(
             "Full consolidation completed in %.1fs: expired_del=%d, expired_promo=%d, "
             "promoted_ltm=%d, promoted_shared=%d, deduped=%d, rescored=%d, "
-            "salience_decayed=%d, curiosity=%d",
+            "conflicts_auto=%d, conflicts_review=%d, salience_decayed=%d, curiosity=%d",
             stats.duration_seconds, stats.expired_deleted, stats.expired_promoted,
             stats.promoted_to_ltm, stats.promoted_to_shared, stats.duplicates_merged,
-            stats.auto_importance_rescored, stats.salience_decayed, stats.curiosity_decayed,
+            stats.auto_importance_rescored, stats.conflicts_auto_resolved,
+            stats.conflicts_needs_review, stats.salience_decayed, stats.curiosity_decayed,
         )
         return stats
 
@@ -877,6 +884,55 @@ class Consolidator:
                     rescored += 1
 
         return rescored
+
+    async def _resolve_conflicts(self) -> tuple[int, int]:
+        """Resolve pending conflict rows.
+
+        Returns (auto_resolved_count, needs_review_count). Iterates all
+        `status='open'` conflicts, applies the resolution priority
+        (grounding → agent trust → recency → importance), and either
+        auto-resolves (loser goes `superseded`) or flips to `needs_review`.
+
+        Idempotent: rows with `settled_at` set are skipped unless a newer
+        write has bumped one side's updated_at past the settled timestamp.
+        """
+        if not getattr(self._config, "belief", None) or not self._config.belief.enabled:
+            return (0, 0)
+
+        from nmem.conflicts import resolve_conflict
+
+        auto_resolved = 0
+        needs_review = 0
+
+        async with self._db.session() as session:
+            open_conflicts = (
+                await session.execute(
+                    select(MemoryConflictModel).where(
+                        MemoryConflictModel.status == "open"
+                    )
+                )
+            ).scalars().all()
+
+        for conflict in open_conflicts:
+            try:
+                outcome = await resolve_conflict(
+                    self._db, conflict, self._config.belief,
+                )
+                if outcome == "auto_resolved":
+                    auto_resolved += 1
+                elif outcome == "needs_review":
+                    needs_review += 1
+            except Exception as e:
+                logger.warning(
+                    "Failed to resolve conflict #%d: %s", conflict.id, e
+                )
+
+        if auto_resolved or needs_review:
+            logger.info(
+                "Belief revision: %d auto-resolved, %d need review",
+                auto_resolved, needs_review,
+            )
+        return (auto_resolved, needs_review)
 
     async def _update_salience_scores(self) -> int:
         """Decay salience of stale LTM entries.

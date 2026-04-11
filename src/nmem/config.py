@@ -236,6 +236,63 @@ class ImportanceConfig(BaseModel):
     """Maximum rows to rescore per consolidation cycle (bounds runtime)."""
 
 
+class BeliefRevisionConfig(BaseModel):
+    """Conflict detection and resolution ("belief revision").
+
+    When two records assert contradictory content, nmem records a conflict
+    on write (via `scan_conflicts`) and resolves it at consolidation time
+    using the priority:
+
+        1. grounding rank  (source_material = confirmed > inferred > disputed)
+        2. agent trust     (config-only dict, looked up by agent_id)
+        3. recency         (newer wins, by updated_at)
+        4. importance      (higher wins)
+
+    If the winner's grounding rank is >= `auto_resolve_grounding_gap` above
+    the loser's, the conflict is auto-resolved: the loser flips to
+    `status='superseded'` and gets `superseded_by_id` pointing at the
+    winner. Otherwise the conflict goes to `needs_review` and waits for
+    a human (or a more confident record) to arrive.
+    """
+
+    enabled: bool = True
+    """Enable/disable conflict detection + resolution."""
+
+    grounding_priority: list[str] = [
+        "source_material",
+        "confirmed",
+        "inferred",
+        "disputed",
+    ]
+    """Grounding values in descending rank order. First wins over all others."""
+
+    auto_resolve_grounding_gap: int = 1
+    """Minimum rank gap between winner and loser to auto-resolve.
+    Set to 0 to allow any tiebreaker (grounding → trust → recency → importance)
+    to auto-resolve, or 2+ to make auto-resolve more conservative."""
+
+    agent_trust: dict[str, float] = {}
+    """Per-agent trust score 0.0-1.0. Config-only — no dynamic updates.
+    Typical usage: seed higher trust for larger / more capable models
+    (e.g. {"opus": 0.9, "sonnet": 0.7, "qwen-8b": 0.4}).
+    Agents not listed fall back to `default_trust`."""
+
+    default_trust: float = 0.5
+    """Trust score for agents not explicitly listed in `agent_trust`."""
+
+    text_similarity_threshold: float = 0.7
+    """Jaccard threshold for "same topic" detection in conflict scanning."""
+
+    vector_divergence_threshold: float = 0.85
+    """Cosine threshold above which records are considered aligned.
+    Pairs above the text threshold but below this vector threshold are
+    flagged as potential conflicts."""
+
+    scan_candidates_limit: int = 10
+    """Max candidate records to consider when scanning for conflicts on
+    a single write. Bounds the per-write cost."""
+
+
 class NmemConfig(BaseSettings):
     """Root configuration for nmem.
 
@@ -291,5 +348,8 @@ class NmemConfig(BaseSettings):
 
     importance: ImportanceConfig = ImportanceConfig()
     """Automatic importance scoring settings."""
+
+    belief: BeliefRevisionConfig = BeliefRevisionConfig()
+    """Conflict detection + resolution (belief revision) settings."""
 
     model_config = {"env_prefix": "NMEM_", "env_nested_delimiter": "__"}

@@ -462,6 +462,267 @@ class TestAutoImportanceScoring:
             mem.consolidation._config.importance.rescore_batch_size = original
 
 
+class TestBeliefRevision:
+    """Phase 3 — conflict resolution and belief revision."""
+
+    async def _insert_conflict(
+        self,
+        mem: MemorySystem,
+        *,
+        record_a_table: str,
+        record_a_id: int,
+        record_b_table: str,
+        record_b_id: int,
+        agent_a: str,
+        agent_b: str,
+    ) -> int:
+        """Helper: manually seed a conflict row to exercise the resolver
+        without depending on the write-time detection heuristics."""
+        from nmem.db.models import MemoryConflictModel
+
+        async with mem._db.session() as session:
+            conflict = MemoryConflictModel(
+                record_a_table=record_a_table,
+                record_a_id=record_a_id,
+                record_b_table=record_b_table,
+                record_b_id=record_b_id,
+                agent_a=agent_a,
+                agent_b=agent_b,
+                similarity_score=0.5,
+                description="seeded by test",
+                status="open",
+            )
+            session.add(conflict)
+            await session.flush()
+            return conflict.id
+
+    async def test_resolve_by_grounding_gap(self, mem: MemorySystem):
+        """source_material beats inferred by a full rank gap → auto-resolve."""
+        from sqlalchemy import text
+
+        winner = await mem.ltm.save(
+            "agent-a", "fact", "deploy_window",
+            "Deployment window is Tuesdays 9am UTC",
+            importance=5,
+            record_type="fact",
+            grounding="source_material",
+        )
+        loser = await mem.ltm.save(
+            "agent-b", "fact", "deploy_window_alt",
+            "Deployment window is Fridays 5pm UTC",
+            importance=5,
+            record_type="fact",
+            grounding="inferred",
+        )
+
+        await self._insert_conflict(
+            mem,
+            record_a_table="nmem_long_term_memory", record_a_id=loser.id,
+            record_b_table="nmem_long_term_memory", record_b_id=winner.id,
+            agent_a="agent-b", agent_b="agent-a",
+        )
+
+        auto, review = await mem.consolidation._resolve_conflicts()
+        assert auto == 1, f"Expected 1 auto-resolution, got {auto}"
+        assert review == 0
+
+        # Loser should be superseded; winner still validated
+        async with mem._db.session() as session:
+            result = await session.execute(text(
+                "SELECT id, status, superseded_by_id FROM nmem_long_term_memory "
+                "WHERE id IN (:w, :l)"
+            ), {"w": winner.id, "l": loser.id})
+            rows = {r[0]: r for r in result.all()}
+            assert rows[winner.id][1] == "validated"
+            assert rows[loser.id][1] == "superseded"
+            assert rows[loser.id][2] == winner.id
+
+    async def test_resolve_by_agent_trust_tiebreaker(self, mem: MemorySystem):
+        """Equal grounding → higher trust wins."""
+        from sqlalchemy import text
+
+        # Bump config trust for opus; sonnet gets default
+        mem._config.belief.agent_trust = {"opus": 0.9, "sonnet": 0.4}
+
+        winner = await mem.ltm.save(
+            "opus", "fact", "opus_version",
+            "The correct answer is 42",
+            importance=5,
+            record_type="fact",
+            grounding="inferred",
+        )
+        loser = await mem.ltm.save(
+            "sonnet", "fact", "sonnet_version",
+            "The correct answer is 99",
+            importance=5,
+            record_type="fact",
+            grounding="inferred",
+        )
+
+        await self._insert_conflict(
+            mem,
+            record_a_table="nmem_long_term_memory", record_a_id=loser.id,
+            record_b_table="nmem_long_term_memory", record_b_id=winner.id,
+            agent_a="sonnet", agent_b="opus",
+        )
+
+        auto, review = await mem.consolidation._resolve_conflicts()
+        assert auto == 1
+
+        async with mem._db.session() as session:
+            result = await session.execute(text(
+                "SELECT status FROM nmem_long_term_memory WHERE id = :id"
+            ), {"id": loser.id})
+            assert result.scalar() == "superseded"
+
+    async def test_tied_goes_to_needs_review(self, mem: MemorySystem):
+        """Equal grounding + equal trust + equal recency + equal importance → needs_review."""
+        from sqlalchemy import text
+
+        mem._config.belief.agent_trust = {}  # everyone defaults to 0.5
+
+        a = await mem.ltm.save(
+            "agent-x", "fact", "ambiguous_a",
+            "Pricing tier one is free",
+            importance=5,
+            record_type="fact",
+            grounding="inferred",
+        )
+        b = await mem.ltm.save(
+            "agent-y", "fact", "ambiguous_b",
+            "Pricing tier one is free",  # same importance, grounding
+            importance=5,
+            record_type="fact",
+            grounding="inferred",
+        )
+        # Force equal updated_at
+        async with mem._db.session() as session:
+            await session.execute(text(
+                "UPDATE nmem_long_term_memory SET updated_at = NOW() "
+                "WHERE id IN (:a, :b)"
+            ), {"a": a.id, "b": b.id})
+
+        await self._insert_conflict(
+            mem,
+            record_a_table="nmem_long_term_memory", record_a_id=a.id,
+            record_b_table="nmem_long_term_memory", record_b_id=b.id,
+            agent_a="agent-x", agent_b="agent-y",
+        )
+
+        auto, review = await mem.consolidation._resolve_conflicts()
+        assert review >= 1, f"Expected at least 1 needs_review, got auto={auto} review={review}"
+
+        # Neither record should be marked superseded
+        async with mem._db.session() as session:
+            result = await session.execute(text(
+                "SELECT status FROM nmem_long_term_memory WHERE id IN (:a, :b)"
+            ), {"a": a.id, "b": b.id})
+            statuses = {r[0] for r in result.all()}
+            assert statuses == {"validated"}, f"Both should stay validated, got {statuses}"
+
+    async def test_superseded_excluded_from_search_by_default(self, mem: MemorySystem):
+        """Default search filters out status='superseded' rows."""
+        from sqlalchemy import text
+
+        winner = await mem.ltm.save(
+            "t", "fact", "winner_key", "Canonical widget behaviour",
+            importance=5,
+        )
+        loser = await mem.ltm.save(
+            "t", "fact", "loser_key", "Canonical widget behaviour variant",
+            importance=5,
+        )
+        # Manually mark the loser superseded
+        async with mem._db.session() as session:
+            await session.execute(text(
+                "UPDATE nmem_long_term_memory SET status='superseded', "
+                "superseded_by_id=:w WHERE id=:l"
+            ), {"w": winner.id, "l": loser.id})
+
+        results = await mem.ltm.search("t", "widget")
+        ids = {r.id for r in results}
+        assert winner.id in ids
+        assert loser.id not in ids
+
+    async def test_superseded_included_with_flag(self, mem: MemorySystem):
+        """include_superseded=True returns superseded rows for audit."""
+        from sqlalchemy import text
+
+        a = await mem.ltm.save(
+            "t2", "fact", "audit_a", "Audit widget record",
+            importance=5,
+        )
+        async with mem._db.session() as session:
+            await session.execute(text(
+                "UPDATE nmem_long_term_memory SET status='superseded' WHERE id=:id"
+            ), {"id": a.id})
+
+        default_results = await mem.ltm.search("t2", "audit widget")
+        audit_results = await mem.ltm.search(
+            "t2", "audit widget", include_superseded=True,
+        )
+        assert a.id not in {r.id for r in default_results}
+        assert a.id in {r.id for r in audit_results}
+
+    async def test_stale_conflict_marked_when_record_deleted(self, mem: MemorySystem):
+        """If one of the referenced records is gone, the conflict goes stale."""
+        from sqlalchemy import text
+
+        a = await mem.ltm.save("t3", "fact", "stale_a", "content a", importance=5)
+        b = await mem.ltm.save("t3", "fact", "stale_b", "content b", importance=5)
+
+        conflict_id = await self._insert_conflict(
+            mem,
+            record_a_table="nmem_long_term_memory", record_a_id=a.id,
+            record_b_table="nmem_long_term_memory", record_b_id=b.id,
+            agent_a="t3", agent_b="t3",
+        )
+        # Delete one side
+        async with mem._db.session() as session:
+            await session.execute(text(
+                "DELETE FROM nmem_long_term_memory WHERE id=:id"
+            ), {"id": a.id})
+
+        await mem.consolidation._resolve_conflicts()
+
+        async with mem._db.session() as session:
+            result = await session.execute(text(
+                "SELECT status FROM nmem_memory_conflicts WHERE id=:id"
+            ), {"id": conflict_id})
+            assert result.scalar() == "stale"
+
+    async def test_write_path_detects_conflict(self, mem: MemorySystem):
+        """scan_conflicts fires on LTM writes — smoke test that the write
+        path actually creates a conflict row when grounding diverges."""
+        from sqlalchemy import text
+
+        # Make scan thresholds permissive for the test
+        mem._config.belief.text_similarity_threshold = 0.3
+        mem._config.belief.vector_divergence_threshold = 0.99
+
+        await mem.ltm.save(
+            "agent-a", "fact", "divergent_first",
+            "The payment processor is Stripe with v1 webhooks",
+            importance=5,
+            record_type="fact",
+            grounding="source_material",
+        )
+        await mem.ltm.save(
+            "agent-b", "fact", "divergent_second",
+            "The payment processor is Adyen with v2 webhooks",
+            importance=5,
+            record_type="fact",
+            grounding="inferred",
+        )
+
+        async with mem._db.session() as session:
+            result = await session.execute(text(
+                "SELECT COUNT(*) FROM nmem_memory_conflicts WHERE status='open'"
+            ))
+            count = result.scalar()
+            assert count >= 1, f"Expected at least 1 conflict row, got {count}"
+
+
 class TestProjectScope:
     """Tests for project-scoped memory isolation."""
 

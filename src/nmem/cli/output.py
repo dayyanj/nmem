@@ -98,6 +98,8 @@ def print_consolidation_stats(stats) -> None:
     table.add_row("Promoted to Shared", str(stats.promoted_to_shared))
     table.add_row("Duplicates merged", str(stats.duplicates_merged))
     table.add_row("Auto-importance rescored", str(stats.auto_importance_rescored))
+    table.add_row("Conflicts auto-resolved", str(stats.conflicts_auto_resolved))
+    table.add_row("Conflicts needs review", str(stats.conflicts_needs_review))
     table.add_row("Salience decayed", str(stats.salience_decayed))
     table.add_row("Curiosity decayed", str(stats.curiosity_decayed))
     table.add_row("Duration", f"{stats.duration_seconds:.1f}s")

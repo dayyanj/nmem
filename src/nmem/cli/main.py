@@ -19,6 +19,7 @@ from nmem.cli.commands.search_cmd import search
 from nmem.cli.commands.stats_cmd import stats
 from nmem.cli.commands.demo_cmd import demo
 from nmem.cli.commands.consolidate_cmd import consolidate
+from nmem.cli.commands.conflicts_cmd import conflicts_app
 from nmem.cli.commands.setup_cmd import setup
 from nmem.cli.commands.benchmark_cmd import benchmark
 from nmem.cli.commands.doctor_cmd import doctor
@@ -60,6 +61,7 @@ app.command()(benchmark)
 app.command()(doctor)
 app.command()(serve)
 app.add_typer(import_app, name="import")
+app.add_typer(conflicts_app, name="conflicts")
 
 
 if __name__ == "__main__":

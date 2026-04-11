@@ -219,6 +219,19 @@ class DatabaseManager:
                 "ALTER COLUMN auto_importance SET DEFAULT TRUE",
                 "v3: flip auto_importance default to TRUE for new LTM rows",
             )
+            # Belief revision: add superseded_by_id to shared knowledge
+            # (LTM already has it post-rename), and settled_at to the
+            # conflict table for idempotent resolution.
+            await _run(
+                "ALTER TABLE nmem_shared_knowledge "
+                "ADD COLUMN IF NOT EXISTS superseded_by_id INTEGER",
+                "v3: add superseded_by_id to nmem_shared_knowledge",
+            )
+            await _run(
+                "ALTER TABLE nmem_memory_conflicts "
+                "ADD COLUMN IF NOT EXISTS settled_at TIMESTAMP",
+                "v3: add settled_at to nmem_memory_conflicts",
+            )
 
         # Bump schema version in its own session
         async with self.session() as session:

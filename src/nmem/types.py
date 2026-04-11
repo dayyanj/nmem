@@ -244,6 +244,8 @@ class ConsolidationStats:
     promoted_to_shared: int = 0
     duplicates_merged: int = 0
     auto_importance_rescored: int = 0
+    conflicts_auto_resolved: int = 0
+    conflicts_needs_review: int = 0
     salience_decayed: int = 0
     curiosity_decayed: int = 0
     patterns_synthesized: int = 0

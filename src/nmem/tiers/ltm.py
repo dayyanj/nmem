@@ -150,6 +150,25 @@ class LTMTier:
             self._db, "nmem_long_term_memory", entry.id,
             f"{key} {content[:2000]}",
         )
+
+        # Scan for conflicts with peer entries in the same scope. Fire
+        # inline (not fire-and-forget) so tests can observe the detection;
+        # bounded by BeliefRevisionConfig.scan_candidates_limit.
+        try:
+            from nmem.conflicts import scan_conflicts
+            await scan_conflicts(
+                self._db,
+                content=content,
+                embedding=list(emb),
+                agent_id=agent_id,
+                target_table="nmem_long_term_memory",
+                target_id=entry.id,
+                project_scope=project_scope,
+                config=self._config.belief,
+            )
+        except Exception as e:
+            logger.debug("LTM conflict scan failed (non-fatal): %s", e)
+
         return entry
 
     async def save_batch(
@@ -256,6 +275,7 @@ class LTMTier:
         *,
         category: str | None = None,
         project_scope: str | None = ...,
+        include_superseded: bool = False,
     ) -> list[LTMEntry]:
         """Search LTM using hybrid vector + FTS search.
 
@@ -268,6 +288,9 @@ class LTMTier:
             top_k: Maximum results.
             category: Filter by category.
             project_scope: Scope filter. Sentinel (...) = use config default.
+            include_superseded: Audit hatch — when True, drops the
+                `status='validated'` filter and returns superseded rows
+                alongside winners. Default False excludes them.
 
         Returns:
             List of LTMEntry objects, ranked by relevance.
@@ -277,7 +300,9 @@ class LTMTier:
 
         query_embedding = await asyncio.to_thread(self._embedding.embed, query)
 
-        where_parts = ["agent_id = :agent_id", "status = 'validated'"]
+        where_parts = ["agent_id = :agent_id"]
+        if not include_superseded:
+            where_parts.append("status = 'validated'")
         params: dict = {"agent_id": agent_id}
         if category:
             where_parts.append("category = :category")

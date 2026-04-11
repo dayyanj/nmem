@@ -293,6 +293,11 @@ class SharedKnowledgeModel(Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     change_log: Mapped[list | None] = mapped_column(nullable=True)
 
+    # Belief revision: when a shared entry is superseded by a winning
+    # conflict resolution, this points at the winner. Search filters this
+    # out by default unless `include_superseded=True` is passed.
+    superseded_by_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # Project scoping
     project_scope: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
@@ -396,7 +401,18 @@ class PolicyMemoryModel(Base):
 
 
 class MemoryConflictModel(Base):
-    """Tracks contradictions between memory entries across agents."""
+    """Tracks contradictions between memory entries across agents.
+
+    Status lifecycle:
+        open           -- detected on write, awaiting the next consolidation
+        auto_resolved  -- consolidation picked a winner on grounding rank
+                          (+ optional agent trust / recency tiebreakers)
+        needs_review   -- no clear winner; caller must intervene (CLI or SQL)
+        manual         -- a human override settled it
+
+    `settled_at` is the stability mark: once set, the scanner will not
+    re-raise the same record pair until one side has been re-written.
+    """
 
     __tablename__ = "nmem_memory_conflicts"
 
@@ -416,6 +432,7 @@ class MemoryConflictModel(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     __table_args__ = (Index("ix_nmem_conflict_status", "status"),)
 

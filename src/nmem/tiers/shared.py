@@ -121,12 +121,31 @@ class SharedTier:
             self._db, "nmem_shared_knowledge", entry.id,
             f"{key} {content[:2000]}",
         )
+
+        # Scan for conflicts with peer shared-knowledge entries. Bounded
+        # by BeliefRevisionConfig.scan_candidates_limit.
+        try:
+            from nmem.conflicts import scan_conflicts
+            await scan_conflicts(
+                self._db,
+                content=content,
+                embedding=list(emb),
+                agent_id=agent_id,
+                target_table="nmem_shared_knowledge",
+                target_id=entry.id,
+                project_scope=project_scope,
+                config=self._config.belief,
+            )
+        except Exception as e:
+            logger.debug("Shared conflict scan failed (non-fatal): %s", e)
+
         return entry
 
     async def search(
         self, query: str, top_k: int = 5, *,
         category: str | None = None,
         project_scope: str | None = ...,
+        include_superseded: bool = False,
     ) -> list[SharedEntry]:
         """Search shared knowledge using hybrid vector + FTS search.
 
@@ -138,6 +157,8 @@ class SharedTier:
             top_k: Maximum results.
             category: Optional category filter.
             project_scope: Scope filter.
+            include_superseded: Audit hatch — when True, drops the
+                `status='validated'` filter and returns superseded rows.
 
         Returns:
             List of SharedEntry objects, ranked by relevance.
@@ -147,7 +168,9 @@ class SharedTier:
 
         query_embedding = await asyncio.to_thread(self._embedding.embed, query)
 
-        where_parts = ["status = 'validated'"]
+        where_parts = []
+        if not include_superseded:
+            where_parts.append("status = 'validated'")
         params: dict = {}
         if category:
             where_parts.append("category = :category")
@@ -163,7 +186,7 @@ class SharedTier:
             table="nmem_shared_knowledge",
             query_embedding=query_embedding,
             query_text=query,
-            where_clause=" AND ".join(where_parts),
+            where_clause=" AND ".join(where_parts) if where_parts else "TRUE",
             params=params,
             top_k=top_k,
         )
