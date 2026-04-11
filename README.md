@@ -4,6 +4,8 @@
 
 nmem gives your agents a brain that learns. Not just storage and retrieval, but active cognition with automatic promotion, confidence decay, conflict detection, and nightly synthesis.
 
+> **We're actively looking for contributors.** nmem is intentionally built as a community-driven project. Code, docs, ideas, bug reports, independent benchmarks, and adversarial testing are all welcome. See [Contributing](#contributing) below.
+
 ## How it works
 
 ### Memory flows upward: entries earn their way
@@ -183,6 +185,36 @@ mem.start_consolidation()
 | [Configuration](docs/configuration.md) | Every config option with tradeoffs and examples |
 | [API Reference](docs/api-reference.md) | Full method documentation with signatures and examples |
 | [Testing](TESTING.md) | Run tests, benchmarks, E2E QA checklist |
+
+## Contributing
+
+nmem is built in the open and improved by its community. We're looking for people who want to shape what cognitive memory for AI agents looks like — not just patch bugs, but rethink how agents learn.
+
+### Ways to contribute
+
+- **Code and docs**: bug fixes, new importers (Slack exports, Notion, Obsidian, Roam, etc.), new provider backends, performance work, typo fixes. First-time contributors are explicitly welcome. Open an issue before starting large changes so we can align on direction.
+- **Independent benchmarks**: the benchmark suite in [src/nmem/benchmark/](src/nmem/benchmark/) only tells you what *we* measured. We want external, reproducible benchmarks that we don't control — run nmem against LongMemEval, LoCoMo, or your own workload, publish your methodology and raw numbers, and link back. Critical or negative results are just as valuable as positive ones.
+- **Adversarial testing**: try to break cross-tenant isolation, confuse the consolidation engine, pollute shared knowledge, exploit policy memory permissions, or starve the pool. Security reports go to security@spwig.com (we'll set up a security.txt shortly); everything else belongs in a public issue.
+- **Real-world usage reports**: if you deployed nmem at a meaningful scale, write up what broke, what surprised you, and what you wish worked differently. Blog posts, gists, GitHub issues — any format. This is how the project gets better where theory meets practice.
+- **Ideas and discussion**: the memory tier hierarchy, consolidation policies, and promotion criteria are not sacred. If you have a better model, open a discussion. The [concepts doc](docs/concepts.md) explains the current design rationale as a starting point.
+
+### How to get started
+
+1. Read the [Concepts](docs/concepts.md) and [Quickstart](docs/quickstart.md) guides
+2. Run `nmem demo` locally to see the system end-to-end
+3. Look at [TESTING.md](TESTING.md) for how to run the test suite and benchmark harness
+4. Browse open issues tagged `good-first-issue` and `help-wanted`
+5. Fork, branch, PR. Add tests for anything non-trivial. Keep existing tests green.
+
+### Benchmark submissions
+
+If you run an independent benchmark:
+
+- Publish it somewhere public (blog post, paper, gist, README in your own repo)
+- Include the nmem commit SHA, hardware, and configuration so others can reproduce
+- Open an issue with the link — we'll add it to a `docs/independent-benchmarks.md` index if you're willing
+
+We want this project to have honest numbers, even when they're unflattering. If nmem loses to a simpler system on your workload, we want to know why and fix it.
 
 ## CLI
 
