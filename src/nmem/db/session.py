@@ -23,6 +23,9 @@ from nmem.db.models import Base, HAS_PGVECTOR
 
 logger = logging.getLogger(__name__)
 
+# Current schema version. Bump when adding migrations to _migrate_schema.
+CURRENT_SCHEMA_VERSION = 2
+
 
 class DatabaseManager:
     """Manages the async SQLAlchemy engine and session factory."""
@@ -76,18 +79,21 @@ class DatabaseManager:
         if self._is_postgres:
             await self._create_postgres_indexes(embedding_dimensions)
 
-        # Store metadata
+        # Store metadata (fresh installs get the current schema version directly
+        # so the migration only runs when upgrading an existing deployment)
         async with self.session() as session:
             from nmem.db.models import NmemMetadata
 
-            # Check/set embedding dimensions
+            # Check/set embedding dimensions and schema version
             result = await session.execute(
                 text("SELECT value FROM nmem_metadata WHERE key = 'embedding_dimensions'")
             )
             row = result.scalar_one_or_none()
-            if row is None:
+            is_fresh_install = row is None
+            if is_fresh_install:
                 session.add(NmemMetadata(key="embedding_dimensions", value=str(embedding_dimensions)))
-                session.add(NmemMetadata(key="schema_version", value="1"))
+                session.add(NmemMetadata(key="schema_version", value=str(CURRENT_SCHEMA_VERSION)))
+                await session.flush()
             else:
                 stored_dim = int(row)
                 if stored_dim != embedding_dimensions:
@@ -97,18 +103,38 @@ class DatabaseManager:
                         embedding_dimensions,
                     )
 
-            # Run schema migrations
-            await self._migrate_schema(session)
+        # Run schema migrations in a separate session to isolate DDL failures
+        # from the main metadata session. Skip on fresh installs since tables
+        # were already created with the latest schema.
+        if not is_fresh_install:
+            await self._migrate_schema()
 
-    async def _migrate_schema(self, session: AsyncSession) -> None:
-        """Run incremental schema migrations based on schema_version."""
-        result = await session.execute(
-            text("SELECT value FROM nmem_metadata WHERE key = 'schema_version'")
-        )
-        version = int(result.scalar_one_or_none() or "1")
+    async def _migrate_schema(self) -> None:
+        """Run incremental schema migrations based on schema_version.
+
+        Each DDL runs in its own autocommit connection so a failure on one
+        statement (e.g. duplicate column, duplicate index) does not abort
+        the transaction and poison subsequent statements.
+        """
+        async with self.session() as session:
+            result = await session.execute(
+                text("SELECT value FROM nmem_metadata WHERE key = 'schema_version'")
+            )
+            version = int(result.scalar_one_or_none() or "1")
+
+        if version >= CURRENT_SCHEMA_VERSION:
+            return
+
+        async def _run(sql: str, label: str) -> None:
+            """Run a DDL statement in its own isolated connection."""
+            try:
+                async with self._engine.begin() as conn:
+                    await conn.execute(text(sql))
+                logger.info("Migration: %s", label)
+            except Exception as e:
+                logger.debug("Migration skipped (%s): %s", label, e)
 
         if version < 2:
-            # v2: Add project_scope column to all tier tables
             tables_needing_scope = [
                 "nmem_working_memory",
                 "nmem_journal_entries",
@@ -119,44 +145,37 @@ class DatabaseManager:
                 "nmem_delegations",
             ]
             for table in tables_needing_scope:
-                try:
-                    await session.execute(text(
-                        f"ALTER TABLE {table} ADD COLUMN project_scope VARCHAR(300)"
-                    ))
-                    logger.info("Migration v2: added project_scope to %s", table)
-                except Exception:
-                    pass  # Column already exists (fresh install)
+                await _run(
+                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS project_scope VARCHAR(300)",
+                    f"v2: add project_scope to {table}",
+                )
 
-            # Update LTM unique index: (agent_id, key) → (agent_id, key, project_scope)
             if self._is_postgres:
-                try:
-                    await session.execute(text(
-                        "DROP INDEX IF EXISTS ix_nmem_ltm_agent_key"
-                    ))
-                    await session.execute(text(
-                        "CREATE UNIQUE INDEX IF NOT EXISTS ix_nmem_ltm_agent_key_scope "
-                        "ON nmem_long_term_memory (agent_id, key, project_scope)"
-                    ))
-                except Exception as e:
-                    logger.debug("LTM index migration: %s", e)
+                await _run(
+                    "DROP INDEX IF EXISTS ix_nmem_ltm_agent_key",
+                    "v2: drop old LTM unique index",
+                )
+                await _run(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_nmem_ltm_agent_key_scope "
+                    "ON nmem_long_term_memory (agent_id, key, project_scope)",
+                    "v2: create LTM (agent_id, key, project_scope) index",
+                )
+                await _run(
+                    "DROP INDEX IF EXISTS ix_nmem_shared_key",
+                    "v2: drop old shared unique index",
+                )
+                await _run(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_nmem_shared_key_scope "
+                    "ON nmem_shared_knowledge (key, project_scope)",
+                    "v2: create shared (key, project_scope) index",
+                )
 
-            # Update shared key unique index
-            if self._is_postgres:
-                try:
-                    await session.execute(text(
-                        "DROP INDEX IF EXISTS ix_nmem_shared_key_scope"
-                    ))
-                    await session.execute(text(
-                        "CREATE UNIQUE INDEX IF NOT EXISTS ix_nmem_shared_key_scope "
-                        "ON nmem_shared_knowledge (key, project_scope)"
-                    ))
-                except Exception as e:
-                    logger.debug("Shared index migration: %s", e)
-
+        # Bump schema version in its own session
+        async with self.session() as session:
             await session.execute(text(
-                "UPDATE nmem_metadata SET value = '2' WHERE key = 'schema_version'"
-            ))
-            logger.info("Schema migrated to version 2 (project_scope)")
+                "UPDATE nmem_metadata SET value = :v WHERE key = 'schema_version'"
+            ), {"v": str(CURRENT_SCHEMA_VERSION)})
+        logger.info("Schema migrated to version %d", CURRENT_SCHEMA_VERSION)
 
     async def _create_postgres_indexes(self, dimensions: int) -> None:
         """Create PostgreSQL-specific HNSW and GIN indexes."""
