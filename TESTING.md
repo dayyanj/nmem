@@ -1,11 +1,30 @@
 # Testing nmem
 
-## Quick: unit tests only (no external dependencies)
+## Before pushing: run CI locally in a clean container
+
+The canonical way to run tests matches exactly what GitHub Actions runs.
+**Always run this before pushing** — it prevents "works on my machine" bugs
+where a test dep is satisfied by your venv but missing from CI.
+
+```bash
+make ci-local          # Python 3.12 in python:3.12-slim container
+make ci-local-all      # Full matrix: 3.11, 3.12, 3.13 (what CI runs)
+```
+
+The script at `scripts/ci-local.sh` spins up a `python:<ver>-slim` Docker
+container, mounts the repo read-only, copies it to a writable `/build`,
+runs the **exact install + pytest commands** from
+`.github/workflows/ci.yml`, and exits non-zero on failure. No host Python,
+no leftover site-packages, no drift.
+
+## Quick: unit tests in your dev venv (faster, less isolated)
 
 ```bash
 pip install -e ".[dev,sqlite]"
 pytest tests/test_cli/ tests/test_importers/ tests/test_mcp/ tests/test_config.py tests/test_search.py tests/test_tiers/ -v
 ```
+
+Use this for the iteration loop. Use `make ci-local` before you push.
 
 ## Integration: requires Docker PostgreSQL
 
