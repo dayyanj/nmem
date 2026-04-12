@@ -118,7 +118,8 @@ async def memory_search(
     Args:
         query: Natural language search query.
         agent_id: Agent perspective for search.
-        tiers: Comma-separated tier filter: journal,ltm,shared,entity.
+        tiers: Comma-separated tier filter: journal,ltm,shared,entity,policy.
+            Policy is NOT searched by default — add "policy" explicitly.
         top_k: Maximum results to return.
         all_scopes: If True, search across ALL project scopes (ignores current scope).
     """
@@ -319,6 +320,227 @@ async def memory_stats(ctx: Context) -> str:
     lines.append(f"Total entries: {total}")
 
     return "\n".join(lines)
+
+
+@mcp.tool()
+async def memory_write_entity(
+    ctx: Context,
+    entity_type: str,
+    entity_id: str,
+    entity_name: str,
+    content: str,
+    agent_id: str = "default",
+    record_type: str = "evidence",
+    grounding: str = "inferred",
+    confidence: float = 0.8,
+    tags: list[str] | None = None,
+) -> str:
+    """Write a typed entity record with explicit grounding lifecycle.
+
+    Entity memory stores evidence, judgments, tasks, and summaries tied to a
+    specific entity (person, product, bug, etc.) with a grounding lifecycle:
+    - source_material: directly quoted from a document / API response
+    - inferred: derived by reasoning (default)
+    - confirmed: validated against a second independent source
+    - disputed: contradicted by other evidence (see memory_check_conflicts)
+
+    Args:
+        entity_type: Category label (e.g. "person", "bug", "product").
+        entity_id: Stable identifier you supply (e.g. "PR-1234", "user:alice").
+        entity_name: Human-readable label.
+        content: The record content.
+        agent_id: Agent writing the record.
+        record_type: evidence | judgment | task | summary.
+        grounding: source_material | inferred | confirmed | disputed.
+        confidence: 0.0-1.0.
+        tags: Optional tags for filtering.
+    """
+    mem = _get_mem(ctx)
+
+    valid_record_types = {"evidence", "judgment", "task", "summary"}
+    if record_type not in valid_record_types:
+        return f"Error: record_type must be one of: {', '.join(sorted(valid_record_types))}"
+
+    valid_groundings = {"source_material", "inferred", "confirmed", "disputed"}
+    if grounding not in valid_groundings:
+        return f"Error: grounding must be one of: {', '.join(sorted(valid_groundings))}"
+
+    confidence = max(0.0, min(1.0, confidence))
+
+    try:
+        record = await mem.entity.save(
+            entity_type=entity_type,
+            entity_id=entity_id,
+            entity_name=entity_name,
+            agent_id=agent_id,
+            content=content,
+            record_type=record_type,
+            confidence=confidence,
+            grounding=grounding,
+            tags=tags,
+        )
+    except Exception as e:
+        return f"Error: {e}"
+
+    return (
+        f"Saved entity record #{record.id}: {entity_type}/{entity_name} "
+        f"(type={record_type}, grounding={grounding}, confidence={confidence:.2f})"
+    )
+
+
+@mcp.tool()
+async def memory_write_policy(
+    ctx: Context,
+    scope: str,
+    category: str,
+    key: str,
+    content: str,
+    agent_id: str = "default",
+) -> str:
+    """Write a governance policy, upserting on (scope, key).
+
+    Policies are system-wide rules like "sales agents may send refunds up to
+    $500 without approval" or "never auto-merge PRs touching auth middleware".
+
+    Scope examples:
+    - "global" — applies everywhere
+    - "agent:sales" — applies to one agent
+    - "entity_type:lead" — applies when operating on a specific entity type
+
+    Writing the same (scope, key) twice updates the existing policy and
+    increments its version. Use memory_search(..., tiers="policy") to read back.
+
+    Args:
+        scope: Policy scope (e.g. "global", "agent:sales").
+        category: e.g. "escalation", "approval", "autonomy".
+        key: Unique key within scope.
+        content: Full policy text.
+        agent_id: Agent proposing the policy (recorded as created_by).
+    """
+    mem = _get_mem(ctx)
+
+    if not scope or not key:
+        return "Error: scope and key are required"
+
+    try:
+        entry = await mem.policy.save(
+            scope=scope, category=category,
+            key=key, content=content,
+            agent_id=agent_id,
+        )
+    except Exception as e:
+        return f"Error: {e}"
+
+    return f"Saved policy: [{entry.scope}/{entry.category}] {entry.key} (v{entry.version})"
+
+
+@mcp.tool()
+async def memory_check_conflicts(
+    ctx: Context,
+    status: str = "open",
+    agent_id: str | None = None,
+    limit: int = 20,
+    since_days: int | None = None,
+) -> str:
+    """List memory conflicts detected by the automatic scanner.
+
+    Conflicts are raised when two memory records in LTM or shared knowledge
+    have high text overlap but divergent vector similarity, suggesting they
+    say contradictory things about the same topic.
+
+    Use this to review what the scanner flagged for arbitration, or to check
+    for poisoning before trusting retrieval results.
+
+    Args:
+        status: Comma-separated status filter. Default: "open".
+                Valid: open, needs_review, manual, auto_resolved, stale.
+        agent_id: Filter to conflicts involving this agent (either side).
+        limit: Maximum conflicts to return (default 20).
+        since_days: Only conflicts created in the last N days.
+    """
+    mem = _get_mem(ctx)
+    from nmem.conflicts import list_conflicts
+
+    valid_statuses = {"open", "needs_review", "manual", "auto_resolved", "stale"}
+    status_tuple = tuple(s.strip() for s in status.split(","))
+    invalid = set(status_tuple) - valid_statuses
+    if invalid:
+        return f"Error: invalid status value(s): {invalid}. Valid: {', '.join(sorted(valid_statuses))}"
+
+    conflicts = await list_conflicts(
+        mem._db,
+        status=status_tuple,
+        agent_id=agent_id,
+        limit=limit,
+        since_days=since_days,
+    )
+
+    if not conflicts:
+        return "No conflicts matching filter."
+
+    lines = [f"Found {len(conflicts)} conflict(s):\n"]
+    for i, c in enumerate(conflicts, 1):
+        ts = c.created_at.strftime("%Y-%m-%d") if c.created_at else "?"
+        lines.append(
+            f"{i}. [{c.status.upper()}] similarity={c.similarity_score:.2f} created={ts}"
+        )
+        lines.append(f"   A: {c.record_a_table}#{c.record_a_id} (agent={c.agent_a})")
+        lines.append(f"   B: {c.record_b_table}#{c.record_b_id} (agent={c.agent_b})")
+        lines.append(f"   {c.description[:200]}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def memory_mark_grounding(
+    ctx: Context,
+    entity_record_id: int,
+    grounding: str,
+    evidence_ref: str | None = None,
+    agent_id: str = "default",
+) -> str:
+    """Transition an entity record's grounding lifecycle.
+
+    Use after gathering evidence to move a record from 'inferred' to
+    'confirmed', or after finding contradicting evidence to move it to
+    'disputed'.
+
+    Valid transitions:
+    - inferred -> confirmed (verified via second source)
+    - inferred -> disputed (contradicted by other evidence)
+    - confirmed -> disputed (later contradicted)
+    - source_material -> * (rarely needed)
+
+    Args:
+        entity_record_id: ID of the entity record to update.
+        grounding: New grounding value: source_material | inferred | confirmed | disputed.
+        evidence_ref: Free-text reference explaining the transition (URL, doc id).
+        agent_id: Agent making the transition.
+    """
+    mem = _get_mem(ctx)
+
+    valid_groundings = {"source_material", "inferred", "confirmed", "disputed"}
+    if grounding not in valid_groundings:
+        return f"Error: grounding must be one of: {', '.join(sorted(valid_groundings))}"
+
+    try:
+        record = await mem.entity.update_grounding(
+            record_id=entity_record_id,
+            grounding=grounding,
+            evidence_ref=evidence_ref,
+            agent_id=agent_id,
+        )
+    except KeyError:
+        return f"Error: entity record #{entity_record_id} not found"
+    except Exception as e:
+        return f"Error: {e}"
+
+    old = record.evidence_refs[-1]["from"] if record.evidence_refs else "unknown"
+    if old == grounding:
+        return f"Entity record #{record.id}: grounding already '{grounding}' (no change)"
+
+    return f"Entity record #{record.id}: grounding {old} → {grounding}"
 
 
 # ── Resources ────────────────────────────────────────────────────────────────

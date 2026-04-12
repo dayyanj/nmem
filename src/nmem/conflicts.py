@@ -286,6 +286,70 @@ async def scan_conflicts(
     return conflicts
 
 
+# ── List: surface conflicts for MCP / CLI ─────────────────────────────────
+
+
+async def list_conflicts(
+    db: DatabaseManager,
+    *,
+    status: tuple[str, ...] = ("open",),
+    agent_id: str | None = None,
+    limit: int = 20,
+    since_days: int | None = None,
+) -> list[MemoryConflictInfo]:
+    """List memory conflicts, filtered by status / agent / recency.
+
+    Args:
+        db: Database manager.
+        status: Tuple of statuses to include (default: just ``"open"``).
+        agent_id: If set, only conflicts where this agent is on either side.
+        limit: Maximum rows.
+        since_days: If set, only conflicts created in the last N days.
+
+    Returns:
+        List of MemoryConflictInfo objects, newest first.
+    """
+    filters = [MemoryConflictModel.status.in_(status)]
+    if agent_id:
+        filters.append(
+            or_(
+                MemoryConflictModel.agent_a == agent_id,
+                MemoryConflictModel.agent_b == agent_id,
+            )
+        )
+    if since_days is not None and since_days >= 0:
+        from datetime import timedelta, timezone as tz
+        cutoff = datetime.now(tz.utc) - timedelta(days=since_days)
+        filters.append(MemoryConflictModel.created_at >= cutoff)
+
+    async with db.session() as session:
+        stmt = (
+            select(MemoryConflictModel)
+            .where(and_(*filters))
+            .order_by(MemoryConflictModel.created_at.desc())
+            .limit(max(limit, 1))
+        )
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
+
+    return [
+        MemoryConflictInfo(
+            id=r.id,
+            record_a_table=r.record_a_table,
+            record_a_id=r.record_a_id,
+            record_b_table=r.record_b_table,
+            record_b_id=r.record_b_id,
+            agent_a=r.agent_a,
+            agent_b=r.agent_b,
+            similarity_score=r.similarity_score,
+            description=r.description,
+            status=r.status,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
+
+
 # ── Resolve: pick a winner at consolidation time ────────────────────────────
 
 

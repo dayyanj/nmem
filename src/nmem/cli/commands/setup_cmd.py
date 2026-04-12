@@ -14,33 +14,69 @@ from nmem.cli.output import console
 CLAUDE_MD_SNIPPET = '''
 ## Agent Memory (nmem)
 
-This project uses nmem for persistent cognitive memory via MCP. You have access to these memory tools:
+This project uses nmem for persistent cognitive memory via MCP. Tools are
+grouped by purpose:
 
-### When to use memory
+### Retrieval — before starting work
+- `memory_search(query, tiers?)` — hybrid search across tiers. Default tiers:
+  journal, ltm, shared, entity. Add "policy" to search governance rules.
+- `memory_context(query)` — full formatted context for prompt injection
+- `memory_recall(agent_id, days)` — recent journal entries
+- `memory_linked(entry_id, tier)` — associative traversal (what else is
+  related via shared entities, tags, or temporal proximity?)
 
-**At the start of complex tasks**, search for relevant context:
-- Before debugging: `memory_search("error X in module Y")` — check if this was solved before
-- Before implementing: `memory_search("feature X design decisions")` — check for past decisions
-- Before refactoring: `memory_search("module X architecture")` — check for known constraints
+### Writes — after work, by purpose
+- `memory_store(title, content, importance)` — ephemeral observation,
+  lesson learned, session summary (journal; auto-promotes at importance >=7)
+- `memory_save_ltm(key, content)` — permanent knowledge, upserts by key
+- `memory_save_shared(key, content)` — cross-agent facts
+- `memory_write_entity(entity_type, entity_id, entity_name, content,
+  record_type, grounding)` — typed facts ABOUT a specific entity with
+  explicit grounding lifecycle
+- `memory_write_policy(scope, category, key, content)` — governance rules
 
-**After completing significant work**, store what you learned:
-- Bug fixes: `memory_store(title="Fixed X by doing Y", content="Root cause was...", importance=7)`
-- Design decisions: `memory_save_ltm(key="auth_architecture", content="We chose JWT because...", category="architecture", importance=8)`
-- Lessons learned: `memory_store(title="Never do X because Y", content="...", importance=8, entry_type="lesson_learned")`
-- Discovered constraints: `memory_save_ltm(key="db_connection_limit", content="Max 20 connections...", category="constraint", importance=7)`
+### Integrity — verify memory health
+- `memory_check_conflicts(status?)` — contradictions the scanner flagged
+- `memory_mark_grounding(entity_record_id, grounding, evidence_ref)` —
+  transition an entity record between inferred / confirmed / disputed
+- `memory_stats()` — tier counts, DB info
 
-**For shared team knowledge**, save cross-agent facts:
-- `memory_save_shared(key="deploy_process", content="1. Run migrations...", category="procedure", importance=8)`
+### When to use which tier (decision tree)
+
+Storing something? Ask in order:
+1. Is it a rule everyone must follow? -> `memory_write_policy`
+2. Is it a fact ABOUT a specific entity (person, bug, product)?
+   -> `memory_write_entity`
+3. Is it permanent knowledge with a natural key (procedure, decision)?
+   -> `memory_save_ltm`
+4. Should all agents see it? -> `memory_save_shared`
+5. Otherwise (observation, lesson, session note) -> `memory_store`
+
+Retrieving something? Ask:
+- Need facts about a known entity? -> `memory_search` with
+  `tiers="entity"`, or `memory_linked` from a known starting point
+- Need governance rules? -> `memory_search` with `tiers="policy"`
+- Need past lessons for debugging/implementing? -> `memory_search` default
+- Need recent activity? -> `memory_recall`
+
+### Integrity discipline
+Before trusting a high-stakes retrieval, call `memory_check_conflicts` —
+if the scanner flagged contradictions touching your topic, don't act on
+the result until you've arbitrated.
+
+After confirming an `inferred` entity record via a second source, call
+`memory_mark_grounding(..., grounding="confirmed", evidence_ref=...)`
+so future retrievals know the record is trustworthy.
 
 ### Importance guide
-- 1-4: Low — transient observations, minor notes
-- 5-6: Medium — useful context, session summaries
-- 7-8: High — lessons learned, procedures, decisions (auto-promotes to permanent memory)
-- 9-10: Critical — architecture decisions, incident post-mortems, policies
+- 1-4: Low — transient observations
+- 5-6: Medium — useful context
+- 7-8: High — auto-promotes to permanent memory
+- 9-10: Critical — architecture decisions, incident post-mortems
 
 ### What NOT to store
-- Code snippets (they're in git)
-- Temporary debugging state (use working memory for that)
+- Code (it's in git)
+- Ephemeral debugging state
 - Anything already in this CLAUDE.md file
 '''.strip()
 
@@ -54,23 +90,38 @@ nmem is available as an MCP server — check your tool list for `memory_*` tools
 
 ### Available memory tools
 
+#### Retrieval
 | Tool | When to use |
 |------|-------------|
-| `memory_search(query)` | Before starting work — check for relevant past context |
-| `memory_store(title, content, importance)` | After completing work — save what you learned |
-| `memory_save_ltm(key, content, category)` | For permanent knowledge (procedures, architecture, lessons) |
-| `memory_save_shared(key, content)` | For knowledge all agents should know |
-| `memory_recall(agent_id, days)` | To see recent activity |
-| `memory_context(query)` | To get full memory context for a topic |
-| `memory_stats()` | To see what's stored |
+| `memory_search(query, tiers?)` | Before starting work — hybrid search. Default: journal,ltm,shared,entity. Add "policy" for governance rules. |
+| `memory_context(query)` | Get full formatted memory context for a topic |
+| `memory_recall(agent_id, days)` | See recent journal activity |
+| `memory_linked(entry_id, tier)` | Associative traversal — related entries via tags, entities, or temporal proximity |
 
-### Memory workflow
+#### Writes
+| Tool | When to use |
+|------|-------------|
+| `memory_store(title, content, importance)` | Observations, lessons, session notes (journal; auto-promotes at importance >=7) |
+| `memory_save_ltm(key, content, category)` | Permanent knowledge — procedures, architecture, lessons (upserts by key) |
+| `memory_save_shared(key, content)` | Cross-agent facts all agents should know |
+| `memory_write_entity(entity_type, entity_id, entity_name, content, record_type, grounding)` | Typed facts ABOUT a specific entity with grounding lifecycle |
+| `memory_write_policy(scope, category, key, content)` | Governance rules (upserts on scope+key) |
 
-1. **Before debugging/implementing/refactoring**: Search memory for relevant context
-2. **After bug fixes**: Store the root cause and fix (importance 7+)
-3. **After design decisions**: Save to LTM with category "architecture" (importance 8+)
-4. **After discovering constraints**: Save to LTM with category "constraint"
-5. **For team-wide facts**: Save to shared knowledge
+#### Integrity
+| Tool | When to use |
+|------|-------------|
+| `memory_check_conflicts(status?)` | Review contradictions the scanner flagged |
+| `memory_mark_grounding(entity_record_id, grounding, evidence_ref)` | Transition entity grounding: inferred -> confirmed / disputed |
+| `memory_stats()` | See tier counts and system status |
+
+### Which tier to use (decision tree)
+
+Storing something? Ask in order:
+1. Is it a rule everyone must follow? -> `memory_write_policy`
+2. Is it a fact ABOUT a specific entity (person, bug, product)? -> `memory_write_entity`
+3. Is it permanent knowledge with a natural key? -> `memory_save_ltm`
+4. Should all agents see it? -> `memory_save_shared`
+5. Otherwise -> `memory_store`
 
 ### Importance scale
 

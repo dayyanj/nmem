@@ -127,6 +127,70 @@ class EntityTier:
         )
         return entity_record
 
+    ALLOWED_GROUNDING = {"source_material", "inferred", "confirmed", "disputed"}
+
+    async def update_grounding(
+        self,
+        record_id: int,
+        grounding: str,
+        *,
+        evidence_ref: str | None = None,
+        agent_id: str,
+    ) -> EntityRecord:
+        """Transition an entity record's grounding lifecycle.
+
+        Args:
+            record_id: Primary key of the entity record.
+            grounding: New grounding value.
+            evidence_ref: Free-text reference explaining the transition.
+            agent_id: Agent making the transition.
+
+        Returns:
+            The updated EntityRecord.
+
+        Raises:
+            ValueError: If grounding is not a valid value.
+            KeyError: If record not found.
+            PermissionError: If agent lacks write access.
+        """
+        if grounding not in self.ALLOWED_GROUNDING:
+            raise ValueError(
+                f"Invalid grounding '{grounding}'. "
+                f"Must be one of: {', '.join(sorted(self.ALLOWED_GROUNDING))}"
+            )
+
+        async with self._db.session() as session:
+            record = await session.get(EntityMemoryModel, record_id)
+            if record is None:
+                raise KeyError(f"Entity record #{record_id} not found")
+
+            self._check_permission(agent_id, record.entity_type)
+
+            old_grounding = record.grounding
+            record.grounding = grounding
+
+            # Append audit entry to evidence_refs
+            from datetime import datetime, timezone
+            audit_entry = {
+                "type": "grounding_transition",
+                "from": old_grounding,
+                "to": grounding,
+                "at": datetime.now(timezone.utc).isoformat(),
+                "by": agent_id,
+            }
+            if evidence_ref:
+                audit_entry["ref"] = evidence_ref
+
+            # Must create a NEW list — SQLAlchemy's JSON mutation tracking
+            # does not detect in-place append on the same object.
+            refs = list(record.evidence_refs or [])
+            refs.append(audit_entry)
+            record.evidence_refs = refs
+
+            await session.flush()
+            await session.refresh(record)
+            return self._row_to_record(record)
+
     async def get(
         self,
         entity_type: str,

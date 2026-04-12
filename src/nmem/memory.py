@@ -237,6 +237,7 @@ class MemorySystem:
             ltm=self._ltm,
             shared=self._shared,
             entity=self._entity,
+            policy=self._policy,
             tiers=tiers,
             top_k=top_k,
             project_scope=project_scope,

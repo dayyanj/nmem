@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from nmem.tiers.ltm import LTMTier
     from nmem.tiers.shared import SharedTier
     from nmem.tiers.entity import EntityTier
+    from nmem.tiers.policy import PolicyTier
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +269,7 @@ async def cross_tier_search(
     ltm: LTMTier,
     shared: SharedTier,
     entity: EntityTier,
+    policy: PolicyTier | None = None,
     tiers: tuple[str, ...] | None = None,
     top_k: int = 10,
     project_scope: str | None = ...,
@@ -283,7 +285,8 @@ async def cross_tier_search(
         ltm: LTM tier instance.
         shared: Shared tier instance.
         entity: Entity tier instance.
-        tiers: Which tiers to search (default: all).
+        policy: Policy tier instance (optional — pass to enable ``"policy"`` tier search).
+        tiers: Which tiers to search (default: journal, ltm, shared, entity).
         top_k: Maximum total results.
         project_scope: Scope filter. Sentinel (...) = use tier config defaults.
 
@@ -303,6 +306,8 @@ async def cross_tier_search(
         tasks.append(_search_shared(query, shared, **scope_kwarg))
     if "entity" in tiers:
         tasks.append(_search_entity(query, entity, agent_id=agent_id, **scope_kwarg))
+    if "policy" in tiers and policy is not None:
+        tasks.append(_search_policy(query, policy))
 
     all_results: list[SearchResult] = []
     for coro_result in await asyncio.gather(*tasks, return_exceptions=True):
@@ -398,4 +403,27 @@ async def _search_entity(
             },
         )
         for r in records
+    ]
+
+
+async def _search_policy(
+    query: str, tier: PolicyTier,
+) -> list[SearchResult]:
+    results = await tier.search(query, top_k=5)
+    return [
+        SearchResult(
+            tier="policy",
+            id=entry.id,
+            score=score,
+            content=entry.content,
+            key=entry.key,
+            agent_id=entry.created_by,
+            metadata={
+                "scope": entry.scope,
+                "category": entry.category,
+                "version": entry.version,
+                "status": entry.status,
+            },
+        )
+        for entry, score in results
     ]
