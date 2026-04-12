@@ -43,7 +43,17 @@ class SentenceTransformersProvider:
         """Lazy-load the model on first use."""
         if self._model is not None:
             return
+        import gc
+
+        import torch
         from sentence_transformers import SentenceTransformer
+
+        # Clean up any stale meta tensors from a previous instance in this
+        # process — torch can leave model weights on the "meta" device after
+        # garbage collection, causing "Cannot copy out of meta tensor" on reload.
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         logger.info("Loading embedding model: %s (device=%s)", self._model_name, self._device)
         try:
