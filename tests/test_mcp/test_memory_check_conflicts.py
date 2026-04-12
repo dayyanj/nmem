@@ -123,3 +123,32 @@ async def test_check_conflicts_since_days_zero(mcp_ctx, mem):
     # Depending on timing, the conflict was created in the same second, so it
     # might or might not match. Assert it doesn't crash at minimum.
     assert isinstance(result, str)
+
+
+async def test_check_conflicts_scope_filtering(mcp_ctx, mem):
+    """Conflicts with project_scope are filtered by the MCP server's config scope."""
+    from nmem.mcp.server import memory_check_conflicts
+    from sqlalchemy import text
+
+    # Seed a global conflict (no scope) and a scoped conflict
+    async with mem._db.session() as session:
+        await session.execute(text("""
+            INSERT INTO nmem_memory_conflicts
+                (record_a_table, record_a_id, record_b_table, record_b_id,
+                 agent_a, agent_b, similarity_score, description, status,
+                 project_scope)
+            VALUES
+                ('nmem_long_term_memory', 1, 'nmem_long_term_memory', 2,
+                 'a1', 'a2', 0.90, 'Global conflict', 'open', NULL),
+                ('nmem_long_term_memory', 3, 'nmem_long_term_memory', 4,
+                 'a1', 'a2', 0.85, 'Scoped conflict', 'open', 'project_x')
+        """))
+
+    # Default: mem has no project_scope (None) → should see global only
+    result = await memory_check_conflicts(mcp_ctx)
+    assert "1 conflict" in result
+    assert "Global conflict" in result
+
+    # all_scopes=True → should see both
+    result = await memory_check_conflicts(mcp_ctx, all_scopes=True)
+    assert "2 conflict" in result

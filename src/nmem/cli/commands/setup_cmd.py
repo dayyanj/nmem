@@ -36,7 +36,7 @@ grouped by purpose:
 - `memory_write_policy(scope, category, key, content)` — governance rules
 
 ### Integrity — verify memory health
-- `memory_check_conflicts(status?)` — contradictions the scanner flagged
+- `memory_check_conflicts(status?, all_scopes?)` — contradictions the scanner flagged
 - `memory_mark_grounding(entity_record_id, grounding, evidence_ref)` —
   transition an entity record between inferred / confirmed / disputed
 - `memory_stats()` — tier counts, DB info
@@ -110,7 +110,7 @@ nmem is available as an MCP server — check your tool list for `memory_*` tools
 #### Integrity
 | Tool | When to use |
 |------|-------------|
-| `memory_check_conflicts(status?)` | Review contradictions the scanner flagged |
+| `memory_check_conflicts(status?, all_scopes?)` | Review contradictions the scanner flagged (scoped by default) |
 | `memory_mark_grounding(entity_record_id, grounding, evidence_ref)` | Transition entity grounding: inferred -> confirmed / disputed |
 | `memory_stats()` | See tier counts and system status |
 

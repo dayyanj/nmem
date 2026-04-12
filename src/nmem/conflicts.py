@@ -94,6 +94,7 @@ async def check_conflict(
     existing_agent: str | None = None,
     existing_table: str | None = None,
     existing_id: int | None = None,
+    project_scope: str | None = None,
     text_threshold: float = 0.7,
     vector_threshold: float = 0.85,
 ) -> MemoryConflictInfo | None:
@@ -114,6 +115,7 @@ async def check_conflict(
         existing_agent: Agent that wrote the existing content.
         existing_table: Table name for the existing record.
         existing_id: Record ID for the existing record.
+        project_scope: Project scope to record on the conflict row.
         text_threshold: Jaccard threshold for "same topic" detection.
         vector_threshold: Cosine threshold above which content is NOT conflicting.
 
@@ -171,6 +173,7 @@ async def check_conflict(
                 agent_b=existing_agent,
                 similarity_score=vec_sim,
                 description=description,
+                project_scope=project_scope,
             )
             session.add(conflict)
             await session.flush()
@@ -185,6 +188,7 @@ async def check_conflict(
                 agent_b=existing_agent,
                 similarity_score=vec_sim,
                 description=description,
+                project_scope=project_scope,
                 created_at=conflict.created_at,
             )
 
@@ -272,6 +276,7 @@ async def scan_conflicts(
             existing_agent=existing_agent,
             existing_table=target_table,
             existing_id=candidate.id,
+            project_scope=project_scope,
             text_threshold=config.text_similarity_threshold,
             vector_threshold=config.vector_divergence_threshold,
         )
@@ -294,15 +299,18 @@ async def list_conflicts(
     *,
     status: tuple[str, ...] = ("open",),
     agent_id: str | None = None,
+    project_scope: str | None = ...,
     limit: int = 20,
     since_days: int | None = None,
 ) -> list[MemoryConflictInfo]:
-    """List memory conflicts, filtered by status / agent / recency.
+    """List memory conflicts, filtered by status / agent / scope / recency.
 
     Args:
         db: Database manager.
         status: Tuple of statuses to include (default: just ``"open"``).
         agent_id: If set, only conflicts where this agent is on either side.
+        project_scope: Scope filter. ``...`` (sentinel) = current scope + global,
+            ``None`` = global only, ``"*"`` = all scopes.
         limit: Maximum rows.
         since_days: If set, only conflicts created in the last N days.
 
@@ -317,6 +325,22 @@ async def list_conflicts(
                 MemoryConflictModel.agent_b == agent_id,
             )
         )
+    # Scope filtering
+    if project_scope == "*":
+        pass  # All scopes — no filter
+    elif project_scope is not ... and project_scope is not None:
+        # Specific scope + global (NULL)
+        filters.append(
+            or_(
+                MemoryConflictModel.project_scope == project_scope,
+                MemoryConflictModel.project_scope.is_(None),
+            )
+        )
+    elif project_scope is None:
+        # Global only
+        filters.append(MemoryConflictModel.project_scope.is_(None))
+    # ... sentinel = no scope filter (backwards-compat default)
+
     if since_days is not None and since_days >= 0:
         from datetime import timedelta, timezone as tz
         cutoff = datetime.now(tz.utc) - timedelta(days=since_days)
@@ -344,6 +368,7 @@ async def list_conflicts(
             similarity_score=r.similarity_score,
             description=r.description,
             status=r.status,
+            project_scope=r.project_scope,
             created_at=r.created_at,
         )
         for r in rows

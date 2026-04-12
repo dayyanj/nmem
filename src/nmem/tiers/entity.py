@@ -167,6 +167,11 @@ class EntityTier:
             self._check_permission(agent_id, record.entity_type)
 
             old_grounding = record.grounding
+
+            # No-op: return immediately without writing an audit entry
+            if old_grounding == grounding:
+                return self._row_to_record(record)
+
             record.grounding = grounding
 
             # Append audit entry to evidence_refs

@@ -441,6 +441,7 @@ async def memory_check_conflicts(
     agent_id: str | None = None,
     limit: int = 20,
     since_days: int | None = None,
+    all_scopes: bool = False,
 ) -> str:
     """List memory conflicts detected by the automatic scanner.
 
@@ -451,12 +452,17 @@ async def memory_check_conflicts(
     Use this to review what the scanner flagged for arbitration, or to check
     for poisoning before trusting retrieval results.
 
+    By default, returns conflicts from the current project_scope (if set)
+    plus global conflicts. Set all_scopes=True to see conflicts across
+    every scope.
+
     Args:
         status: Comma-separated status filter. Default: "open".
                 Valid: open, needs_review, manual, auto_resolved, stale.
         agent_id: Filter to conflicts involving this agent (either side).
         limit: Maximum conflicts to return (default 20).
         since_days: Only conflicts created in the last N days.
+        all_scopes: If True, return conflicts from ALL project scopes.
     """
     mem = _get_mem(ctx)
     from nmem.conflicts import list_conflicts
@@ -467,10 +473,13 @@ async def memory_check_conflicts(
     if invalid:
         return f"Error: invalid status value(s): {invalid}. Valid: {', '.join(sorted(valid_statuses))}"
 
+    scope_arg = "*" if all_scopes else mem._config.project_scope
+
     conflicts = await list_conflicts(
         mem._db,
         status=status_tuple,
         agent_id=agent_id,
+        project_scope=scope_arg,
         limit=limit,
         since_days=since_days,
     )
@@ -481,8 +490,9 @@ async def memory_check_conflicts(
     lines = [f"Found {len(conflicts)} conflict(s):\n"]
     for i, c in enumerate(conflicts, 1):
         ts = c.created_at.strftime("%Y-%m-%d") if c.created_at else "?"
+        scope_label = f" scope={c.project_scope}" if c.project_scope else ""
         lines.append(
-            f"{i}. [{c.status.upper()}] similarity={c.similarity_score:.2f} created={ts}"
+            f"{i}. [{c.status.upper()}] similarity={c.similarity_score:.2f} created={ts}{scope_label}"
         )
         lines.append(f"   A: {c.record_a_table}#{c.record_a_id} (agent={c.agent_a})")
         lines.append(f"   B: {c.record_b_table}#{c.record_b_id} (agent={c.agent_b})")
@@ -536,11 +546,13 @@ async def memory_mark_grounding(
     except Exception as e:
         return f"Error: {e}"
 
-    old = record.evidence_refs[-1]["from"] if record.evidence_refs else "unknown"
-    if old == grounding:
-        return f"Entity record #{record.id}: grounding already '{grounding}' (no change)"
+    # update_grounding returns early without an audit entry on no-op,
+    # so check whether the latest evidence_refs entry is our transition.
+    last = record.evidence_refs[-1] if record.evidence_refs else None
+    if last and last.get("type") == "grounding_transition" and last.get("to") == grounding:
+        return f"Entity record #{record.id}: grounding {last['from']} → {grounding}"
 
-    return f"Entity record #{record.id}: grounding {old} → {grounding}"
+    return f"Entity record #{record.id}: grounding already '{grounding}' (no change)"
 
 
 # ── Resources ────────────────────────────────────────────────────────────────

@@ -409,6 +409,7 @@ class MemoryConflictModel(Base):
                           (+ optional agent trust / recency tiebreakers)
         needs_review   -- no clear winner; caller must intervene (CLI or SQL)
         manual         -- a human override settled it
+        stale          -- one of the referenced records no longer exists
 
     `settled_at` is the stability mark: once set, the scanner will not
     re-raise the same record pair until one side has been re-written.
@@ -430,11 +431,17 @@ class MemoryConflictModel(Base):
     resolved_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
     resolution: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Project scoping — populated from the source record at scan time
+    project_scope: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     settled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
-    __table_args__ = (Index("ix_nmem_conflict_status", "status"),)
+    __table_args__ = (
+        Index("ix_nmem_conflict_status", "status"),
+        Index("ix_nmem_conflict_project_scope", "project_scope"),
+    )
 
 
 # ── Curiosity Signals ───────────────────────────────────────────────────────
