@@ -210,6 +210,16 @@ class PromptContext:
         """Rough token estimate (chars / 4)."""
         return len(self.full_injection) // 4
 
+    @property
+    def section_tokens(self) -> dict[str, int]:
+        """Per-section token estimates (chars / 4)."""
+        return {
+            name: len(getattr(self, name, "") or "") // 4
+            for name in ("policy", "shared", "ltm", "journal",
+                         "working", "entity", "deja_vu")
+            if getattr(self, name, "")
+        }
+
 
 # ── Conflict ──────────────────────────────────────────────────────────────────
 
@@ -228,6 +238,7 @@ class MemoryConflictInfo:
     similarity_score: float
     description: str
     status: str = "open"
+    project_scope: str | None = None
     created_at: datetime | None = None
 
 

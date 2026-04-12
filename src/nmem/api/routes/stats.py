@@ -79,6 +79,24 @@ async def health_check(mem: MemorySystem = Depends(get_mem)) -> HealthResponse:
     )
 
 
+@router.get("/token-trends")
+async def get_token_trends(
+    days: int = 30,
+    agent_id: str | None = None,
+    mem: MemorySystem = Depends(get_mem),
+):
+    """Token usage trends — prompt injection sizes and LLM costs over time."""
+    from nmem.token_stats import query_token_summary, query_token_trends
+
+    summary = await query_token_summary(mem._db, days=days)
+    records = await query_token_trends(mem._db, days=days, agent_id=agent_id)
+
+    return {
+        "summary": summary,
+        "daily": records,
+    }
+
+
 @router.get("/version", response_model=VersionResponse)
 async def version() -> VersionResponse:
     """Return nmem version info."""

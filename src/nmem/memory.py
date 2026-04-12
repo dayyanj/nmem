@@ -72,6 +72,7 @@ class MemorySystem:
         self._prompt = PromptBuilder(
             self._working, self._journal, self._ltm,
             self._shared, self._entity, self._policy,
+            db=self._db,
         )
 
         # Initialize cognitive engine

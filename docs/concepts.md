@@ -71,11 +71,20 @@ await mem.ltm.save(
 
 **Categories:** `fact`, `procedure`, `lesson`, `pattern`, `policy`, `contact`, `troubleshooting`, `architecture`
 
-### Tier 4: Shared Knowledge
+### Tier 4: Shared Knowledge (social learning)
 
 **What it is:** Cross-agent canonical facts. Visible to ALL agents.
 
 **Use it for:** Company-wide knowledge: policies, vendor contacts, escalation procedures, architecture decisions that affect everyone.
+
+This tier is the heart of **social learning** in nmem. Agents don't just maintain private memories — they contribute to a shared knowledge base that makes every agent smarter over time. The learning loop:
+
+1. Agent observes something → writes to journal
+2. If important enough → promoted to private LTM
+3. If other agents start accessing it → auto-promoted to shared knowledge
+4. Every agent's prompt injection now includes this knowledge
+
+The result: when one agent learns a lesson, all agents benefit — without explicit programming or message-passing between agents.
 
 **Example:**
 ```python
@@ -88,10 +97,10 @@ await mem.shared.save(
 )
 ```
 
-**Lifespan:** Permanent. Versioned with change log. Two paths to creation:
+**Lifespan:** Permanent. Versioned with change log. Three paths to creation:
 1. **Direct save**: an agent saves shared knowledge explicitly
 2. **Promotion**: an LTM entry is accessed by ≥2 distinct agents, proving cross-agent relevance
-3. **Nightly synthesis**: the consolidation engine discovers cross-cutting patterns
+3. **Nightly synthesis**: the consolidation engine discovers cross-cutting patterns across all agents' journal entries
 
 ### Tier 5: Entity Memory
 
@@ -227,3 +236,33 @@ The injection uses **tiered verbosity**:
 - **Working memory**: slot name + content
 
 This keeps the injection compact (~300-500 tokens) while giving the agent access to the most relevant context.
+
+## Token trends
+
+nmem tracks prompt injection sizes and LLM costs automatically. Every call to `mem.prompt.build()` records per-section token estimates, and consolidation operations (compression, synthesis, dedup) log their LLM usage. Query trends via the API (`GET /v1/token-trends`) or CLI (`nmem token-trends`).
+
+Over time, you should see average tokens per prompt build **stabilize or decrease** as the consolidation engine deduplicates knowledge, compresses verbose entries, and the tiered verbosity keeps injections compact. If average tokens per call is climbing, it's a signal that consolidation thresholds may need tuning.
+
+## Social learning in multi-agent systems
+
+In a single-agent setup, nmem is a persistent memory that reduces re-investigation across sessions. In a **multi-agent** setup, nmem becomes a social learning system:
+
+```
+Agent A observes → journals → promotes to LTM
+                                    ↓
+                          Agent B accesses it
+                                    ↓
+                   Auto-promotes to Shared Knowledge
+                                    ↓
+                All agents receive it in prompt injection
+```
+
+Three mechanisms drive this:
+
+1. **Access-based promotion**: When ≥2 different agents access the same LTM entry, the system recognizes it as cross-agent relevant and promotes it to Shared Knowledge automatically.
+
+2. **Nightly synthesis**: The consolidation engine analyzes *all* agents' journal entries together, extracting patterns that no single agent could see. A support agent's customer complaints + an engineering agent's deployment logs → a synthesized insight about deployment timing.
+
+3. **Belief revision**: When agents disagree (contradictory knowledge), the conflict detection system flags the contradiction and resolves it using grounding rank, agent trust, and recency — rather than silently overwriting with the last write.
+
+The effect compounds: each agent's individual learning improves the collective knowledge base, and the collective knowledge base makes each agent's per-session context richer and more accurate.

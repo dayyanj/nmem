@@ -24,6 +24,7 @@ from nmem.cli.commands.setup_cmd import setup
 from nmem.cli.commands.benchmark_cmd import benchmark
 from nmem.cli.commands.doctor_cmd import doctor
 from nmem.cli.commands.serve_cmd import serve
+from nmem.cli.commands.token_trends_cmd import token_trends
 from nmem.cli.commands.import_cmd import import_app
 
 app = typer.Typer(
@@ -60,6 +61,7 @@ app.command()(setup)
 app.command()(benchmark)
 app.command()(doctor)
 app.command()(serve)
+app.command(name="token-trends")(token_trends)
 app.add_typer(import_app, name="import")
 app.add_typer(conflicts_app, name="conflicts")
 

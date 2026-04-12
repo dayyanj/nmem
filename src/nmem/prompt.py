@@ -34,6 +34,8 @@ class PromptBuilder:
         shared: SharedTier,
         entity: EntityTier,
         policy: PolicyTier,
+        *,
+        db: object | None = None,
     ):
         self._working = working
         self._journal = journal
@@ -41,6 +43,7 @@ class PromptBuilder:
         self._shared = shared
         self._entity = entity
         self._policy = policy
+        self._db = db
 
     async def build(
         self,
@@ -91,7 +94,7 @@ class PromptBuilder:
             else:
                 results[key] = result
 
-        return PromptContext(
+        ctx = PromptContext(
             working=results.get("working", ""),
             journal=results.get("journal", ""),
             ltm=results.get("ltm", ""),
@@ -99,3 +102,13 @@ class PromptBuilder:
             entity=results.get("entity", ""),
             policy=results.get("policy", ""),
         )
+
+        # Record token stats for trend tracking (fire-and-forget, never blocks)
+        if self._db is not None:
+            try:
+                from nmem.token_stats import record_prompt_stats
+                await record_prompt_stats(self._db, agent_id, ctx)
+            except Exception:
+                pass  # stats recording must never break prompt building
+
+        return ctx
