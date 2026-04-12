@@ -2,7 +2,7 @@
 
 **Cognitive memory for AI agents**: hierarchical, self-refining, and framework-agnostic.
 
-nmem gives your agents a brain that learns. Not just storage and retrieval, but active cognition with automatic promotion, salience decay, conflict detection, and nightly synthesis.
+nmem gives your agents a brain that learns. Not just storage and retrieval, but active cognition — automatic promotion, belief revision, nightly retrospectives, social learning across agents, and token-tracked prompt injection.
 
 > **We're actively looking for contributors.** nmem is intentionally built as a community-driven project. Code, docs, ideas, bug reports, independent benchmarks, and adversarial testing are all welcome. See [Contributing](#contributing) below.
 
@@ -48,22 +48,25 @@ Plus two specialized tiers: **Entity Memory** (per-object collaborative workspac
 
 ```mermaid
 graph LR
-    subgraph cycle ["Every 6 hours"]
+    subgraph cycle ["Every 6 hours (10 steps)"]
         direction LR
-        D["Decay\nexpired"] --> P["Promote\nto LTM"] --> SP["Promote\nto Shared"] --> DD["Dedup\nmerge similar"] --> C["Confidence\ndecay stale"]
+        D["Decay\nexpired"] --> P["Promote\nto LTM"] --> SP["Promote\nto Shared"] --> DD["Dedup\nmerge"] --> AI["Auto-\nimportance"] --> BR["Belief\nrevision"] --> SD["Salience\ndecay"]
     end
 
-    subgraph nightly ["Daily at 11 PM UTC"]
-        SY["Synthesize\npatterns"] --> RB["Retroactive\nboost"]
+    subgraph nightly ["Daily (dreamstate)"]
+        SY["Synthesize\npatterns"] --> RB["Retroactive\nboost"] --> RT["Retrospective\nvalidate lessons"]
     end
 
     style D fill:#ffebee,stroke:#ef5350
     style P fill:#e8f5e9,stroke:#4caf50
     style SP fill:#f3e5f5,stroke:#9c27b0
     style DD fill:#fff3e0,stroke:#ff9800
-    style C fill:#e3f2fd,stroke:#2196f3
+    style AI fill:#e8eaf6,stroke:#3f51b5
+    style BR fill:#fce4ec,stroke:#e91e63
+    style SD fill:#e3f2fd,stroke:#2196f3
     style SY fill:#fce4ec,stroke:#e91e63
     style RB fill:#fff8e1,stroke:#ffc107
+    style RT fill:#e0f7fa,stroke:#00bcd4
     style cycle fill:#fafafa,stroke:#e0e0e0
     style nightly fill:#fafafa,stroke:#e0e0e0
 ```
@@ -81,11 +84,11 @@ Your Agent (LangChain / CrewAI / Plain Python)
 │  │ Prompt   │ │ Hybrid   │ │  Cognitive       ││
 │  │ Builder  │ │ Search   │ │  Engine          ││
 │  │          │ │ 60% vec  │ │  (deja vu,       ││
-│  │ tiered   │ │ 40% FTS  │ │   curiosity)     ││
-│  │ verbosity│ │          │ │                  ││
+│  │ tiered   │ │ 40% FTS  │ │  belief revision,││
+│  │ verbosity│ │          │ │  retrospective)  ││
 │  └──────────┘ └──────────┘ └──────────────────┘│
 │                                                 │
-│  6 Memory Tiers + Consolidation Engine          │
+│  6 Memory Tiers + 10-Step Consolidation Engine  │
 └─────────────────────┬───────────────────────────┘
                       │
         ┌─────────────┼─────────────┐
@@ -97,24 +100,32 @@ Your Agent (LangChain / CrewAI / Plain Python)
    └─────────┘  └──────────┘  └─────────┘
 ```
 
-**Write**: agents store observations, decisions, and outcomes in their journal. Write-time compression distills verbose content into dense facts. Dedup prevents redundant entries.
+**Write**: agents store observations, decisions, and outcomes in their journal. Write-time compression distills verbose content into dense facts. Dedup prevents redundant entries. Conflict detection flags contradictions at write time.
 
-**Search**: hybrid search combines pgvector cosine similarity (60%) with PostgreSQL full-text search (40%) across all tiers simultaneously. Access stats are updated on every retrieval.
+**Search**: hybrid search combines pgvector cosine similarity (60%) with PostgreSQL full-text search (40%) across all tiers simultaneously. Access stats are updated on every retrieval. Knowledge links expand results with associated entries.
 
-**Consolidate**: a background engine promotes high-importance journal entries to permanent LTM, clusters and merges duplicates via union-find + LLM, decays salience on stale entries, and synthesizes cross-agent patterns nightly.
+**Consolidate**: a 10-step background engine promotes important entries to LTM, deduplicates via union-find + LLM, rescores importance heuristically, resolves belief conflicts (grounding rank → agent trust → recency), decays salience on stale entries, builds knowledge links, and synthesizes cross-agent patterns nightly.
 
-**Promote**: no LLM decides what's "universal." Entries promote to shared knowledge when multiple agents actually search for them. The agents vote with their queries.
+**Reflect**: the nightly "dreamstate" retrospective validates past lessons against new evidence — reinforcing what held up and marking contradicted lessons as disputed. Token usage is tracked automatically so you can measure memory efficiency over time.
+
+**Promote**: no LLM decides what's "universal." Entries promote to shared knowledge when multiple agents actually search for them. The agents vote with their queries — this is **social learning** across your agent team.
 
 ## Features
 
-- **6-tier memory hierarchy**: working memory, journal, long-term memory, shared knowledge, entity memory, policy memory
+- **6-tier memory hierarchy**: working memory → journal → long-term memory → shared knowledge, plus entity memory and policy memory
+- **Social learning**: agents learn from each other — when multiple agents access the same knowledge, it auto-promotes to shared. One agent's lesson benefits the entire team
+- **Belief revision**: contradictions detected at write time, resolved at consolidation using grounding rank → agent trust → recency → importance. Configurable per-agent trust scores
+- **Nightly retrospective**: "dreamstate" step validates past lessons against new evidence — reinforcing what held up, disputing what didn't. Bounded LLM budget (5 calls/night default)
+- **Auto-importance scoring**: heuristic rescoring at consolidation for entries without explicit importance. Manual scores are never overwritten
+- **Salience decay**: unused knowledge fades from current reasoning (but isn't deleted). Reinforced lessons get their salience refreshed
 - **Write-time compression**: LLM distills verbose content into dense facts
-- **Hybrid search**: 60/40 vector + full-text search across all tiers
-- **Background consolidation**: auto-promotes important entries, deduplicates, decays stale knowledge
-- **Cognitive capabilities**: deja vu (past experience matching), counterfactual reasoning, curiosity signals
-- **Governance**: policy memory with writer/proposer permissions, entity memory with grounding levels
-- **Framework-agnostic**: works with LangChain, CrewAI, or plain Python
-- **Pluggable providers**: bring your own LLM, embedding model, and database
+- **Hybrid search**: 60% vector + 40% full-text search across all tiers, with knowledge link expansion
+- **10-step consolidation engine**: decay, promote, dedup, rescore, resolve conflicts, salience decay, custom hooks, knowledge links, curiosity decay — plus nightly synthesis and retrospective
+- **Token trends**: automatic tracking of prompt injection sizes and LLM costs. CLI (`nmem token-trends`) and API (`GET /v1/token-trends`) for monitoring efficiency over time
+- **Configuration profiles**: `NmemConfig.from_profile("refinery")` for pre-tuned multi-agent defaults, or `"neutral"` for generic. Custom profiles via `register_profile()`
+- **Governance**: policy memory with writer/proposer permissions, entity memory with grounding levels (`source_material` / `confirmed` / `inferred` / `disputed`)
+- **Framework adapters**: LangChain (`BaseMemory` compatible), CrewAI, or plain Python — `pip install nmem[langchain]`
+- **Pluggable providers**: bring your own LLM (OpenAI-compatible, Anthropic), embedding model (sentence-transformers, OpenAI), and database (PostgreSQL + pgvector, SQLite)
 
 ## Quick Start
 
@@ -130,7 +141,8 @@ Your Agent (LangChain / CrewAI / Plain Python)
 ```python
 from nmem import MemorySystem, NmemConfig
 
-mem = MemorySystem(NmemConfig(
+# Use a profile for pre-tuned defaults, or NmemConfig() for neutral
+mem = MemorySystem(NmemConfig.from_profile("neutral",
     database_url="postgresql+asyncpg://nmem:nmem@localhost:5433/nmem",
     embedding={"provider": "sentence-transformers"},
 ))
@@ -180,9 +192,10 @@ mem.start_consolidation()
 | Guide | Description |
 |-------|-------------|
 | [Quickstart](docs/quickstart.md) | Install to first search in under 5 minutes |
-| [Concepts](docs/concepts.md) | The 6-tier hierarchy, consolidation, hybrid search explained |
-| [MCP Integration](docs/mcp-integration.md) | Connect to Claude Code / Cursor with persistent memory |
+| [Concepts](docs/concepts.md) | The 6-tier hierarchy, consolidation, social learning, hybrid search |
+| [Profiles](docs/profiles.md) | Pre-tuned configs for common scenarios + suggested configs by use case |
 | [Configuration](docs/configuration.md) | Every config option with tradeoffs and examples |
+| [MCP Integration](docs/mcp-integration.md) | Connect to Claude Code / Cursor with persistent memory |
 | [API Reference](docs/api-reference.md) | Full method documentation with signatures and examples |
 | [Testing](TESTING.md) | Run tests, benchmarks, E2E QA checklist |
 
@@ -223,9 +236,13 @@ nmem init [--sqlite]              # Initialize database
 nmem demo                         # Run interactive demo
 nmem search <query>               # Search across all tiers
 nmem stats                        # Show tier counts + per-agent breakdown
+nmem token-trends [--days 30]     # Token usage trends (prompt injection + LLM costs)
 nmem consolidate [--nightly]      # Run consolidation cycle
+nmem conflicts list [--pending]   # Show detected memory conflicts
 nmem setup [--auto-append]        # Configure MCP + generate CLAUDE.md snippet
 nmem benchmark [--sizes 50,200]   # Run performance benchmarks
+nmem doctor                       # Diagnose database + provider health
+nmem serve                        # Start the REST API server
 nmem import claude-code           # Import Claude Code memories
 nmem import chatgpt <file>        # Import ChatGPT conversations
 nmem import markdown <dir>        # Import markdown directory
