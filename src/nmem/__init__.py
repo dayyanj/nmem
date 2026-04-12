@@ -29,6 +29,7 @@ Quick start:
 from nmem._version import __version__
 from nmem.config import NmemConfig
 from nmem.memory import MemorySystem
+from nmem.profiles import list_profiles, register_profile
 from nmem.types import (
     ConsolidationStats,
     CuriositySignalInfo,
@@ -48,6 +49,8 @@ __all__ = [
     # Core
     "MemorySystem",
     "NmemConfig",
+    "list_profiles",
+    "register_profile",
     "__version__",
     # Types
     "ConsolidationStats",

@@ -2,15 +2,30 @@
 
 nmem is configured via Python, environment variables, or a TOML file. All settings have sensible defaults, so you only need to set what you want to change.
 
+**New to nmem?** Start with a [profile](profiles.md) — named presets tuned for common scenarios:
+
+```python
+from nmem import NmemConfig
+
+# Generic defaults — no domain assumptions
+config = NmemConfig(database_url="...")
+
+# Multi-agent ops platform (tuned thresholds + agent trust)
+config = NmemConfig.from_profile("refinery", database_url="...")
+```
+
+See [profiles.md](profiles.md) for the full list and suggested configs by use case.
+
 ## Configuration sources
 
 Priority (highest wins):
 
-1. **Python constructor**: `NmemConfig(database_url="...")`
+1. **Python constructor / `from_profile()`**: `NmemConfig(database_url="...")`
 2. **Environment variables**: `NMEM_DATABASE_URL=...`
 3. **`nmem.toml`** in current directory
 4. **`~/.config/nmem/nmem.toml`**: user-level config
-5. **Defaults**
+5. **Profile defaults** (if using `from_profile()`)
+6. **Bare defaults**
 
 Nested settings use `__` delimiter in env vars:
 ```bash

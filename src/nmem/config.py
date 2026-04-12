@@ -342,6 +342,10 @@ class NmemConfig(BaseSettings):
         NMEM_EMBEDDING__PROVIDER=sentence-transformers
         NMEM_LLM__PROVIDER=openai
         NMEM_LLM__BASE_URL=http://localhost:11434/v1
+
+    Or via named profiles::
+
+        config = NmemConfig.from_profile("refinery", database_url="...")
     """
 
     database_url: str = "postgresql+asyncpg://localhost/nmem"
@@ -397,3 +401,51 @@ class NmemConfig(BaseSettings):
     """Nightly retrospective (lesson validation against new evidence)."""
 
     model_config = {"env_prefix": "NMEM_", "env_nested_delimiter": "__"}
+
+    @classmethod
+    def from_profile(
+        cls, profile: str = "neutral", **kwargs: object,
+    ) -> "NmemConfig":
+        """Create a config pre-seeded with a named profile's defaults.
+
+        Profile overrides are deep-merged under user-supplied ``kwargs``
+        so explicit values always win::
+
+            config = NmemConfig.from_profile(
+                "refinery",
+                database_url="postgresql+asyncpg://...",
+                consolidation={"nightly_synthesis_hour_utc": 4},
+            )
+
+        Available profiles: ``"neutral"`` (generic, no domain assumptions)
+        and ``"refinery"`` (tuned for the Spwig multi-agent system).
+        Use :func:`nmem.profiles.register_profile` to add custom profiles.
+        """
+        from nmem.profiles import get_profile_overrides
+
+        overrides = get_profile_overrides(profile)
+
+        # Deep-merge: for each section in the profile, only apply fields
+        # the caller didn't explicitly provide in kwargs.
+        merged: dict[str, object] = {}
+        for section_name, section_defaults in overrides.items():
+            if not isinstance(section_defaults, dict):
+                # Top-level scalar override from profile
+                if section_name not in kwargs:
+                    merged[section_name] = section_defaults
+                continue
+            user_section = kwargs.get(section_name)
+            if user_section is None:
+                # User didn't touch this section — profile wins entirely
+                merged[section_name] = section_defaults
+            elif isinstance(user_section, dict):
+                # Both profile and user have overrides — merge field by field
+                combined = {**section_defaults, **user_section}
+                merged[section_name] = combined
+            else:
+                # User passed a full config object — user wins
+                pass
+
+        # User kwargs always take precedence over merged profile values
+        merged.update(kwargs)
+        return cls(**merged)

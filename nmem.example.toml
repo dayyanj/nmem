@@ -1,6 +1,9 @@
 # nmem configuration
 # Copy to nmem.toml in your project root, or ~/.config/nmem/nmem.toml
 # All settings can also be set via environment variables with NMEM_ prefix.
+#
+# TIP: Use NmemConfig.from_profile("refinery") in Python for pre-tuned
+# multi-agent defaults. See docs/profiles.md for suggested configs.
 
 # ── Database ─────────────────────────────────────────────────────────────────
 # PostgreSQL + pgvector (production):
