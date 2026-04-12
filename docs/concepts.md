@@ -189,6 +189,8 @@ The consolidation engine runs in the background (every 6 hours by default) and p
 
 **Nightly synthesis:** Once daily, the engine analyzes all journal entries from the past 24 hours, uses an LLM to extract 2-3 cross-cutting patterns, and saves them as shared knowledge. It also retroactively boosts the importance of journal entries that contributed to discovered patterns.
 
+**Retrospective (dreamstate):** After nightly synthesis completes, the engine reviews past lessons against new evidence — like the brain consolidating during sleep. It pulls LTM entries with `record_type` matching lesson patterns (default: `lesson`, `lesson_learned`) created within `lookback_days` (default 14), skipping any validated within `skip_if_validated_within_days` (default 3). For each, it searches the journal for outcome entries created *after* the lesson, then asks the LLM to classify: `reinforces` (bump salience + importance for auto-managed entries), `contradicts` (mark `grounding='disputed'`), or `neutral` (skip-guard bumped, revisit later). Bounded by `max_llm_calls_per_run` (default 5) per night. Findings are written as shared knowledge with `category="retrospective_synthesis"`.
+
 ## Hybrid search
 
 Every search in nmem combines two signals:

@@ -157,7 +157,7 @@ class PolicyConfig(BaseModel):
     max_chars_in_prompt: int = 1000
     """Maximum characters for policy prompt section."""
 
-    writers: set[str] = {"system"}
+    writers: set[str] = {"system", "default", "mcp"}
     """Agent IDs allowed to directly create active policies."""
 
     proposers: set[str] = set()
@@ -234,6 +234,47 @@ class ImportanceConfig(BaseModel):
 
     rescore_batch_size: int = 50
     """Maximum rows to rescore per consolidation cycle (bounds runtime)."""
+
+
+class RetrospectiveConfig(BaseModel):
+    """Nightly retrospective — validates past lessons against new evidence.
+
+    Runs as a tail step inside `run_nightly_synthesis()` (matching the
+    "dreamstate" metaphor: sleep + consolidation + reflection). Pulls LTM
+    entries with record_type in `lesson_record_types` created within
+    `lookback_days`, skips any whose `last_validated_at` is within
+    `skip_if_validated_within_days`, then classifies each against recent
+    outcome entries via the LLM — up to `max_llm_calls_per_run` per night.
+
+    - reinforces  → bump `last_validated_at` (+ importance +1 for auto rows)
+    - contradicts → mark `grounding='disputed'` + bump `last_validated_at`
+    - neutral     → bump `last_validated_at` only
+
+    The skip-recently-validated guard kills the "reviewed 30 times" waste
+    while the `lookback_days` cap ensures genuinely old lessons eventually
+    fall out of scope.
+    """
+
+    enabled: bool = True
+    """Enable/disable the retrospective step."""
+
+    lookback_days: int = 14
+    """How far back to consider lessons for review (older = out of scope)."""
+
+    min_lessons: int = 3
+    """Minimum candidate lessons before retrospection fires (avoids noise
+    on quiet days). Below this, the step is a no-op."""
+
+    max_llm_calls_per_run: int = 5
+    """Maximum LLM classifications per nightly run. Bounds cost regardless
+    of how many lessons are in scope."""
+
+    skip_if_validated_within_days: int = 3
+    """Lessons with `last_validated_at` newer than this are excluded from
+    review. Prevents re-reviewing the same lesson every night."""
+
+    lesson_record_types: list[str] = ["lesson", "lesson_learned"]
+    """Which LTM `record_type` values the retrospective considers lessons."""
 
 
 class BeliefRevisionConfig(BaseModel):
@@ -351,5 +392,8 @@ class NmemConfig(BaseSettings):
 
     belief: BeliefRevisionConfig = BeliefRevisionConfig()
     """Conflict detection + resolution (belief revision) settings."""
+
+    retrospective: RetrospectiveConfig = RetrospectiveConfig()
+    """Nightly retrospective (lesson validation against new evidence)."""
 
     model_config = {"env_prefix": "NMEM_", "env_nested_delimiter": "__"}

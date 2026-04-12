@@ -193,6 +193,30 @@ NmemConfig(policy={
 })
 ```
 
+## Retrospective (dreamstate)
+
+```toml
+[retrospective]
+enabled = true
+lookback_days = 14
+min_lessons = 3
+max_llm_calls_per_run = 5
+skip_if_validated_within_days = 3
+lesson_record_types = ["lesson", "lesson_learned"]
+```
+
+**`enabled`** (default: true): Enable/disable the nightly retrospective. When disabled, the step is a complete no-op.
+
+**`lookback_days`** (default: 14): How far back to scan for candidate lessons. Lessons older than this fall out of scope entirely.
+
+**`min_lessons`** (default: 3): Minimum candidate lessons before retrospection fires. Below this, the step is a no-op (avoids noise on quiet days).
+
+**`max_llm_calls_per_run`** (default: 5): Maximum LLM classifications per nightly run. Bounds cost regardless of how many lessons are in scope. With nightly cadence, this means ~150 classifications per month.
+
+**`skip_if_validated_within_days`** (default: 3): Lessons with `last_validated_at` newer than this are excluded from review. Prevents the same lesson from being re-reviewed every night. Set to 0 to disable the guard (not recommended).
+
+**`lesson_record_types`** (default: `["lesson", "lesson_learned"]`): Which LTM `record_type` values the retrospective considers as "lessons". Extend this if your application uses custom record types for learnings.
+
 ## Clustering
 
 ```toml

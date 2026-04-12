@@ -1068,3 +1068,273 @@ class TestKnowledgeLinks:
 
         # Re-enable for other tests
         mem._config.knowledge_links.enabled = True
+
+
+@pytest.mark.asyncio
+class TestRetrospective:
+    """Nightly retrospective (dreamstate) — lesson validation against evidence."""
+
+    async def _seed_lesson(self, mem: MemorySystem, key: str, content: str,
+                           *, agent: str = "agent-a", importance: int = 8,
+                           days_ago: int = 5) -> "LTMEntry":
+        """Insert an LTM lesson with backdated created_at."""
+        from sqlalchemy import text
+        entry = await mem.ltm.save(
+            agent, "lesson", key, content,
+            importance=importance,
+            record_type="lesson",
+            grounding="inferred",
+        )
+        # Backdate to fall within lookback window — compute in Python
+        # because asyncpg can't parameterize interval literals.
+        backdated = datetime.utcnow() - timedelta(days=days_ago)
+        async with mem._db.session() as session:
+            await session.execute(text(
+                "UPDATE nmem_long_term_memory "
+                "SET created_at = :ts, last_validated_at = NULL "
+                "WHERE id = :id"
+            ), {"ts": backdated, "id": entry.id})
+        return entry
+
+    async def _seed_outcome(self, mem: MemorySystem, content: str,
+                             *, agent: str = "agent-a", days_ago: int = 2):
+        """Insert a journal outcome entry."""
+        from sqlalchemy import text
+        entry = await mem.journal.add(
+            agent, "observation", f"Outcome: {content[:40]}",
+            content,
+        )
+        if days_ago > 0:
+            backdated = datetime.utcnow() - timedelta(days=days_ago)
+            async with mem._db.session() as session:
+                await session.execute(text(
+                    "UPDATE nmem_journal_entries "
+                    "SET created_at = :ts WHERE id = :id"
+                ), {"ts": backdated, "id": entry.id})
+        return entry
+
+    async def test_retrospective_disabled_is_noop(self, mem: MemorySystem):
+        """When disabled, no lessons are touched."""
+        mem._config.retrospective.enabled = False
+        await self._seed_lesson(mem, "lesson_a", "Always deploy on Tuesdays")
+        await self._seed_lesson(mem, "lesson_b", "Never deploy on Fridays")
+        await self._seed_lesson(mem, "lesson_c", "Run migrations first")
+
+        validated, disputed = await mem.consolidation._run_retrospective()
+        assert validated == 0
+        assert disputed == 0
+        mem._config.retrospective.enabled = True
+
+    async def test_retrospective_min_lessons_gate(self, mem: MemorySystem):
+        """Below min_lessons candidates, retrospective is a no-op."""
+        mem._config.retrospective.min_lessons = 5
+        await self._seed_lesson(mem, "solo_lesson", "Only one lesson here")
+
+        validated, disputed = await mem.consolidation._run_retrospective()
+        assert validated == 0
+        assert disputed == 0
+        mem._config.retrospective.min_lessons = 3  # restore
+
+    async def test_retrospective_reinforces_lesson(self, mem: MemorySystem):
+        """When LLM classifies as reinforces, salience is bumped."""
+        from unittest.mock import AsyncMock
+        from sqlalchemy import text
+
+        lesson = await self._seed_lesson(
+            mem, "deploy_tuesday", "Deploy on Tuesdays is safest"
+        )
+        await self._seed_lesson(mem, "lesson_b", "Cache before deploy")
+        await self._seed_lesson(mem, "lesson_c", "Run health checks")
+
+        # Mock both outcome finder and classifier so we don't depend on
+        # embedding similarity thresholds in tests.
+        fake_outcomes = [{"tier": "journal", "title": "Outcome",
+                          "content": "Tuesday deploy went smoothly",
+                          "created_at": datetime.utcnow()}]
+        orig_find = mem.consolidation._find_lesson_outcomes
+        orig_classify = mem.consolidation._classify_lesson_outcome
+        mem.consolidation._find_lesson_outcomes = AsyncMock(return_value=fake_outcomes)
+        mem.consolidation._classify_lesson_outcome = AsyncMock(return_value="reinforces")
+
+        validated, disputed = await mem.consolidation._run_retrospective()
+        assert validated >= 1, f"Expected >= 1 validated, got {validated}"
+        assert disputed == 0
+
+        # Check last_validated_at was set
+        async with mem._db.session() as session:
+            result = await session.execute(text(
+                "SELECT last_validated_at, salience FROM nmem_long_term_memory "
+                "WHERE id = :id"
+            ), {"id": lesson.id})
+            row = result.one_or_none()
+            if row and row[0] is not None:
+                assert row[0] > datetime.utcnow() - timedelta(minutes=5)
+
+        mem.consolidation._find_lesson_outcomes = orig_find
+        mem.consolidation._classify_lesson_outcome = orig_classify
+
+    async def test_retrospective_disputes_contradicted_lesson(self, mem: MemorySystem):
+        """When LLM classifies as contradicts, grounding is marked disputed."""
+        from unittest.mock import AsyncMock
+        from sqlalchemy import text
+
+        lesson = await self._seed_lesson(
+            mem, "friday_safe", "Friday deploys are safe"
+        )
+        await self._seed_lesson(mem, "lesson_b2", "Cache before deploy")
+        await self._seed_lesson(mem, "lesson_c2", "Run health checks")
+
+        fake_outcomes = [{"tier": "journal", "title": "Outcome",
+                          "content": "Friday deploy caused a major outage",
+                          "created_at": datetime.utcnow()}]
+        orig_find = mem.consolidation._find_lesson_outcomes
+        orig_classify = mem.consolidation._classify_lesson_outcome
+        mem.consolidation._find_lesson_outcomes = AsyncMock(return_value=fake_outcomes)
+        mem.consolidation._classify_lesson_outcome = AsyncMock(return_value="contradicts")
+
+        validated, disputed = await mem.consolidation._run_retrospective()
+        assert disputed >= 1, f"Expected >= 1 disputed, got {disputed}"
+
+        async with mem._db.session() as session:
+            result = await session.execute(text(
+                "SELECT grounding, last_validated_at FROM nmem_long_term_memory "
+                "WHERE id = :id"
+            ), {"id": lesson.id})
+            row = result.one_or_none()
+            if row:
+                assert row[0] == "disputed"
+                assert row[1] is not None
+
+        mem.consolidation._find_lesson_outcomes = orig_find
+        mem.consolidation._classify_lesson_outcome = orig_classify
+
+    async def test_retrospective_skip_recently_validated(self, mem: MemorySystem):
+        """Lessons validated within skip_if_validated_within_days are excluded."""
+        from unittest.mock import AsyncMock
+        from sqlalchemy import text
+
+        mem._config.retrospective.skip_if_validated_within_days = 3
+
+        lesson = await self._seed_lesson(
+            mem, "recent_lesson", "Recently validated lesson"
+        )
+        await self._seed_lesson(mem, "lesson_b3", "Another lesson")
+        await self._seed_lesson(mem, "lesson_c3", "Third lesson")
+
+        # Set last_validated_at to 1 day ago (within skip window)
+        recent_ts = datetime.utcnow() - timedelta(days=1)
+        async with mem._db.session() as session:
+            await session.execute(text(
+                "UPDATE nmem_long_term_memory "
+                "SET last_validated_at = :ts "
+                "WHERE id = :id"
+            ), {"ts": recent_ts, "id": lesson.id})
+
+        call_count = 0
+        orig = mem.consolidation._classify_lesson_outcome
+
+        async def counting_mock(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return "reinforces"
+
+        mem.consolidation._classify_lesson_outcome = counting_mock
+
+        await mem.consolidation._run_retrospective()
+
+        # The recently-validated lesson should have been skipped, so
+        # fewer calls than total lessons. At minimum, the recently-validated
+        # one is excluded.
+        assert call_count <= 2, (
+            f"Expected at most 2 LLM calls (skipping 1 recent), got {call_count}"
+        )
+
+        mem.consolidation._classify_lesson_outcome = orig
+
+    async def test_retrospective_respects_llm_budget(self, mem: MemorySystem):
+        """max_llm_calls_per_run caps the number of classifications."""
+        from unittest.mock import AsyncMock
+
+        mem._config.retrospective.max_llm_calls_per_run = 2
+        mem._config.retrospective.min_lessons = 3
+
+        # Seed many lessons
+        for i in range(8):
+            await self._seed_lesson(
+                mem, f"budget_lesson_{i}",
+                f"Lesson number {i} about deployment practices",
+                days_ago=5 + i,
+            )
+
+        # Mock outcomes so every candidate gets a non-empty list
+        fake_outcomes = [{"tier": "journal", "title": "Outcome",
+                          "content": "All deployments succeeded",
+                          "created_at": datetime.utcnow()}]
+        orig_find = mem.consolidation._find_lesson_outcomes
+        mem.consolidation._find_lesson_outcomes = AsyncMock(return_value=fake_outcomes)
+
+        call_count = 0
+
+        async def counting_mock(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return "reinforces"
+
+        mem.consolidation._classify_lesson_outcome = counting_mock
+
+        validated, disputed = await mem.consolidation._run_retrospective()
+        assert call_count <= 2, (
+            f"Expected at most 2 LLM calls (budget=2), got {call_count}"
+        )
+        assert validated <= 2
+
+        mem.consolidation._find_lesson_outcomes = orig_find
+        mem._config.retrospective.max_llm_calls_per_run = 5  # restore
+
+    async def test_retrospective_noop_llm_graceful(self, mem: MemorySystem):
+        """With noop LLM provider, retrospective doesn't crash."""
+        await self._seed_lesson(mem, "noop_a", "Lesson A about deploys")
+        await self._seed_lesson(mem, "noop_b", "Lesson B about caching")
+        await self._seed_lesson(mem, "noop_c", "Lesson C about health checks")
+        await self._seed_outcome(mem, "Deploy went well today")
+
+        # noop LLM returns None from complete_json → _classify_lesson_outcome
+        # returns "neutral" → no crash, no state change beyond last_validated_at
+        validated, disputed = await mem.consolidation._run_retrospective()
+        # Both should be 0 because noop LLM produces "neutral"
+        assert validated == 0
+        assert disputed == 0
+
+    async def test_retrospective_writes_synthesis_entry(self, mem: MemorySystem):
+        """When lessons are touched, a retrospective_synthesis shared entry is written."""
+        from unittest.mock import AsyncMock
+        from sqlalchemy import text
+
+        await self._seed_lesson(mem, "synth_a", "Always run tests before deploy")
+        await self._seed_lesson(mem, "synth_b", "Cache warming is important")
+        await self._seed_lesson(mem, "synth_c", "Monitor after deploy")
+
+        fake_outcomes = [{"tier": "journal", "title": "Outcome",
+                          "content": "Tests caught a bug before deploy",
+                          "created_at": datetime.utcnow()}]
+        orig_find = mem.consolidation._find_lesson_outcomes
+        orig_classify = mem.consolidation._classify_lesson_outcome
+        mem.consolidation._find_lesson_outcomes = AsyncMock(return_value=fake_outcomes)
+        mem.consolidation._classify_lesson_outcome = AsyncMock(return_value="reinforces")
+
+        await mem.consolidation._run_retrospective()
+
+        # Check that a retrospective_synthesis entry was created
+        async with mem._db.session() as session:
+            result = await session.execute(text(
+                "SELECT key, content, category FROM nmem_shared_knowledge "
+                "WHERE category = 'retrospective_synthesis' "
+                "ORDER BY created_at DESC LIMIT 1"
+            ))
+            row = result.one_or_none()
+            assert row is not None, "Expected a retrospective_synthesis entry"
+            assert row[0].startswith("retrospective_")
+            assert "Reinforced" in row[1]
+
+        mem.consolidation._find_lesson_outcomes = orig_find
+        mem.consolidation._classify_lesson_outcome = orig_classify

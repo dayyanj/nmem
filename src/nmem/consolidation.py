@@ -25,7 +25,7 @@ import time
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Callable, Awaitable
 
-from sqlalchemy import select, func, text as sa_text
+from sqlalchemy import or_, select, func, text as sa_text
 
 from nmem.db.models import (
     JournalEntryModel,
@@ -419,6 +419,15 @@ class Consolidator:
                 await fn()
             except Exception as e:
                 logger.warning("Custom nightly step '%s' failed: %s", name, e)
+
+        # Retrospective "dreamstate" — validate past lessons against new
+        # outcome evidence. Runs after synthesis so the LLM is already warm.
+        try:
+            validated, disputed = await self._run_retrospective()
+            stats.lessons_validated = validated
+            stats.lessons_disputed = disputed
+        except Exception as e:
+            logger.error("Retrospective failed: %s", e)
 
         self._last_synthesis_date = datetime.utcnow().date()
         return stats
@@ -933,6 +942,274 @@ class Consolidator:
                 auto_resolved, needs_review,
             )
         return (auto_resolved, needs_review)
+
+    async def _run_retrospective(self) -> tuple[int, int]:
+        """Nightly retrospective — validate past lessons against new evidence.
+
+        Pulls LTM entries where `record_type` is one of
+        `config.retrospective.lesson_record_types`, created within
+        `lookback_days`, and NOT validated within
+        `skip_if_validated_within_days`. For each, searches the journal
+        for outcome entries created after the lesson, then asks the LLM
+        to classify the overall evidence as reinforces / contradicts /
+        neutral. Cap is `max_llm_calls_per_run`.
+
+        Returns (validated_count, disputed_count).
+        """
+        cfg = getattr(self._config, "retrospective", None)
+        if cfg is None or not cfg.enabled:
+            return (0, 0)
+
+        now = datetime.utcnow()
+        lookback_cutoff = now - timedelta(days=cfg.lookback_days)
+        skip_cutoff = now - timedelta(days=cfg.skip_if_validated_within_days)
+
+        # Candidate lessons: LTM rows matching a lesson record_type, within
+        # lookback, NOT validated recently. Newest-first so fresh learnings
+        # are prioritized (most recent lessons benefit most from early validation).
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(LTMModel)
+                .where(
+                    LTMModel.record_type.in_(cfg.lesson_record_types),
+                    LTMModel.status == "validated",
+                    LTMModel.created_at >= lookback_cutoff,
+                    or_(
+                        LTMModel.last_validated_at.is_(None),
+                        LTMModel.last_validated_at < skip_cutoff,
+                    ),
+                )
+                .order_by(LTMModel.created_at.desc())
+                .limit(cfg.max_llm_calls_per_run * 3)  # fetch extra in case some have no outcomes
+            )
+            candidates = list(result.scalars().all())
+
+        if len(candidates) < cfg.min_lessons:
+            logger.debug(
+                "Retrospective skipped: %d candidates < min_lessons=%d",
+                len(candidates), cfg.min_lessons,
+            )
+            return (0, 0)
+
+        validated = 0
+        disputed = 0
+        touched_lessons: list[tuple[int, str, str]] = []  # (id, title, verdict)
+        llm_calls = 0
+
+        for lesson in candidates:
+            if llm_calls >= cfg.max_llm_calls_per_run:
+                break
+
+            # Find outcome candidates — journal entries created after this
+            # lesson, semantically similar. Use the lesson embedding to
+            # search. Small top-k keeps the prompt compact.
+            outcomes = await self._find_lesson_outcomes(
+                lesson, since=lesson.created_at
+            )
+            if not outcomes:
+                continue
+
+            try:
+                verdict = await self._classify_lesson_outcome(lesson, outcomes)
+            except Exception as e:
+                logger.warning(
+                    "Retrospective classification failed for lesson #%d: %s",
+                    lesson.id, e,
+                )
+                continue
+
+            llm_calls += 1
+
+            lesson_label = lesson.key or f"ltm#{lesson.id}"
+
+            if verdict == "reinforces":
+                await self._apply_lesson_verdict(lesson.id, "reinforces")
+                validated += 1
+                touched_lessons.append((lesson.id, lesson_label, "reinforces"))
+            elif verdict == "contradicts":
+                await self._apply_lesson_verdict(lesson.id, "contradicts")
+                disputed += 1
+                touched_lessons.append((lesson.id, lesson_label, "contradicts"))
+            elif verdict == "neutral":
+                # Bump last_validated_at only — skip guard will exclude
+                # this lesson from tomorrow's scan.
+                await self._apply_lesson_verdict(lesson.id, "neutral")
+
+        if touched_lessons:
+            await self._write_retrospective_synthesis(touched_lessons, now)
+            logger.info(
+                "Retrospective: %d validated, %d disputed (%d LLM calls)",
+                validated, disputed, llm_calls,
+            )
+        return (validated, disputed)
+
+    async def _find_lesson_outcomes(
+        self, lesson: LTMModel, *, since: datetime, top_k: int = 5,
+    ) -> list[dict]:
+        """Find journal + LTM entries that could validate or contradict a lesson.
+
+        Returns a list of dicts with {tier, title, content, created_at}
+        suitable for stuffing into the LLM prompt.
+        """
+        lesson_embedding = getattr(lesson, "embedding", None)
+        if lesson_embedding is None:
+            return []
+        if hasattr(lesson_embedding, "tolist"):
+            lesson_embedding = lesson_embedding.tolist()
+        embedding_str = f"[{','.join(str(x) for x in lesson_embedding)}]"
+
+        # Scope-aware: match the lesson's project_scope (or global if NULL).
+        scope = getattr(lesson, "project_scope", None)
+        scope_clause = (
+            "AND project_scope IS NULL" if scope is None
+            else "AND (project_scope = :scope OR project_scope IS NULL)"
+        )
+        params: dict = {
+            "since": since,
+            "embedding": embedding_str,
+            "top_k": top_k,
+        }
+        if scope is not None:
+            params["scope"] = scope
+
+        outcomes: list[dict] = []
+        try:
+            async with self._db.session() as session:
+                # Cross-agent search: evidence from ANY agent can validate
+                # or contradict a lesson. Same-agent evidence is common but
+                # cross-agent corroboration is arguably more valuable.
+                # Scope-filtered: only evidence from the same project scope
+                # (or global entries) can validate a scoped lesson.
+                result = await session.execute(
+                    sa_text(f"""
+                        SELECT id, title, content, created_at
+                        FROM nmem_journal_entries
+                        WHERE created_at > :since
+                          AND embedding IS NOT NULL
+                          {scope_clause}
+                          AND 1 - (embedding <=> CAST(:embedding AS vector)) > 0.55
+                        ORDER BY embedding <=> CAST(:embedding AS vector)
+                        LIMIT :top_k
+                    """),
+                    params,
+                )
+                for row in result.all():
+                    outcomes.append({
+                        "tier": "journal",
+                        "title": row[1],
+                        "content": row[2][:500] if row[2] else "",
+                        "created_at": row[3],
+                    })
+        except Exception as e:
+            logger.debug("Outcome search failed for lesson #%d: %s", lesson.id, e)
+
+        return outcomes
+
+    async def _classify_lesson_outcome(
+        self, lesson: LTMModel, outcomes: list[dict]
+    ) -> str:
+        """Ask the LLM to classify lesson vs outcome evidence.
+
+        Returns one of: "reinforces", "contradicts", "neutral".
+
+        Isolated as a method so tests can monkeypatch it without mocking
+        the entire LLM provider.
+        """
+        outcome_block = "\n".join(
+            f"  - [{o['tier']}] {o['title']}: {o['content'][:200]}"
+            for o in outcomes
+        )
+        system_prompt = (
+            "You are reviewing whether a past lesson still holds up against "
+            "subsequent evidence. Classify the evidence as one of:\n"
+            "  reinforces  — evidence aligns with the lesson\n"
+            "  contradicts — evidence contradicts the lesson\n"
+            "  neutral     — evidence is unrelated or inconclusive\n\n"
+            'Respond as JSON: {"verdict": "reinforces|contradicts|neutral", "rationale": "..."}'
+        )
+        user_prompt = (
+            f"LESSON: {lesson.key}\n{lesson.content[:800]}\n\n"
+            f"SUBSEQUENT EVIDENCE:\n{outcome_block}"
+        )
+
+        result = await self._llm.complete_json(
+            system_prompt, user_prompt,
+            max_tokens=self._config.llm.synthesis_max_tokens,
+            temperature=0.2,
+            timeout=20.0,
+        )
+
+        if not result or not isinstance(result, dict):
+            return "neutral"
+
+        verdict = str(result.get("verdict", "")).lower().strip()
+        if verdict not in ("reinforces", "contradicts", "neutral"):
+            return "neutral"
+        return verdict
+
+    async def _apply_lesson_verdict(self, lesson_id: int, verdict: str) -> None:
+        """Apply a retrospective verdict to a lesson row."""
+        now = datetime.utcnow()
+        async with self._db.session() as session:
+            row = await session.get(LTMModel, lesson_id)
+            if row is None:
+                return
+            row.last_validated_at = now
+            if verdict == "reinforces":
+                # Bump importance if the row is auto-managed; manual rows
+                # stay sovereign.
+                if row.auto_importance:
+                    row.importance = min(10, row.importance + 1)
+                # Refresh salience to 1.0 — reinforced lessons are "hot" again.
+                row.salience = 1.0
+            elif verdict == "contradicts":
+                row.grounding = "disputed"
+
+    async def _write_retrospective_synthesis(
+        self, touched: list[tuple[int, str, str]], now: datetime,
+    ) -> None:
+        """Persist a single shared-knowledge row summarizing the nightly run.
+
+        Mirrors the daily_synthesis pattern used by nightly_synthesis so
+        downstream search + decay already handle it.
+        """
+        from nmem.search import populate_tsvector
+
+        validated = [key for _id, key, v in touched if v == "reinforces"]
+        disputed = [key for _id, key, v in touched if v == "contradicts"]
+
+        lines = [f"Retrospective {now.strftime('%Y-%m-%d')}:"]
+        if validated:
+            lines.append(f"Reinforced: {', '.join(validated)}")
+        if disputed:
+            lines.append(f"Disputed: {', '.join(disputed)}")
+        content = "\n".join(lines)
+
+        key = f"retrospective_{now.strftime('%Y%m%d')}"
+        emb = await asyncio.to_thread(self._embedding.embed, content[:500])
+
+        try:
+            async with self._db.session() as session:
+                record = SharedKnowledgeModel(
+                    key=key,
+                    content=content,
+                    category="retrospective_synthesis",
+                    created_by="consolidator",
+                    last_updated_by="consolidator",
+                    importance=6,
+                    embedding=emb,
+                )
+                session.add(record)
+                await session.flush()
+                record_id = record.id
+            await populate_tsvector(
+                self._db, "nmem_shared_knowledge", record_id,
+                f"{key} {content[:2000]}",
+            )
+        except Exception as e:
+            # Same-key collision in one night — benign, retrospective can
+            # run more than once per day in tests.
+            logger.debug("Retrospective synthesis write failed: %s", e)
 
     async def _update_salience_scores(self) -> int:
         """Decay salience of stale LTM entries.

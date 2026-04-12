@@ -60,6 +60,16 @@ interval_hours = 6                   # Full cycle interval
 # nightly_synthesis_min_entries = 10  # Min journal entries to trigger synthesis
 # similarity_merge_threshold = 0.85  # Cosine threshold for dedup merging
 
+# ── Retrospective (Dreamstate) ─────────────────────────────────────────────
+# Runs nightly after synthesis — validates past lessons against new evidence.
+[retrospective]
+enabled = true
+# lookback_days = 14                 # How far back to scan for lessons (older = out of scope)
+# min_lessons = 3                    # Min candidates to trigger (avoids noise on quiet days)
+# max_llm_calls_per_run = 5          # LLM budget per night (~150 calls/month)
+# skip_if_validated_within_days = 3  # Skip lessons validated within this window
+# lesson_record_types = ["lesson", "lesson_learned"]  # LTM record_types to treat as lessons
+
 # ── Context Threading ────────────────────────────────────────────────────────
 # [clustering]
 # similarity_threshold = 0.65        # Cosine threshold for context thread assignment
