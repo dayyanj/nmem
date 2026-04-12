@@ -3,6 +3,131 @@
 All notable changes to nmem are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] — 2026-04-12
+
+**Theme: Belief & Importance Refactor** — addressing community feedback on
+semantic accuracy, missing cognitive capabilities, and generic-library
+positioning. 11 commits, 48 files changed, ~5,100 lines added.
+
+### Breaking changes
+
+- **`LTMModel.confidence` renamed to `LTMModel.salience`** across all LTM
+  paths: column, ORM, types, API schemas, CLI output, config. The field
+  starts at 1.0 and decays with staleness — that's salience (how strongly
+  an entry should influence reasoning), not confidence (whether it's true).
+  `EntityMemoryModel.confidence` is unchanged (there it genuinely means
+  grounding certainty).
+  - Config: `confidence_decay_rate` → `salience_decay_rate`,
+    `min_confidence` → `min_salience`.
+  - Schema migration v2→v3 renames the column automatically.
+
+- **`importance` parameter changed from `int` default to `int | None`** on
+  `journal.add()` and `ltm.save()`. When `None` (the new default), the
+  entry is marked `auto_importance=True` and rescored at consolidation.
+  Pass an explicit integer to opt out. Existing code passing `importance=N`
+  is unaffected.
+
+- **`LTMModel.supersedes_id` renamed to `superseded_by_id`** to match
+  forward-pointer semantics. Migration v2→v3 handles the rename.
+
+### Added
+
+- **Belief revision system** — full conflict detection → resolution pipeline:
+  - `scan_conflicts()` runs on every LTM and Shared write, detecting
+    contradictions via text overlap + vector divergence.
+  - `resolve_conflict()` picks winners at consolidation using:
+    grounding rank → agent trust → recency → importance.
+  - Losers marked `superseded` with `superseded_by_id` pointing at the
+    winner. Excluded from search by default (`include_superseded=False`).
+  - New `[belief]` config section: `agent_trust` dict, `grounding_priority`
+    list, `auto_resolve_grounding_gap`, `default_trust`,
+    `scan_candidates_limit`.
+
+- **Auto-importance scoring** — heuristic rescoring at consolidation time
+  for entries marked `auto_importance=True`. Factors: record_type weight,
+  grounding rank, access velocity, content density. Retroactive boost from
+  nightly synthesis respects the flag. New `[importance]` config section.
+
+- **Nightly retrospective ("dreamstate")** — validates past lessons against
+  new evidence, piggybacked on `run_nightly_synthesis()`:
+  - Pulls LTM lessons from last 14 days, skips recently-validated (3-day
+    guard), cross-agent journal search for outcome evidence.
+  - LLM classifies: `reinforces` → refresh salience + bump importance;
+    `contradicts` → mark `grounding='disputed'`; `neutral` → skip-guard
+    bumped.
+  - Bounded: `max_llm_calls_per_run = 5` per night.
+  - Writes `retrospective_synthesis` shared knowledge entry.
+  - New `[retrospective]` config section.
+
+- **Configuration profiles** — named preset collections:
+  - `NmemConfig.from_profile("neutral")` — bare defaults, no domain
+    assumptions.
+  - `NmemConfig.from_profile("refinery")` — pre-seeded agent trust for 6
+    roles, tighter synthesis thresholds.
+  - `register_profile()` for custom profiles. Deep-merge: profile defaults
+    fill gaps, user values always win.
+  - New `docs/profiles.md` with 5 suggested configs by use case.
+
+- **Token trends measurement** — automatic tracking of prompt injection
+  sizes and LLM operation costs:
+  - Every `prompt.build()` records per-section token estimates to
+    `nmem_metadata`.
+  - LLM operations (synthesis, retrospective) log their token usage.
+  - New CLI: `nmem token-trends [--days 30] [--agent X] [--json]`
+  - New API: `GET /v1/token-trends?days=30&agent_id=X`
+
+- **`nmem conflicts list [--pending]`** CLI command.
+- **`PromptContext.section_tokens`** property — per-section token breakdown.
+- **`list_profiles()` and `register_profile()`** in public API.
+
+### Changed
+
+- Consolidation engine expanded from 7 steps to 10: added auto-importance
+  (step 5), belief revision (step 6), knowledge links (step 9).
+- `ConsolidationStats` gains `auto_importance_rescored`,
+  `conflicts_auto_resolved`, `conflicts_needs_review`,
+  `lessons_validated`, `lessons_disputed` fields.
+- Tier 4 docs reframed as "Shared Knowledge (social learning)" — describes
+  the observe → journal → promote → share loop.
+- LangChain adapter: `BaseMemory` inheritance (graceful fallback), Python
+  3.12-safe sync wrappers, configurable `memory_key` and `input_key`.
+- CrewAI adapter: `build_context()` for prompt injection, `reset()`,
+  configurable `importance` and `entry_type` on `save()`.
+- `docs/configuration.md` expanded with `[belief]`, `[importance]`,
+  `[retrospective]`, and `[knowledge_links]` sections.
+- `nmem.example.toml` expanded with all new config sections.
+- README updated with 10-step consolidation diagrams, social learning
+  framing, token trends, profiles, and new CLI commands.
+
+### Fixed
+
+- Schema migration failures were silently swallowed at DEBUG level; now
+  logged at WARNING with the failing SQL statement.
+- `_find_lesson_outcomes` searched same-agent only — now cross-agent.
+- `_find_lesson_outcomes` had no `project_scope` filtering — scoped
+  lessons could be validated by evidence from a different project.
+- Retrospective candidate ordering was `.asc()` with a comment claiming
+  "fresh arrivals prioritized" — flipped to `.desc()`.
+- `lesson.key` could be `None` in retrospective synthesis output.
+- `record_llm_usage()` was defined but never called — now wired into
+  synthesis and retrospective LLM paths.
+- Test `_clean_tables()` was missing `nmem_memory_conflicts`,
+  `nmem_knowledge_links`, `nmem_metadata`, and `nmem_policy_memory`.
+
+### Upgrade notes for existing PostgreSQL installations
+
+Schema migration v2→v3 runs automatically on `initialize()`. Manual SQL
+if needed:
+
+```sql
+ALTER TABLE nmem_long_term_memory RENAME COLUMN confidence TO salience;
+ALTER TABLE nmem_long_term_memory RENAME COLUMN supersedes_id TO superseded_by_id;
+ALTER TABLE nmem_long_term_memory ADD COLUMN auto_importance BOOLEAN DEFAULT TRUE;
+ALTER TABLE nmem_journal_entries ADD COLUMN auto_importance BOOLEAN DEFAULT TRUE;
+```
+
+---
+
 ## [0.2.0] — 2026-04-12
 
 ### Added
