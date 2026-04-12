@@ -55,8 +55,12 @@ async def _clean_tables(system: MemorySystem):
             "nmem_long_term_memory",
             "nmem_shared_knowledge",
             "nmem_entity_memory",
+            "nmem_policy_memory",
             "nmem_delegations",
             "nmem_curiosity_signals",
+            "nmem_memory_conflicts",
+            "nmem_knowledge_links",
+            "nmem_metadata",
         ]:
             try:
                 await session.execute(text(f"DELETE FROM {table}"))

@@ -1,7 +1,7 @@
 """
 Tier 3: Long-Term Memory — permanent, versioned, per-agent knowledge.
 
-LTM entries are categorized, versioned, and subject to confidence decay.
+LTM entries are categorized, versioned, and subject to salience decay.
 Upserts by (agent_id, key) — updating an existing key creates a new version.
 """
 

@@ -241,21 +241,21 @@ class Consolidator:
         # Step 7: Salience decay on stale LTM
         stats.salience_decayed = await self._update_salience_scores()
 
-        # Step 6: Custom hooks
+        # Step 8: Custom hooks
         for name, fn in self._full_cycle_hooks:
             try:
                 await fn()
             except Exception as e:
                 logger.warning("Custom consolidation step '%s' failed: %s", name, e)
 
-        # Step 7: Build knowledge links
+        # Step 9: Build knowledge links
         if self._link_engine:
             try:
                 stats.links_created = await self._link_engine.build_links()
             except Exception as e:
                 logger.warning("Knowledge link building failed: %s", e)
 
-        # Step 8: Curiosity signal decay
+        # Step 10: Curiosity signal decay
         stats.curiosity_decayed = await self._decay_curiosity_signals()
 
         stats.duration_seconds = time.monotonic() - start
@@ -366,6 +366,13 @@ class Consolidator:
                 system_prompt, context,
                 max_tokens=self._config.llm.synthesis_max_tokens,
                 temperature=0.3, timeout=30.0,
+            )
+
+            # Record LLM usage for token trends
+            from nmem.token_stats import record_llm_usage
+            await record_llm_usage(
+                self._db, "synthesis",
+                self._config.llm.synthesis_max_tokens,
             )
 
             if not result or not isinstance(result, dict) or not result.get("patterns"):
@@ -1046,7 +1053,10 @@ class Consolidator:
     async def _find_lesson_outcomes(
         self, lesson: LTMModel, *, since: datetime, top_k: int = 5,
     ) -> list[dict]:
-        """Find journal + LTM entries that could validate or contradict a lesson.
+        """Find journal entries that could validate or contradict a lesson.
+
+        Searches journal entries created after the lesson via embedding
+        similarity (cosine > 0.55), scoped to the lesson's project_scope.
 
         Returns a list of dicts with {tier, title, content, created_at}
         suitable for stuffing into the LLM prompt.
@@ -1138,6 +1148,16 @@ class Consolidator:
             temperature=0.2,
             timeout=20.0,
         )
+
+        # Record LLM usage for token trends
+        try:
+            from nmem.token_stats import record_llm_usage
+            await record_llm_usage(
+                self._db, "retrospective",
+                self._config.llm.synthesis_max_tokens,
+            )
+        except Exception:
+            pass
 
         if not result or not isinstance(result, dict):
             return "neutral"

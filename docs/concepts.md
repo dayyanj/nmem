@@ -182,7 +182,7 @@ Key principle: **entries earn their way up**. Nothing is promoted by an LLM's gu
 
 ## Consolidation engine
 
-The consolidation engine runs in the background (every 6 hours by default) and performs 7 steps:
+The consolidation engine runs in the background (every 6 hours by default) and performs 10 steps:
 
 | Step | What it does | Why it matters |
 |------|-------------|----------------|
@@ -190,9 +190,12 @@ The consolidation engine runs in the background (every 6 hours by default) and p
 | 2. Promote to LTM | Move high-importance journal entries to permanent storage | Saves valuable knowledge |
 | 3. Promote to Shared | Move cross-agent LTM entries to shared knowledge | Knowledge that multiple agents need becomes canonical |
 | 4. Dedup LTM | Cluster similar entries (cosine >0.85), merge via LLM | Prevents redundant knowledge |
-| 5. Salience decay | Reduce salience on stale entries (not accessed in 90+ days) | Stale knowledge fades from current reasoning (but isn't deleted — it just ranks lower) |
-| 6. Custom hooks | Run application-specific steps | Extensibility |
-| 7. Curiosity decay | Reduce scores on old unresolved curiosity signals | Prevents signal fatigue |
+| 5. Auto-importance | Rescore entries marked `auto_importance=True` using heuristics | Keeps importance aligned with actual usage patterns |
+| 6. Belief revision | Resolve pending conflicts using grounding rank → agent trust → recency → importance | Contradictions get settled, losers marked superseded |
+| 7. Salience decay | Reduce salience on stale entries (not accessed in 90+ days) | Stale knowledge fades from current reasoning (but isn't deleted — it just ranks lower) |
+| 8. Custom hooks | Run application-specific steps | Extensibility |
+| 9. Knowledge links | Build associative links between related entries (entity, tag, temporal) | Enables search expansion via related entries |
+| 10. Curiosity decay | Reduce scores on old unresolved curiosity signals | Prevents signal fatigue |
 
 **Micro-cycles:** When a high-importance entry (≥7) is created, the consolidator wakes immediately for a fast promotion pass. Critical knowledge reaches LTM within seconds.
 

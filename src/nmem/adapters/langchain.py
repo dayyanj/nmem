@@ -125,18 +125,40 @@ class NmemLangChainMemory(_BaseMemory):  # type: ignore[misc]
 
     def load_memory_variables(self, inputs: dict[str, Any]) -> dict[str, str]:
         """Load memory context for chain input (sync wrapper)."""
-        return asyncio.get_event_loop().run_until_complete(
-            self.aload_memory_variables(inputs)
-        )
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(asyncio.run, self.aload_memory_variables(inputs)).result()
+        return asyncio.run(self.aload_memory_variables(inputs))
 
     def save_context(
         self, inputs: dict[str, Any], outputs: dict[str, str],
     ) -> None:
         """Save interaction to journal (sync wrapper)."""
-        asyncio.get_event_loop().run_until_complete(
-            self.asave_context(inputs, outputs)
-        )
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(asyncio.run, self.asave_context(inputs, outputs)).result()
+        else:
+            asyncio.run(self.asave_context(inputs, outputs))
 
     def clear(self) -> None:
         """Clear working memory (sync wrapper)."""
-        asyncio.get_event_loop().run_until_complete(self.aclear())
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(asyncio.run, self.aclear()).result()
+        else:
+            asyncio.run(self.aclear())

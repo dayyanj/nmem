@@ -38,7 +38,7 @@ Tuned for multi-agent operations platforms (extracted from ~6 months of producti
 
 | Setting | Neutral | Refinery | Why |
 |---------|---------|----------|-----|
-| `consolidation.nightly_synthesis_min_entries` | 5 | 10 | High-throughput systems generate more journal entries; 10 avoids synthesizing on quiet days |
+| `consolidation.nightly_synthesis_min_entries` | 10 | 10 | Same default — override to lower values (e.g. 3-5) for low-volume single-agent systems |
 | `journal.default_expiry_days` | 30 | 30 | Same — 30 days is a good baseline for both |
 | `journal.auto_promote_importance` | 7 | 7 | Same — importance 7+ earns LTM promotion |
 | `ltm.staleness_days` | 90 | 90 | Same — 3 months before salience decay kicks in |

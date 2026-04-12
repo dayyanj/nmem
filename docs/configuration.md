@@ -163,7 +163,7 @@ nightly_synthesis_min_entries = 10
 
 **`enabled`** (default: true): Set to false to disable background consolidation entirely. Useful for testing.
 
-**`interval_hours`** (default: 6): Hours between full consolidation cycles. Each cycle runs all 7 steps (decay, promote, dedup, etc.).
+**`interval_hours`** (default: 6): Hours between full consolidation cycles. Each cycle runs all 10 steps (decay, promote, dedup, rescore, belief revision, salience decay, hooks, links, curiosity decay).
 
 **`similarity_merge_threshold`** (default: 0.85): Cosine similarity threshold for merging duplicate LTM entries. Entries above this threshold are clustered and merged via LLM. **Tradeoff:** Lower = more aggressive dedup (fewer entries, cleaner memory). Higher = only merges very similar entries (preserves nuance).
 
@@ -207,6 +207,66 @@ NmemConfig(policy={
     "proposers": {"support", "engineering"},
 })
 ```
+
+## Auto-importance scoring
+
+```toml
+[importance]
+enabled = true
+rescore_batch_size = 50
+```
+
+**`enabled`** (default: true): Enable/disable heuristic importance rescoring at consolidation time. Only affects entries with `auto_importance=True` (written without an explicit importance value).
+
+**`rescore_batch_size`** (default: 50): Maximum rows to rescore per consolidation cycle. Bounds runtime on large databases.
+
+**`llm_rescore_enabled`** (default: false): Placeholder for future LLM-based rescoring. Not implemented — heuristic scoring handles all rescoring today.
+
+## Belief revision
+
+```toml
+[belief]
+enabled = true
+auto_resolve_grounding_gap = 1
+default_trust = 0.5
+scan_candidates_limit = 10
+```
+
+**`enabled`** (default: true): Enable/disable conflict detection on write and resolution at consolidation.
+
+**`grounding_priority`** (default: `["source_material", "confirmed", "inferred", "disputed"]`): Grounding values in descending rank. First entry wins over all others when resolving conflicts.
+
+**`auto_resolve_grounding_gap`** (default: 1): Minimum rank gap between winner and loser grounding to auto-resolve. Set higher (2+) to be more conservative about auto-resolution.
+
+**`agent_trust`** (default: `{}`): Per-agent trust scores 0.0-1.0. Used as tiebreaker when grounding ranks are equal. Typical usage: seed higher trust for larger models.
+
+```python
+NmemConfig(belief={"agent_trust": {"opus": 0.9, "qwen-8b": 0.4}})
+```
+
+**`default_trust`** (default: 0.5): Trust score for agents not listed in `agent_trust`.
+
+**`scan_candidates_limit`** (default: 10): Max candidate records to compare against per write. Bounds per-write cost.
+
+## Knowledge links
+
+```toml
+[knowledge_links]
+enabled = true
+temporal_window_minutes = 5
+min_shared_tags = 1
+search_expansion_enabled = true
+search_expansion_max = 3
+search_expansion_min_strength = 0.5
+```
+
+**`enabled`** (default: true): Enable associative knowledge link construction during consolidation.
+
+**`temporal_window_minutes`** (default: 5): Entries created within this window of each other get a temporal proximity link.
+
+**`search_expansion_enabled`** (default: true): Whether search results are expanded with linked entries.
+
+**`search_expansion_max`** (default: 3): Maximum additional entries to add via link expansion.
 
 ## Retrospective (dreamstate)
 

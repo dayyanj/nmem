@@ -63,6 +63,31 @@ interval_hours = 6                   # Full cycle interval
 # nightly_synthesis_min_entries = 10  # Min journal entries to trigger synthesis
 # similarity_merge_threshold = 0.85  # Cosine threshold for dedup merging
 
+# ── Auto-Importance Scoring ─────────────────────────────────────────────────
+# Heuristic rescoring at consolidation for entries without explicit importance.
+# [importance]
+# enabled = true
+# rescore_batch_size = 50              # Max rows to rescore per cycle
+
+# ── Belief Revision ────────────────────────────────────────────────────────
+# Conflict detection on write + resolution at consolidation.
+# [belief]
+# enabled = true
+# auto_resolve_grounding_gap = 1       # Min grounding rank gap for auto-resolve
+# default_trust = 0.5                  # Trust for agents not listed below
+# scan_candidates_limit = 10           # Max candidates to compare per write
+# [belief.agent_trust]
+# opus = 0.9                           # Higher trust for larger models
+# sonnet = 0.7
+# qwen-8b = 0.4
+
+# ── Knowledge Links ────────────────────────────────────────────────────────
+# [knowledge_links]
+# enabled = true
+# temporal_window_minutes = 5          # Window for temporal proximity links
+# search_expansion_enabled = true      # Expand search results with linked entries
+# search_expansion_max = 3             # Max additional entries via expansion
+
 # ── Retrospective (Dreamstate) ─────────────────────────────────────────────
 # Runs nightly after synthesis — validates past lessons against new evidence.
 [retrospective]
