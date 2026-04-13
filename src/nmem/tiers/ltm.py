@@ -297,6 +297,7 @@ class LTMTier:
         category: str | None = None,
         project_scope: str | None = ...,
         include_superseded: bool = False,
+        bump_access: bool = True,
     ) -> list[tuple[LTMEntry, float]]:
         """Search LTM using hybrid vector + FTS search.
 
@@ -363,12 +364,13 @@ class LTMTier:
                 e = entries_by_id.get(eid)
                 if not e:
                     continue
-                e.access_count += 1
-                e.last_accessed_at = now
-                # Track which agents have accessed this entry
-                agents = set(e.accessed_by_agents or [])
-                agents.add(agent_id)
-                e.accessed_by_agents = sorted(agents)
+                if bump_access:
+                    e.access_count += 1
+                    e.last_accessed_at = now
+                    # Track which agents have accessed this entry
+                    agents = set(e.accessed_by_agents or [])
+                    agents.add(agent_id)
+                    e.accessed_by_agents = sorted(agents)
                 results.append((self._row_to_entry(e), score_by_id.get(eid, 0.5)))
 
         return results

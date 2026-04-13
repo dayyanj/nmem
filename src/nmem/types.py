@@ -166,6 +166,9 @@ class SearchResult:
     key: str | None = None
     agent_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    recognition: str = "UNCERTAIN"  # "KNOWN", "FAMILIAR", "UNCERTAIN"
+    recognition_score: float = 0.0
+    recognition_reasons: tuple[str, ...] = ()
 
 
 # ── Prompt Context ────────────────────────────────────────────────────────────
@@ -320,3 +323,23 @@ class DelegationRecord:
     result_summary: str | None = None
     created_at: datetime | None = None
     completed_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BriefingResult:
+    """Structured return from MemorySystem.briefing()."""
+
+    content: str
+    """Formatted briefing text, within token budget."""
+
+    token_estimate: int
+    """Approximate token count of the content."""
+
+    facts_included: int
+    """Number of facts included in the briefing."""
+
+    facts_available: int
+    """Total facts available (shows coverage)."""
+
+    recognition_breakdown: dict[str, int] = field(default_factory=dict)
+    """Count per recognition level, e.g. {"KNOWN": 5, "FAMILIAR": 3}."""

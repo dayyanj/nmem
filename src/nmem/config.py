@@ -325,6 +325,51 @@ class RetrospectiveConfig(BaseModel):
     """Which LTM `record_type` values the retrospective considers lessons."""
 
 
+class RecognitionConfig(BaseModel):
+    """Recognition signal thresholds and scoring weights.
+
+    Computes how well-established a memory is (KNOWN/FAMILIAR/UNCERTAIN)
+    from grounding, access patterns, recency, multi-agent confirmation,
+    and tier-specific signals.  Thresholds are configurable per agent
+    via NmemConfig profiles.
+    """
+
+    known_threshold: float = 0.6
+    """Minimum recognition score to classify as KNOWN."""
+
+    familiar_threshold: float = 0.3
+    """Minimum recognition score to classify as FAMILIAR."""
+
+    grounding_weights: dict[str, float] = {
+        "confirmed": 0.4,
+        "source_material": 0.35,
+        "inferred": 0.1,
+        "disputed": -0.2,
+    }
+    """Score contribution per grounding level."""
+
+    access_count_high: int = 5
+    """Access count threshold for +0.2 bonus."""
+
+    access_count_medium: int = 2
+    """Access count threshold for +0.1 bonus."""
+
+    recency_high_days: int = 7
+    """Days within which last access gives +0.15 bonus."""
+
+    recency_medium_days: int = 30
+    """Days within which last access gives +0.05 bonus."""
+
+    multi_agent_bonus: float = 0.15
+    """Bonus when 2+ agents have accessed the entry."""
+
+    salience_weight: float = 0.1
+    """Multiplied by salience (0-1) for LTM entries."""
+
+    confidence_weight: float = 0.3
+    """Multiplied by confidence (0-1) for entity records."""
+
+
 class BeliefRevisionConfig(BaseModel):
     """Conflict detection and resolution ("belief revision").
 
@@ -453,6 +498,9 @@ class NmemConfig(BaseSettings):
 
     retrospective: RetrospectiveConfig = RetrospectiveConfig()
     """Nightly retrospective (lesson validation against new evidence)."""
+
+    recognition: RecognitionConfig = RecognitionConfig()
+    """Recognition signal computation (KNOWN/FAMILIAR/UNCERTAIN)."""
 
     model_config = {"env_prefix": "NMEM_", "env_nested_delimiter": "__"}
 

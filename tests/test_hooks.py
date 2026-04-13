@@ -213,24 +213,22 @@ class TestHookEntryPoint:
 
     def test_unknown_hook_exits_with_error(self) -> None:
         """Running an unknown hook name exits with code 1."""
-        import subprocess
+        import subprocess, sys
         result = subprocess.run(
-            ["python", "-m", "nmem.hooks", "nonexistent"],
+            [sys.executable, "-m", "nmem.hooks", "nonexistent"],
             capture_output=True, text=True,
             cwd="/mnt/nas_projects/apps/nmem",
-            env={**__import__("os").environ, "VIRTUAL_ENV": "/mnt/nas_projects/apps/nmem/.venv"},
         )
         assert result.returncode == 1
         assert "Unknown hook" in result.stderr
 
     def test_no_args_exits_with_error(self) -> None:
         """Running with no args exits with code 1."""
-        import subprocess
+        import subprocess, sys
         result = subprocess.run(
-            ["python", "-m", "nmem.hooks"],
+            [sys.executable, "-m", "nmem.hooks"],
             capture_output=True, text=True,
             cwd="/mnt/nas_projects/apps/nmem",
-            env={**__import__("os").environ, "VIRTUAL_ENV": "/mnt/nas_projects/apps/nmem/.venv"},
         )
         assert result.returncode == 1
         assert "Usage" in result.stderr

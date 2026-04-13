@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from sqlalchemy import text as sa_text
@@ -18,7 +18,7 @@ from sqlalchemy import text as sa_text
 from nmem.types import SearchResult
 
 if TYPE_CHECKING:
-    from nmem.config import NmemConfig
+    from nmem.config import NmemConfig, RecognitionConfig
     from nmem.db.session import DatabaseManager
     from nmem.links import KnowledgeLinkEngine
     from nmem.tiers.journal import JournalTier
@@ -276,6 +276,92 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / norm if norm > 0 else 0.0
 
 
+def compute_recognition(
+    metadata: dict[str, Any],
+    config: RecognitionConfig,
+) -> tuple[str, float, list[str]]:
+    """Compute recognition level from available entry metadata.
+
+    Returns (level, score, reasons) where level is KNOWN/FAMILIAR/UNCERTAIN.
+    Missing metadata keys are silently ignored (graceful degradation).
+    """
+    score = 0.0
+    reasons: list[str] = []
+
+    # Grounding (all tiers)
+    grounding = metadata.get("grounding")
+    if grounding:
+        weight = config.grounding_weights.get(grounding, 0.0)
+        if weight != 0:
+            score += weight
+            reasons.append(f"{grounding} ({weight:+.2f})")
+
+    # Access count (journal, ltm)
+    access_count = metadata.get("access_count", 0)
+    if access_count >= config.access_count_high:
+        score += 0.2
+        reasons.append(f"accessed {access_count}x (+0.20)")
+    elif access_count >= config.access_count_medium:
+        score += 0.1
+        reasons.append(f"accessed {access_count}x (+0.10)")
+
+    # Recency via last_accessed_at (ltm)
+    last_accessed = metadata.get("last_accessed_at")
+    if last_accessed:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        if hasattr(last_accessed, 'tzinfo') and last_accessed.tzinfo is None:
+            # Naive datetime — assume UTC
+            from datetime import timezone as tz
+            last_accessed = last_accessed.replace(tzinfo=tz.utc)
+        days_old = (now - last_accessed).days
+        if days_old <= config.recency_high_days:
+            score += 0.15
+            reasons.append(f"{days_old}d ago (+0.15)")
+        elif days_old <= config.recency_medium_days:
+            score += 0.05
+            reasons.append(f"{days_old}d ago (+0.05)")
+
+    # Multi-agent confirmation (ltm)
+    agents = metadata.get("accessed_by_agents") or []
+    if len(agents) >= 2:
+        score += config.multi_agent_bonus
+        reasons.append(f"{len(agents)} agents (+{config.multi_agent_bonus:.2f})")
+
+    # Salience (ltm)
+    salience = metadata.get("salience")
+    if salience is not None:
+        bonus = salience * config.salience_weight
+        score += bonus
+        if bonus >= 0.05:
+            reasons.append(f"salience={salience:.1f} (+{bonus:.2f})")
+
+    # Confidence (entity)
+    confidence = metadata.get("confidence")
+    if confidence is not None:
+        bonus = confidence * config.confidence_weight
+        score += bonus
+        reasons.append(f"confidence={confidence:.1f} (+{bonus:.2f})")
+
+    # Confirmed flag (shared)
+    if metadata.get("confirmed"):
+        score += 0.3
+        reasons.append("confirmed (+0.30)")
+
+    # Clamp
+    score = max(0.0, min(1.0, score))
+
+    # Classify
+    if score >= config.known_threshold:
+        level = "KNOWN"
+    elif score >= config.familiar_threshold:
+        level = "FAMILIAR"
+    else:
+        level = "UNCERTAIN"
+
+    return level, score, reasons
+
+
 def assign_context_thread(
     embedding: list[float], agent_id: str, threshold: float = 0.65
 ) -> str:
@@ -336,6 +422,7 @@ async def cross_tier_search(
     tiers: tuple[str, ...] | None = None,
     top_k: int = 10,
     project_scope: str | None = ...,
+    bump_access: bool = True,
 ) -> list[SearchResult]:
     """Search across multiple memory tiers in parallel.
 
@@ -354,23 +441,25 @@ async def cross_tier_search(
         tiers: Which tiers to search (default: journal, ltm, shared, entity).
         top_k: Maximum total results.
         project_scope: Scope filter. Sentinel (...) = use tier config defaults.
+        bump_access: Whether to increment access counters on matched entries.
 
     Returns:
         List of SearchResult objects, ranked by score.
     """
     tiers = tiers or DEFAULT_TIERS
+    recog_config = config.recognition if config else None
     # Pass scope through as sentinel — each tier resolves its own config default
     scope_kwarg = {"project_scope": project_scope}
     tasks = []
 
     if "journal" in tiers:
-        tasks.append(_search_journal(agent_id, query, journal, **scope_kwarg))
+        tasks.append(_search_journal(agent_id, query, journal, recognition_config=recog_config, bump_access=bump_access, **scope_kwarg))
     if "ltm" in tiers:
-        tasks.append(_search_ltm(agent_id, query, ltm, **scope_kwarg))
+        tasks.append(_search_ltm(agent_id, query, ltm, recognition_config=recog_config, bump_access=bump_access, **scope_kwarg))
     if "shared" in tiers:
-        tasks.append(_search_shared(query, shared, **scope_kwarg))
+        tasks.append(_search_shared(query, shared, recognition_config=recog_config, **scope_kwarg))
     if "entity" in tiers:
-        tasks.append(_search_entity(query, entity, agent_id=agent_id, **scope_kwarg))
+        tasks.append(_search_entity(query, entity, agent_id=agent_id, recognition_config=recog_config, **scope_kwarg))
     if "policy" in tiers and policy is not None:
         tasks.append(_search_policy(query, policy))
 
@@ -404,29 +493,60 @@ async def cross_tier_search(
 async def _search_journal(
     agent_id: str, query: str, tier: JournalTier,
     *, project_scope: str | None = ...,
+    recognition_config: RecognitionConfig | None = None,
+    bump_access: bool = True,
 ) -> list[SearchResult]:
-    entries = await tier.search(agent_id, query, top_k=5, project_scope=project_scope)
-    return [
-        SearchResult(
+    entries = await tier.search(agent_id, query, top_k=5, project_scope=project_scope, bump_access=bump_access)
+    results: list[SearchResult] = []
+    for e in entries:
+        meta: dict[str, Any] = {
+            "entry_type": e.entry_type,
+            "record_type": e.record_type,
+            "grounding": e.grounding,
+            "access_count": e.access_count,
+            "importance": e.importance,
+        }
+        if recognition_config:
+            level, r_score, reasons = compute_recognition(meta, recognition_config)
+        else:
+            level, r_score, reasons = "UNCERTAIN", 0.0, []
+        results.append(SearchResult(
             tier="journal",
             id=e.id,
             score=e.relevance_score,
             content=e.content,
             title=e.title,
             agent_id=e.agent_id,
-            metadata={"entry_type": e.entry_type, "record_type": e.record_type},
-        )
-        for e in entries
-    ]
+            metadata=meta,
+            recognition=level,
+            recognition_score=r_score,
+            recognition_reasons=tuple(reasons),
+        ))
+    return results
 
 
 async def _search_ltm(
     agent_id: str, query: str, tier: LTMTier,
     *, project_scope: str | None = ...,
+    recognition_config: RecognitionConfig | None = None,
+    bump_access: bool = True,
 ) -> list[SearchResult]:
-    ranked_entries = await tier.search(agent_id, query, top_k=5, project_scope=project_scope)
-    return [
-        SearchResult(
+    ranked_entries = await tier.search(agent_id, query, top_k=5, project_scope=project_scope, bump_access=bump_access)
+    results: list[SearchResult] = []
+    for e, relevance in ranked_entries:
+        meta: dict[str, Any] = {
+            "category": e.category,
+            "salience": e.salience,
+            "importance": e.importance,
+            "grounding": e.grounding,
+            "access_count": e.access_count,
+            "record_type": e.record_type,
+        }
+        if recognition_config:
+            level, r_score, reasons = compute_recognition(meta, recognition_config)
+        else:
+            level, r_score, reasons = "UNCERTAIN", 0.0, []
+        results.append(SearchResult(
             tier="ltm",
             id=e.id,
             # Relevance from hybrid search, with a mild freshness boost from salience.
@@ -436,70 +556,89 @@ async def _search_ltm(
             content=e.content,
             key=e.key,
             agent_id=e.agent_id,
-            metadata={
-                "category": e.category,
-                "salience": e.salience,
-                "importance": e.importance,
-            },
-        )
-        for e, relevance in ranked_entries
-    ]
+            metadata=meta,
+            recognition=level,
+            recognition_score=r_score,
+            recognition_reasons=tuple(reasons),
+        ))
+    return results
 
 
 async def _search_shared(
     query: str, tier: SharedTier,
     *, project_scope: str | None = ...,
+    recognition_config: RecognitionConfig | None = None,
 ) -> list[SearchResult]:
     ranked_entries = await tier.search(query, top_k=5, project_scope=project_scope)
-    return [
-        SearchResult(
+    results: list[SearchResult] = []
+    for e, relevance in ranked_entries:
+        meta: dict[str, Any] = {
+            "category": e.category,
+            "confirmed": e.confirmed,
+            "created_by": e.created_by,
+            "importance": e.importance,
+            "grounding": e.grounding,
+            "record_type": e.record_type,
+        }
+        if recognition_config:
+            level, r_score, reasons = compute_recognition(meta, recognition_config)
+        else:
+            level, r_score, reasons = "UNCERTAIN", 0.0, []
+        results.append(SearchResult(
             tier="shared",
             id=e.id,
             score=relevance,
             content=e.content,
             key=e.key,
             agent_id=e.last_updated_by,
-            metadata={
-                "category": e.category,
-                "confirmed": e.confirmed,
-                "created_by": e.created_by,
-                "importance": e.importance,
-            },
-        )
-        for e, relevance in ranked_entries
-    ]
+            metadata=meta,
+            recognition=level,
+            recognition_score=r_score,
+            recognition_reasons=tuple(reasons),
+        ))
+    return results
 
 
 async def _search_entity(
     query: str, tier: EntityTier,
     *, project_scope: str | None = ...,
     agent_id: str | None = None,
+    recognition_config: RecognitionConfig | None = None,
 ) -> list[SearchResult]:
     ranked_records = await tier.search(query, top_k=5, project_scope=project_scope, agent_id=agent_id)
-    return [
-        SearchResult(
+    results: list[SearchResult] = []
+    for r, relevance in ranked_records:
+        meta: dict[str, Any] = {
+            "entity_type": r.entity_type,
+            "entity_id": r.entity_id,
+            "entity_name": r.entity_name,
+            "record_type": r.record_type,
+            "confidence": r.confidence,
+            "grounding": r.grounding,
+        }
+        if recognition_config:
+            level, r_score, reasons = compute_recognition(meta, recognition_config)
+        else:
+            level, r_score, reasons = "UNCERTAIN", 0.0, []
+        results.append(SearchResult(
             tier="entity",
             id=r.id,
             # Confidence modulates the hybrid score — a quality signal
             score=relevance * (0.7 + 0.3 * r.confidence),
             content=r.content,
             agent_id=r.agent_id,
-            metadata={
-                "entity_type": r.entity_type,
-                "entity_id": r.entity_id,
-                "entity_name": r.entity_name,
-                "record_type": r.record_type,
-                "confidence": r.confidence,
-            },
-        )
-        for r, relevance in ranked_records
-    ]
+            metadata=meta,
+            recognition=level,
+            recognition_score=r_score,
+            recognition_reasons=tuple(reasons),
+        ))
+    return results
 
 
 async def _search_policy(
     query: str, tier: PolicyTier,
 ) -> list[SearchResult]:
-    results = await tier.search(query, top_k=5)
+    raw_results = await tier.search(query, top_k=5)
     return [
         SearchResult(
             tier="policy",
@@ -514,6 +653,9 @@ async def _search_policy(
                 "version": entry.version,
                 "status": entry.status,
             },
+            recognition="KNOWN",
+            recognition_score=1.0,
+            recognition_reasons=("active policy",),
         )
-        for entry, score in results
+        for entry, score in raw_results
     ]

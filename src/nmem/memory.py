@@ -37,7 +37,7 @@ from nmem.tiers.policy import PolicyTier
 from nmem.prompt import PromptBuilder
 from nmem.cognitive import CognitiveEngine
 from nmem.consolidation import Consolidator
-from nmem.types import SearchResult
+from nmem.types import BriefingResult, SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -253,6 +253,7 @@ class MemorySystem:
         tiers: tuple[str, ...] | None = None,
         top_k: int = 10,
         project_scope: str | None = ...,
+        bump_access: bool = True,
     ) -> list[SearchResult]:
         """Search across multiple memory tiers in parallel.
 
@@ -263,6 +264,8 @@ class MemorySystem:
             top_k: Maximum total results.
             project_scope: Scope filter. None = global only, "*" = all scopes,
                 str = specific scope + global, ... = use config default.
+            bump_access: If True (default), increment access_count on returned
+                entries. Set False for read-only queries like briefings.
 
         Returns:
             List of SearchResult objects, ranked by score.
@@ -282,6 +285,7 @@ class MemorySystem:
             tiers=tiers,
             top_k=top_k,
             project_scope=project_scope,
+            bump_access=bump_access,
         )
 
     # ── Priorities (importance-ranked, for planning not retrieval) ──────
@@ -389,48 +393,75 @@ class MemorySystem:
 
     # ── Session Briefing ─────────────────────────────────────────────────
 
+    _WARNING_KEYWORDS = frozenset({
+        "never", "do not", "avoid", "warning", "critical",
+        "must not", "forbidden",
+    })
+
     async def briefing(
         self,
         agent_id: str = "default",
         *,
         session_id: str | None = None,
         max_tokens: int = 1500,
-    ) -> str:
-        """Build a session-start briefing: policies, priorities, recent activity, conflicts.
+        query: str | None = None,
+        include_priorities: bool = True,
+        include_relevant: bool = True,
+        include_recent: bool = True,
+        project_scope: str | None = ...,
+    ) -> BriefingResult:
+        """Build a session-start briefing with recognition signals.
 
-        Call at the start of a session for warm-up context. No query needed.
+        Call at the start of a session for warm-up context. When a query is
+        provided, includes topic-relevant facts tagged with recognition
+        levels (KNOWN/FAMILIAR/UNCERTAIN).
 
         Args:
             agent_id: Agent to brief.
             session_id: Current session ID (for working memory inclusion).
             max_tokens: Approximate token budget for the briefing.
+            query: Optional topic to focus the briefing on.
+            include_priorities: Include importance-ranked priority items.
+            include_relevant: Include query-relevant search results (requires query).
+            include_recent: Include recent journal activity.
+            project_scope: Scope filter. Sentinel (...) = use config default.
 
         Returns:
-            Structured markdown briefing string.
+            BriefingResult with structured content and recognition breakdown.
         """
         import asyncio
-        from datetime import datetime, timedelta, timezone
-        from sqlalchemy import select, func, text as sa_text
+        from sqlalchemy import select, func
+
+        if project_scope is ...:
+            project_scope = self._config.project_scope
 
         max_chars = max_tokens * 4
-        sections: list[str] = []
 
-        # Gather data in parallel
-        coros = {
+        # ── 1. Gather data in parallel ──────────────────────────────────
+        coros: dict[str, Any] = {
             "policies": self._policy.list(),
-            "priorities": self.priorities(agent_id=agent_id, min_importance=7, since_days=30, limit=5),
-            "recent": self._journal.recent(agent_id, days=3, limit=5),
         }
+        if include_priorities:
+            coros["priorities"] = self.priorities(
+                agent_id=agent_id, min_importance=7, since_days=30, limit=5,
+            )
+        if include_recent:
+            coros["recent"] = self._journal.recent(agent_id, days=3, limit=5)
         if session_id:
             coros["working"] = self._working.get(session_id, agent_id)
+        if query and include_relevant:
+            coros["search"] = self.search(
+                agent_id, query, top_k=10, bump_access=False,
+                project_scope=project_scope,
+            )
 
         keys = list(coros.keys())
         results_raw = await asyncio.gather(*coros.values(), return_exceptions=True)
-        data = {}
+        data: dict[str, Any] = {}
         for k, v in zip(keys, results_raw):
             data[k] = v if not isinstance(v, Exception) else []
 
-        # Count open conflicts
+        # ── 2. Count open conflicts ─────────────────────────────────────
         conflict_count = 0
         try:
             from nmem.db.models import MemoryConflictModel
@@ -444,73 +475,177 @@ class MemorySystem:
         except Exception:
             pass
 
-        # Build sections with proportional budget
-        budget = {"policies": 0.15, "priorities": 0.30, "recent": 0.30, "conflicts": 0.05, "working": 0.20}
-        char_budget = {k: int(max_chars * v) for k, v in budget.items()}
+        # ── 3. Budget adaptation ────────────────────────────────────────
+        # At low budgets, only emit warnings + KNOWN one-liners.
+        low_budget = max_tokens < 800
+        high_budget = max_tokens >= 4000
 
-        # Policies
+        budget_warnings = int(max_chars * 0.15)
+        budget_known = int(max_chars * (0.40 if high_budget else 0.30))
+        budget_familiar = int(max_chars * (0.15 if high_budget else 0.10))
+        budget_priorities = int(max_chars * 0.20)
+        budget_recent = int(max_chars * 0.15)
+        budget_working = int(max_chars * 0.10)
+
+        sections: list[str] = []
+        n_known = 0
+        n_familiar = 0
+        n_uncertain = 0
+        n_included = 0
+        n_available = 0
+
+        # ── Helper: check if text contains warning keywords ─────────────
+        def _is_warning(text: str) -> bool:
+            lower = text.lower()
+            return any(kw in lower for kw in self._WARNING_KEYWORDS)
+
+        # ── Warnings section (always, if any) ───────────────────────────
+        warnings: list[str] = []
         policies = data.get("policies", [])
-        if policies:
-            lines = [f"### Active Policies ({len(policies)})"]
+        for p in policies:
+            full_text = f"{p.key} {p.content}"
+            if _is_warning(full_text):
+                line = f"[!] {p.key}: {p.content[:120]}"
+                warnings.append(line)
+        priorities = data.get("priorities", [])
+        for p in priorities:
+            if _is_warning(p.content):
+                imp = p.metadata.get("importance", "?") if p.metadata else "?"
+                line = f"[!] [imp={imp}] {p.content[:120]}"
+                warnings.append(line)
+
+        if warnings:
+            lines = ["### Warnings"]
             chars = 0
-            for p in policies[:5]:
-                line = f"- [{p.scope}] {p.key}: {p.content[:100]}"
-                if chars + len(line) > char_budget["policies"]:
+            for w in warnings:
+                if chars + len(w) > budget_warnings:
                     break
-                lines.append(line)
-                chars += len(line)
+                lines.append(w)
+                chars += len(w) + 1
             sections.append("\n".join(lines))
 
-        # Priorities
-        priorities = data.get("priorities", [])
-        if priorities:
-            lines = [f"### Priority Items ({len(priorities)})"]
+        # ── Known Facts (from search results, full content) ─────────────
+        search_results: list[SearchResult] = data.get("search", [])
+        n_available += len(search_results)
+        known_items = [r for r in search_results if r.recognition == "KNOWN"]
+        familiar_items = [r for r in search_results if r.recognition == "FAMILIAR"]
+        uncertain_items = [r for r in search_results if r.recognition == "UNCERTAIN"]
+
+        if known_items and not low_budget:
+            lines = ["### Known Facts (use directly)"]
+            chars = 0
+            for r in known_items:
+                label = r.title or r.key or ""
+                if high_budget:
+                    line = f"[KNOWN] {label}: {r.content[:300]}"
+                else:
+                    line = f"[KNOWN] {label}: {r.content[:150]}"
+                if chars + len(line) > budget_known:
+                    break
+                lines.append(line)
+                chars += len(line) + 1
+                n_known += 1
+                n_included += 1
+            sections.append("\n".join(lines))
+        elif known_items and low_budget:
+            # Low budget: one-liners only for KNOWN
+            lines = ["### Known Facts"]
+            chars = 0
+            for r in known_items:
+                label = r.title or r.key or ""
+                line = f"[KNOWN] {label}"
+                if chars + len(line) > budget_known:
+                    break
+                lines.append(line)
+                chars += len(line) + 1
+                n_known += 1
+                n_included += 1
+            sections.append("\n".join(lines))
+
+        # ── Familiar (one-line stubs) ───────────────────────────────────
+        if familiar_items and not low_budget:
+            lines = ["### Familiar (verify if unsure)"]
+            chars = 0
+            for r in familiar_items:
+                label = r.title or r.key or ""
+                preview = r.content[:80].replace("\n", " ")
+                line = f"[FAMILIAR] {label}: {preview}"
+                if chars + len(line) > budget_familiar:
+                    break
+                lines.append(line)
+                chars += len(line) + 1
+                n_familiar += 1
+                n_included += 1
+            sections.append("\n".join(lines))
+
+        # Count uncertain items (not included in output but tracked)
+        n_uncertain = len(uncertain_items)
+
+        # ── Priority Items ──────────────────────────────────────────────
+        if include_priorities and priorities and not low_budget:
+            lines = ["### Priority Items"]
             chars = 0
             for p in priorities:
                 imp = p.metadata.get("importance", "?") if p.metadata else "?"
-                line = f"- [{p.tier}] imp={imp}: {p.content[:120]}"
-                if chars + len(line) > char_budget["priorities"]:
+                line = f"- [imp={imp}] {p.content[:120]}"
+                if chars + len(line) > budget_priorities:
                     break
                 lines.append(line)
-                chars += len(line)
+                chars += len(line) + 1
             sections.append("\n".join(lines))
 
-        # Recent activity
+        # ── Recent Activity ─────────────────────────────────────────────
         recent = data.get("recent", [])
-        if recent:
-            lines = [f"### Recent Activity ({len(recent)} entries, last 3 days)"]
+        if include_recent and recent and not low_budget:
+            lines = ["### Recent Activity"]
             chars = 0
             for e in recent:
                 ts = e.created_at.strftime("%m-%d %H:%M") if e.created_at else "?"
                 line = f"- [{ts}] ({e.entry_type}) {e.title[:80]}"
-                if chars + len(line) > char_budget["recent"]:
+                if chars + len(line) > budget_recent:
                     break
                 lines.append(line)
-                chars += len(line)
+                chars += len(line) + 1
             sections.append("\n".join(lines))
 
-        # Conflicts
-        if conflict_count > 0:
-            sections.append(f"### Open Conflicts: {conflict_count}")
-
-        # Working memory
+        # ── Working Memory ──────────────────────────────────────────────
         working = data.get("working", [])
-        if working:
+        if working and not low_budget:
             lines = [f"### Working Memory ({len(working)} slots)"]
             chars = 0
             for s in working:
                 line = f"- [{s.slot}] {s.content[:100]}"
-                if chars + len(line) > char_budget["working"]:
+                if chars + len(line) > budget_working:
                     break
                 lines.append(line)
-                chars += len(line)
+                chars += len(line) + 1
             sections.append("\n".join(lines))
 
-        if not sections:
-            return "No memory context available for briefing."
+        # ── Conflicts ───────────────────────────────────────────────────
+        if conflict_count > 0:
+            sections.append(f"### Open Conflicts: {conflict_count}")
 
-        header = f"## Session Briefing for {agent_id}\n"
-        return header + "\n\n".join(sections)
+        # ── Assemble ────────────────────────────────────────────────────
+        if not sections:
+            content_str = "No memory context available for briefing."
+        else:
+            header = f"## Session Briefing for {agent_id}\n"
+            content_str = header + "\n\n".join(sections)
+
+        # Include policy/priority counts in n_available
+        n_available += len(policies) + len(priorities) + len(recent) + len(working)
+
+        return BriefingResult(
+            content=content_str,
+            token_estimate=len(content_str) // 4,
+            facts_included=n_included,
+            facts_available=n_available,
+            recognition_breakdown={
+                "KNOWN": n_known,
+                "FAMILIAR": n_familiar,
+                "UNCERTAIN": n_uncertain,
+            },
+        )
 
     # ── Event System ─────────────────────────────────────────────────────
 

@@ -145,12 +145,13 @@ async def memory_search(
     for i, r in enumerate(results, 1):
         title = getattr(r, "title", None) or getattr(r, "key", None) or ""
         score = f"{r.score:.3f}" if isinstance(r.score, float) else str(r.score)
+        recog_tag = f" [{r.recognition}]" if r.recognition != "UNCERTAIN" else ""
         if compact:
             preview = r.content[:100].replace("\n", " ")
-            lines.append(f"{i}. [{r.tier}#{r.id}] (score: {score}) {title}")
+            lines.append(f"{i}. [{r.tier}#{r.id}]{recog_tag} (score: {score}) {title}")
             lines.append(f"   {preview}...")
         else:
-            lines.append(f"{i}. [{r.tier}] (score: {score}) {title}")
+            lines.append(f"{i}. [{r.tier}]{recog_tag} (score: {score}) {title}")
             lines.append(f"   {r.content[:200]}")
         lines.append("")
 
@@ -299,23 +300,36 @@ async def memory_briefing(
     agent_id: str = "default",
     session_id: str | None = None,
     max_tokens: int = 1500,
+    query: str | None = None,
 ) -> str:
-    """Get a session-start briefing: policies, priorities, recent activity, conflicts.
+    """Get a session-start briefing with recognition signals.
 
-    Call this at the start of a new session to warm up context. Returns a
-    structured summary within the specified token budget. No query needed.
+    Call this at the start of a new session to warm up context.
+    When a query is provided, includes topic-relevant facts tagged
+    with recognition levels (KNOWN/FAMILIAR/UNCERTAIN).
 
     Args:
         agent_id: Agent to brief.
         session_id: Current session ID (for working memory inclusion).
-        max_tokens: Maximum approximate tokens in the response (default 1500).
+        max_tokens: Maximum approximate tokens in the response.
+        query: Optional topic to focus the briefing on.
     """
     mem = _get_mem(ctx)
-    return await mem.briefing(
+    result = await mem.briefing(
         agent_id=agent_id,
         session_id=session_id,
         max_tokens=max_tokens,
+        query=query,
     )
+    # Append metadata line
+    bd = result.recognition_breakdown
+    meta = f"\n---\n{result.facts_included}/{result.facts_available} facts"
+    if bd:
+        parts = [f"{k}:{v}" for k, v in bd.items() if v > 0]
+        if parts:
+            meta += f" ({', '.join(parts)})"
+    meta += f" | ~{result.token_estimate} tokens"
+    return result.content + meta
 
 
 @mcp.tool()

@@ -341,6 +341,7 @@ class JournalTier:
         entry_type: str | None = None,
         min_importance: int = 0,
         project_scope: str | None = ...,
+        bump_access: bool = True,
     ) -> list[JournalEntry]:
         """Search journal entries using hybrid vector + FTS search.
 
@@ -409,8 +410,9 @@ class JournalTier:
                 e = entries_by_id.get(eid)
                 if not e:
                     continue
-                e.access_count += 1
-                e.last_accessed_at = now
+                if bump_access:
+                    e.access_count += 1
+                    e.last_accessed_at = now
                 entry = self._row_to_entry(e)
                 # Override relevance_score with hybrid search score
                 results.append(JournalEntry(
