@@ -287,7 +287,7 @@ class LTMTier:
         category: str | None = None,
         project_scope: str | None = ...,
         include_superseded: bool = False,
-    ) -> list[LTMEntry]:
+    ) -> list[tuple[LTMEntry, float]]:
         """Search LTM using hybrid vector + FTS search.
 
         Bumps access_count on returned entries.
@@ -304,7 +304,8 @@ class LTMTier:
                 alongside winners. Default False excludes them.
 
         Returns:
-            List of LTMEntry objects, ranked by relevance.
+            List of (LTMEntry, relevance_score) tuples, ranked by relevance.
+            The relevance_score is the hybrid vector+FTS search score.
         """
         if project_scope is ...:
             project_scope = self._config.project_scope
@@ -337,9 +338,7 @@ class LTMTier:
         if not ranked:
             return []
 
-        # Preserve hybrid search scores for the cross-tier layer.
-        # Store as instance attr so _search_ltm() can access it.
-        self._last_search_scores = {r[0]: r[1] for r in ranked}
+        score_by_id = {r[0]: r[1] for r in ranked}
         ranked_ids = [r[0] for r in ranked]
 
         async with self._db.session() as session:
@@ -349,7 +348,7 @@ class LTMTier:
             entries_by_id = {e.id: e for e in result.scalars().all()}
 
             now = datetime.utcnow()
-            results = []
+            results: list[tuple[LTMEntry, float]] = []
             for eid in ranked_ids:
                 e = entries_by_id.get(eid)
                 if not e:
@@ -360,7 +359,7 @@ class LTMTier:
                 agents = set(e.accessed_by_agents or [])
                 agents.add(agent_id)
                 e.accessed_by_agents = sorted(agents)
-                results.append(self._row_to_entry(e))
+                results.append((self._row_to_entry(e), score_by_id.get(eid, 0.5)))
 
         return results
 
