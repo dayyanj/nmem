@@ -63,6 +63,8 @@ class JournalTier:
         grounding: str = "inferred",
         compress: bool = True,
         project_scope: str | None = ...,
+        created_at: datetime | None = None,
+        expires_at: datetime | None = None,
     ) -> JournalEntry:
         """Add a journal entry with embedding, compression, dedup, and context threading.
 
@@ -81,6 +83,11 @@ class JournalTier:
             record_type: "evidence", "fact", "judgment", "task", "rule", "summary".
             grounding: "source_material", "inferred", "confirmed", "disputed".
             compress: Whether to LLM-compress content (default True).
+            created_at: Override creation timestamp (for bulk imports). When set,
+                expiry is computed from this date, not NOW(), so historical
+                entries expire based on their original age.
+            expires_at: Override expiry timestamp directly. Takes precedence
+                over the created_at-based calculation.
 
         Returns:
             The created JournalEntry, or existing entry if deduplicated.
@@ -117,9 +124,16 @@ class JournalTier:
             emb, agent_id, self._config.clustering.similarity_threshold
         )
 
-        expires_at = datetime.utcnow() + timedelta(
-            days=self._config.journal.default_expiry_days
-        )
+        # Compute timestamps: explicit expires_at wins, then created_at-based,
+        # then default (NOW + expiry_days). This ensures imported historical
+        # entries expire based on their original age, not the import date.
+        base_time = created_at or datetime.utcnow()
+        if expires_at is not None:
+            effective_expires = expires_at
+        else:
+            effective_expires = base_time + timedelta(
+                days=self._config.journal.default_expiry_days
+            )
 
         async with self._db.session() as session:
             record = JournalEntryModel(
@@ -131,7 +145,7 @@ class JournalTier:
                 importance=importance,
                 auto_importance=auto_importance,
                 relevance_score=min(importance / 10.0, 1.0),
-                expires_at=expires_at,
+                expires_at=effective_expires,
                 context_thread_id=thread_id,
                 tags=tags,
                 record_type=record_type,
@@ -139,10 +153,13 @@ class JournalTier:
                 embedding=emb,
                 project_scope=project_scope,
             )
+            # Override created_at for historical imports (bypasses server_default)
+            if created_at is not None:
+                record.created_at = created_at
             session.add(record)
             await session.flush()
             entry_id = record.id
-            created_at = record.created_at
+            actual_created_at = record.created_at
 
         # Populate TSVECTOR (fire-and-forget, non-blocking)
         await populate_tsvector(
@@ -164,13 +181,13 @@ class JournalTier:
             importance=importance,
             auto_importance=auto_importance,
             relevance_score=min(importance / 10.0, 1.0),
-            expires_at=expires_at,
+            expires_at=effective_expires,
             context_thread_id=thread_id,
             tags=tags,
             record_type=record_type,
             grounding=grounding,
             project_scope=project_scope,
-            created_at=created_at,
+            created_at=actual_created_at,
         )
 
     async def search(

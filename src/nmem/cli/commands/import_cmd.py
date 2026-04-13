@@ -90,8 +90,15 @@ def import_jsonl(
         help="Default agent ID")] = "default",
     compress: Annotated[bool, typer.Option("--compress/--no-compress",
         help="LLM-compress content (off by default)")] = False,
+    preserve_timestamps: Annotated[bool, typer.Option("--preserve-timestamps",
+        help="Use created_at/expires_at from source data for entry aging")] = False,
 ):
-    """Import structured JSONL data. Each line: {"content": "...", "tier": "ltm", ...}"""
+    """Import structured JSONL data. Each line: {"content": "...", "tier": "ltm", ...}
+
+    With --preserve-timestamps, entries' created_at and expires_at fields from
+    the JSONL are used so historical entries expire based on their original
+    age, not the import date.
+    """
     if not file.is_file():
         console.print(f"[red]File not found: {file}[/red]")
         raise typer.Exit(1)
@@ -101,9 +108,11 @@ def import_jsonl(
 
         lines = file.read_text().strip().splitlines()
         console.print(f"Found [cyan]{len(lines)}[/cyan] lines in {file}")
+        if preserve_timestamps:
+            console.print("[dim]Timestamp preservation enabled — entries will age from their original dates[/dim]")
 
         async with get_mem() as mem:
-            result = await do_import(mem, file, agent_id, compress)
+            result = await do_import(mem, file, agent_id, compress, preserve_timestamps)
             print_import_result(result, f"JSONL ({file.name})")
 
     run_async(_import())

@@ -149,6 +149,8 @@ def setup(
         help="Auto-append memory instructions to CLAUDE.md")] = False,
     agents_md: Annotated[bool, typer.Option("--agents-md",
         help="Generate AGENTS.md for AI agent instructions")] = False,
+    hooks: Annotated[bool, typer.Option("--hooks",
+        help="Install auto-capture hooks for Claude Code")] = False,
 ):
     """Configure MCP server, generate CLAUDE.md snippet, and optionally create AGENTS.md."""
     # Determine database URL
@@ -227,7 +229,11 @@ def setup(
             agents_md_path.write_text(AGENTS_MD_CONTENT + "\n")
             console.print(f"[green]Created {agents_md_path}[/green]")
 
-    # ── 4. Print summary ─────────────────────────────────────────────
+    # ── 4. Install auto-capture hooks (if requested) ──────────────────
+    if hooks:
+        _install_hooks(project_dir, db_url, embedding_provider, project_scope)
+
+    # ── 5. Print summary ─────────────────────────────────────────────
     console.print()
     console.print("[bold]Setup complete![/bold]")
     console.print()
@@ -235,6 +241,8 @@ def setup(
     console.print(f"  MCP server:  [cyan]{claude_json_path}[/cyan]")
     console.print(f"  Database:    [cyan]{db_url}[/cyan]")
     console.print(f"  Embedding:   [cyan]{embedding_provider}[/cyan]")
+    if hooks:
+        console.print(f"  Hooks:       [cyan]auto-capture enabled[/cyan]")
     console.print()
     console.print("[dim]Next steps:[/dim]")
     console.print("  1. Restart Claude Code to pick up the MCP server")
@@ -243,3 +251,84 @@ def setup(
     if not auto_append:
         console.print()
         console.print("[dim]Tip: run with --auto-append to add instructions to CLAUDE.md automatically[/dim]")
+
+
+def _install_hooks(project_dir: Path, db_url: str, embedding_provider: str, project_scope: str) -> None:
+    """Install Claude Code auto-capture hooks.
+
+    Configures hooks in the project's .claude/settings.json that call
+    nmem's hook entry points for automatic knowledge capture.
+    """
+    import shutil
+
+    # Check if nmem is installed (for hook scripts to work)
+    python_path = shutil.which("python3") or shutil.which("python")
+    if not python_path:
+        console.print("[red]Error: python3 not found on PATH[/red]")
+        return
+
+    # Claude Code hooks are configured in .claude/settings.json (project-level)
+    # or ~/.claude/settings.json (global)
+    claude_dir = project_dir / ".claude"
+    claude_dir.mkdir(exist_ok=True)
+
+    settings_path = claude_dir / "settings.json"
+    settings = {}
+    if settings_path.exists():
+        try:
+            settings = json.loads(settings_path.read_text())
+        except json.JSONDecodeError:
+            pass
+
+    # Define hook commands using Python module entry points
+    env_block = {
+        "NMEM_DATABASE_URL": db_url,
+        "NMEM_EMBEDDING__PROVIDER": embedding_provider,
+        "NMEM_PROJECT_SCOPE": project_scope,
+    }
+
+    hooks_config = settings.setdefault("hooks", {})
+
+    # PostToolUse hook — capture edits and bash commands
+    hooks_config["PostToolUse"] = [
+        {
+            "type": "command",
+            "command": f"{python_path} -m nmem.hooks post_tool_use",
+            "timeout": 5000,
+            "env": env_block,
+        },
+    ]
+
+    # Stop hook — session end summary
+    hooks_config["Stop"] = [
+        {
+            "type": "command",
+            "command": f"{python_path} -m nmem.hooks session_end",
+            "timeout": 15000,
+            "env": env_block,
+        },
+    ]
+
+    settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+    console.print(f"[green]Auto-capture hooks installed in {settings_path}[/green]")
+    console.print("[dim]  PostToolUse: captures edits and bash commands[/dim]")
+    console.print("[dim]  Stop: writes session summary to journal[/dim]")
+
+    # Create nmem.toml with default hook config if it doesn't exist
+    config_path = project_dir / "nmem.toml"
+    if not config_path.exists():
+        config_path.write_text(
+            '# nmem hook configuration\n'
+            '[hooks]\n'
+            'enabled = true\n'
+            'capture_edits = true\n'
+            'capture_bash = true\n'
+            'capture_reads = false  # too noisy by default\n'
+            'session_summary = true\n'
+            'summary_llm = false\n'
+            '\n'
+            '[hooks.filters]\n'
+            'skip_paths = ["node_modules/", ".git/", "__pycache__/", ".venv/"]\n'
+            'skip_commands = ["ls", "pwd", "cd", "echo"]\n'
+        )
+        console.print(f"[green]Hook config created at {config_path}[/green]")

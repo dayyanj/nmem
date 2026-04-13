@@ -28,6 +28,7 @@ Quick start:
 
 from nmem._version import __version__
 from nmem.config import NmemConfig
+from nmem.importance import classify_importance, classify_tool_importance
 from nmem.memory import MemorySystem
 from nmem.profiles import list_profiles, register_profile
 from nmem.types import (
@@ -49,6 +50,8 @@ __all__ = [
     # Core
     "MemorySystem",
     "NmemConfig",
+    "classify_importance",
+    "classify_tool_importance",
     "list_profiles",
     "register_profile",
     "__version__",
