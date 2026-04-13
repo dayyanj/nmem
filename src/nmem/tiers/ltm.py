@@ -337,8 +337,9 @@ class LTMTier:
         if not ranked:
             return []
 
-        # Map id → hybrid search relevance score
-        score_by_id = {r[0]: r[1] for r in ranked}
+        # Preserve hybrid search scores for the cross-tier layer.
+        # Store as instance attr so _search_ltm() can access it.
+        self._last_search_scores = {r[0]: r[1] for r in ranked}
         ranked_ids = [r[0] for r in ranked]
 
         async with self._db.session() as session:
@@ -359,10 +360,7 @@ class LTMTier:
                 agents = set(e.accessed_by_agents or [])
                 agents.add(agent_id)
                 e.accessed_by_agents = sorted(agents)
-                entry = self._row_to_entry(e)
-                # Carry the hybrid search relevance score through
-                entry.relevance_score = score_by_id.get(eid, 0.5)
-                results.append(entry)
+                results.append(self._row_to_entry(e))
 
         return results
 

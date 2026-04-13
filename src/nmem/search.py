@@ -345,15 +345,17 @@ async def _search_ltm(
     *, project_scope: str | None = ...,
 ) -> list[SearchResult]:
     entries = await tier.search(agent_id, query, top_k=5, project_scope=project_scope)
+    # Retrieve the hybrid search relevance scores that the tier preserved.
+    # These are the actual vector+FTS relevance scores — NOT importance.
+    scores = getattr(tier, "_last_search_scores", {})
     return [
         SearchResult(
             tier="ltm",
             id=e.id,
-            # Use hybrid search relevance as the primary score.
+            # Relevance from hybrid search, with a mild freshness boost from salience.
             # Importance is a lifecycle signal (consolidation/expiry),
-            # NOT a retrieval signal. Salience provides a mild freshness
-            # boost without dominating relevance.
-            score=e.relevance_score * (0.8 + 0.2 * e.salience),
+            # NOT a retrieval signal.
+            score=scores.get(e.id, 0.5) * (0.8 + 0.2 * e.salience),
             content=e.content,
             key=e.key,
             agent_id=e.agent_id,
