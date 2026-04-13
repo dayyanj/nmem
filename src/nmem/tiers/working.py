@@ -168,3 +168,42 @@ class WorkingMemoryTier:
             lines.append(line)
             chars += len(line)
         return "\n".join(lines)
+
+    async def flush_to_journal(
+        self,
+        session_id: str,
+        agent_id: str,
+        journal_tier,
+        *,
+        clear_after: bool = True,
+    ) -> int:
+        """Flush working memory slots to a journal session summary.
+
+        Creates a single journal entry from all working memory slots,
+        then optionally clears the working memory.
+
+        Returns:
+            Number of slots flushed.
+        """
+        slots = await self.get(session_id, agent_id)
+        if not slots:
+            return 0
+
+        lines = [f"[{s.slot}] {s.content}" for s in slots]
+        content = "\n".join(lines)
+        title = f"Session {session_id[:8]} working memory ({len(slots)} slots)"
+
+        await journal_tier.add(
+            agent_id=agent_id,
+            entry_type="session_summary",
+            title=title,
+            content=content,
+            importance=None,
+            session_id=session_id,
+            tags=["working_memory_flush", f"session:{session_id}"],
+        )
+
+        if clear_after:
+            await self.clear(session_id, agent_id)
+
+        return len(slots)

@@ -554,7 +554,13 @@ class KnowledgeLinkModel(Base):
 
 
 class PerformanceScoreModel(Base):
-    """Rolling performance scores per agent — updated by consolidator."""
+    """Rolling performance scores per agent — updated by consolidator.
+
+    .. deprecated::
+        This model is retained for schema compatibility but is no longer
+        actively written to. Performance tracking has moved to the
+        delegation result pipeline. Will be removed in a future release.
+    """
 
     __tablename__ = "nmem_performance_scores"
 
@@ -581,6 +587,12 @@ class ScheduledFollowupModel(Base):
 
     Supports: time_based (fire at time), condition_based (prospective memory),
     open_loop (nagging for unresolved tasks).
+
+    .. deprecated::
+        This model is retained for schema compatibility but is no longer
+        actively used. Prospective memory triggers have been superseded by
+        the cognitive engine's event-driven architecture. Will be removed
+        in a future release.
     """
 
     __tablename__ = "nmem_scheduled_followups"

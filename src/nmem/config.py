@@ -214,6 +214,54 @@ class ConsolidationConfig(BaseModel):
     nightly_synthesis_min_entries: int = 10
     """Minimum journal entries in 24h to trigger synthesis."""
 
+    max_dreamstate_cycles: int = 5
+    """Maximum consolidation cycles in a dreamstate batch."""
+
+    convergence_threshold: int = 2
+    """Stop cycling when total material actions falls below this for
+    2 consecutive cycles. Material = promotions + merges + rescores."""
+
+
+class SearchConfig(BaseModel):
+    """Search scoring weights and parameters."""
+
+    vector_weight: float = 0.6
+    """Weight for vector similarity in hybrid search (0.0-1.0)."""
+
+    fts_weight: float = 0.4
+    """Weight for FTS score in hybrid search (0.0-1.0)."""
+
+    recency_weight: float = 0.0
+    """Weight for recency boost (0.0 = disabled). When > 0, vector_weight
+    and fts_weight are scaled down proportionally."""
+
+    recency_halflife_days: int = 30
+    """Half-life for recency decay in days. An entry this old gets 50% of
+    the recency boost that a brand-new entry gets."""
+
+    min_vector_score: float = 0.0
+    """Minimum vector similarity for candidates (0.0 = no filter,
+    0.3 = recommended for large corpora)."""
+
+
+class PromptConfig(BaseModel):
+    """Global prompt injection budget settings."""
+
+    max_total_tokens: int = 0
+    """Maximum total tokens for the combined prompt injection.
+    0 = disabled (use per-tier max_chars_in_prompt instead)."""
+
+    section_weights: dict[str, float] = {
+        "policy": 0.10,
+        "shared": 0.15,
+        "ltm": 0.30,
+        "journal": 0.20,
+        "working": 0.10,
+        "entity": 0.15,
+    }
+    """Proportional weights for token budget distribution across sections.
+    Weights are normalized at runtime."""
+
 
 class ImportanceConfig(BaseModel):
     """Automatic importance scoring (consolidation time, heuristic-based).
@@ -381,6 +429,12 @@ class NmemConfig(BaseSettings):
     project_scope: str | None = None
     """Project scope for memory isolation. None = global (all projects).
     Set via NMEM_PROJECT_SCOPE env var for per-project MCP instances."""
+
+    search: SearchConfig = SearchConfig()
+    """Search scoring weights and parameters."""
+
+    prompt: PromptConfig = PromptConfig()
+    """Global prompt injection budget settings."""
 
     knowledge_links: KnowledgeLinksConfig = KnowledgeLinksConfig()
     """Associative knowledge linking settings."""

@@ -18,7 +18,9 @@ from sqlalchemy import text as sa_text
 from nmem.types import SearchResult
 
 if TYPE_CHECKING:
+    from nmem.config import NmemConfig
     from nmem.db.session import DatabaseManager
+    from nmem.links import KnowledgeLinkEngine
     from nmem.tiers.journal import JournalTier
     from nmem.tiers.ltm import LTMTier
     from nmem.tiers.shared import SharedTier
@@ -44,12 +46,22 @@ async def hybrid_memory_search(
     top_k: int,
     vector_weight: float = 0.6,
     fts_weight: float = 0.4,
+    min_vector_score: float = 0.0,
+    recency_weight: float = 0.0,
+    recency_halflife_days: int = 30,
 ) -> list[tuple[int, float]]:
     """Hybrid search (vector + FTS) returning ranked (id, score) pairs.
 
     Uses a CTE pattern: vector similarity as the primary signal,
-    FTS as a secondary re-ranking factor. Falls back gracefully
-    when content_tsv is NULL (FTS score = 0).
+    FTS as a secondary re-ranking factor.  FTS scores are normalized
+    to [0, 1] within each candidate set so that the fts_weight is
+    meaningful (raw ts_rank_cd returns ~[0, 0.3]).
+
+    When recency_weight > 0, a temporal recency factor is added to
+    the scoring formula.  The recency signal decays exponentially with
+    a configurable half-life (default 30 days).
+
+    Falls back gracefully when content_tsv is NULL (FTS score = 0).
 
     Args:
         db: Database manager.
@@ -61,6 +73,10 @@ async def hybrid_memory_search(
         top_k: Maximum results.
         vector_weight: Weight for vector similarity (default 0.6).
         fts_weight: Weight for FTS score (default 0.4).
+        min_vector_score: Minimum vector similarity to include in candidate
+            pool (0.0 = no filter, 0.3 = recommended for large corpora).
+        recency_weight: Weight for recency boost (0.0 = disabled).
+        recency_halflife_days: Half-life for recency decay.
 
     Returns:
         List of (id, combined_score) tuples, ranked by score.
@@ -69,6 +85,7 @@ async def hybrid_memory_search(
     if not db.is_postgres:
         return await _sqlite_fallback_search(
             db, table, query_embedding, where_clause, params, top_k,
+            min_vector_score=min_vector_score,
         )
 
     embedding_str = f"[{','.join(str(x) for x in query_embedding)}]"
@@ -79,6 +96,37 @@ async def hybrid_memory_search(
         "top_k": top_k,
     })
 
+    # Build optional minimum-score filter for the vector candidate stage.
+    min_vec_filter = ""
+    if min_vector_score > 0:
+        min_vec_filter = f"AND 1 - (embedding <=> CAST(:embedding_vec AS vector)) > :min_vec_score"
+        params["min_vec_score"] = min_vector_score
+
+    # When recency is enabled, scale the existing weights so total still sums to 1.
+    effective_vec = vector_weight
+    effective_fts = fts_weight
+    if recency_weight > 0:
+        scale = (1.0 - recency_weight) / (vector_weight + fts_weight) if (vector_weight + fts_weight) > 0 else 1.0
+        effective_vec = vector_weight * scale
+        effective_fts = fts_weight * scale
+        halflife_seconds = recency_halflife_days * 86400
+        params["recency_halflife_secs"] = halflife_seconds
+
+    # Build recency CTE and scoring fragment
+    recency_cte = ""
+    recency_join = ""
+    recency_term = ""
+    if recency_weight > 0:
+        recency_cte = f""",
+        recency_scores AS (
+            SELECT vs.id,
+                   1.0 / (1.0 + EXTRACT(EPOCH FROM (NOW() - t.created_at)) / :recency_halflife_secs) AS recency
+            FROM vector_scores vs
+            JOIN {table} t ON vs.id = t.id
+        )"""
+        recency_join = "LEFT JOIN recency_scores rs ON vs.id = rs.id"
+        recency_term = f"+ {recency_weight} * COALESCE(rs.recency, 0)"
+
     sql = sa_text(f"""
         WITH vector_scores AS (
             SELECT id,
@@ -86,22 +134,32 @@ async def hybrid_memory_search(
             FROM {table}
             WHERE {where_clause}
               AND embedding IS NOT NULL
+              {min_vec_filter}
             ORDER BY embedding <=> CAST(:embedding_vec AS vector)
             LIMIT :candidate_limit
         ),
-        fts_scores AS (
+        fts_raw AS (
             SELECT vs.id,
                    CASE WHEN t.content_tsv IS NOT NULL
                         THEN ts_rank_cd(t.content_tsv, plainto_tsquery('english', :query_text))
-                        ELSE 0 END AS fts_score
+                        ELSE 0 END AS raw_fts
             FROM vector_scores vs
             JOIN {table} t ON vs.id = t.id
-        )
+        ),
+        fts_scores AS (
+            SELECT id,
+                   CASE WHEN MAX(raw_fts) OVER () > 0
+                        THEN raw_fts / MAX(raw_fts) OVER ()
+                        ELSE 0 END AS fts_score
+            FROM fts_raw
+        ){recency_cte}
         SELECT vs.id,
-               ({vector_weight} * vs.vec_score
-                + {fts_weight} * COALESCE(fs.fts_score, 0)) AS combined_score
+               ({effective_vec} * vs.vec_score
+                + {effective_fts} * COALESCE(fs.fts_score, 0)
+                {recency_term}) AS combined_score
         FROM vector_scores vs
         LEFT JOIN fts_scores fs ON vs.id = fs.id
+        {recency_join}
         ORDER BY combined_score DESC
         LIMIT :top_k
     """)
@@ -118,6 +176,7 @@ async def _sqlite_fallback_search(
     where_clause: str,
     params: dict,
     top_k: int,
+    min_vector_score: float = 0.0,
 ) -> list[tuple[int, float]]:
     """SQLite fallback: fetch candidates by importance, rank by cosine similarity in Python.
 
@@ -165,7 +224,9 @@ async def _sqlite_fallback_search(
         sim = cosine_similarity(query_embedding, emb)
         scored.append((row_id, sim))
 
-    # Sort by similarity descending
+    # Filter by minimum score and sort by similarity descending
+    if min_vector_score > 0:
+        scored = [(id, sim) for id, sim in scored if sim >= min_vector_score]
     scored.sort(key=lambda x: x[1], reverse=True)
     return scored[:top_k]
 
@@ -270,6 +331,8 @@ async def cross_tier_search(
     shared: SharedTier,
     entity: EntityTier,
     policy: PolicyTier | None = None,
+    link_engine: KnowledgeLinkEngine | None = None,
+    config: NmemConfig | None = None,
     tiers: tuple[str, ...] | None = None,
     top_k: int = 10,
     project_scope: str | None = ...,
@@ -286,6 +349,8 @@ async def cross_tier_search(
         shared: Shared tier instance.
         entity: Entity tier instance.
         policy: Policy tier instance (optional — pass to enable ``"policy"`` tier search).
+        link_engine: Knowledge link engine for search expansion.
+        config: nmem config (for search expansion settings).
         tiers: Which tiers to search (default: journal, ltm, shared, entity).
         top_k: Maximum total results.
         project_scope: Scope filter. Sentinel (...) = use tier config defaults.
@@ -318,7 +383,22 @@ async def cross_tier_search(
 
     # Sort by score descending, take top_k
     all_results.sort(key=lambda r: r.score, reverse=True)
-    return all_results[:top_k]
+    top_results = all_results[:top_k]
+
+    # Expand via knowledge links (surfaces related entries not in the direct results)
+    if link_engine and config and config.knowledge_links.search_expansion_enabled:
+        try:
+            top_results = await link_engine.expand_search_results(
+                top_results,
+                max_expansion=config.knowledge_links.search_expansion_max,
+                min_strength=config.knowledge_links.search_expansion_min_strength,
+            )
+            top_results.sort(key=lambda r: r.score, reverse=True)
+            top_results = top_results[:top_k]
+        except Exception as e:
+            logger.warning("Link expansion failed (non-fatal): %s", e)
+
+    return top_results
 
 
 async def _search_journal(
@@ -370,17 +450,12 @@ async def _search_shared(
     query: str, tier: SharedTier,
     *, project_scope: str | None = ...,
 ) -> list[SearchResult]:
-    entries = await tier.search(query, top_k=5, project_scope=project_scope)
-    # Shared tier returns entries in hybrid-search ranked order.
-    # Use position-based scoring since SharedEntry doesn't carry
-    # the raw hybrid score yet. Top result gets 1.0, declining.
-    scored = []
-    for i, e in enumerate(entries):
-        position_score = 1.0 - (i * 0.15)  # 1.0, 0.85, 0.7, 0.55, 0.4
-        scored.append(SearchResult(
+    ranked_entries = await tier.search(query, top_k=5, project_scope=project_scope)
+    return [
+        SearchResult(
             tier="shared",
             id=e.id,
-            score=max(0.1, position_score),
+            score=relevance,
             content=e.content,
             key=e.key,
             agent_id=e.last_updated_by,
@@ -390,8 +465,9 @@ async def _search_shared(
                 "created_by": e.created_by,
                 "importance": e.importance,
             },
-        ))
-    return scored
+        )
+        for e, relevance in ranked_entries
+    ]
 
 
 async def _search_entity(
@@ -399,16 +475,13 @@ async def _search_entity(
     *, project_scope: str | None = ...,
     agent_id: str | None = None,
 ) -> list[SearchResult]:
-    records = await tier.search(query, top_k=5, project_scope=project_scope, agent_id=agent_id)
-    # Entity records: use confidence as a quality signal but not as
-    # the dominant score. Position from hybrid search matters more.
-    scored = []
-    for i, r in enumerate(records):
-        position_score = 1.0 - (i * 0.15)
-        scored.append(SearchResult(
+    ranked_records = await tier.search(query, top_k=5, project_scope=project_scope, agent_id=agent_id)
+    return [
+        SearchResult(
             tier="entity",
             id=r.id,
-            score=max(0.1, position_score) * (0.7 + 0.3 * r.confidence),
+            # Confidence modulates the hybrid score — a quality signal
+            score=relevance * (0.7 + 0.3 * r.confidence),
             content=r.content,
             agent_id=r.agent_id,
             metadata={
@@ -418,8 +491,9 @@ async def _search_entity(
                 "record_type": r.record_type,
                 "confidence": r.confidence,
             },
-        ))
-    return scored
+        )
+        for r, relevance in ranked_records
+    ]
 
 
 async def _search_policy(

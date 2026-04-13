@@ -34,6 +34,7 @@ class SharedTier:
         self._config = config
         self._embedding = embedding
         self._event_handlers: list = []
+        self._on_event: callable | None = None
 
     async def save(
         self,
@@ -139,6 +140,15 @@ class SharedTier:
         except Exception as e:
             logger.debug("Shared conflict scan failed (non-fatal): %s", e)
 
+        if self._on_event:
+            try:
+                await self._on_event("shared.saved", {
+                    "id": entry.id, "key": key,
+                    "version": entry.version, "agent_id": agent_id,
+                })
+            except Exception:
+                pass
+
         return entry
 
     async def search(
@@ -146,7 +156,7 @@ class SharedTier:
         category: str | None = None,
         project_scope: str | None = ...,
         include_superseded: bool = False,
-    ) -> list[SharedEntry]:
+    ) -> list[tuple[SharedEntry, float]]:
         """Search shared knowledge using hybrid vector + FTS search.
 
         Shared knowledge is typically global, but can be project-scoped.
@@ -161,7 +171,7 @@ class SharedTier:
                 `status='validated'` filter and returns superseded rows.
 
         Returns:
-            List of SharedEntry objects, ranked by relevance.
+            List of (SharedEntry, relevance_score) tuples, ranked by relevance.
         """
         if project_scope is ...:
             project_scope = self._config.project_scope
@@ -194,6 +204,7 @@ class SharedTier:
         if not ranked:
             return []
 
+        score_by_id = {r[0]: r[1] for r in ranked}
         ranked_ids = [r[0] for r in ranked]
 
         async with self._db.session() as session:
@@ -201,7 +212,10 @@ class SharedTier:
                 select(SharedKnowledgeModel).where(SharedKnowledgeModel.id.in_(ranked_ids))
             )
             entries_by_id = {e.id: e for e in result.scalars().all()}
-            return [self._row_to_entry(entries_by_id[eid]) for eid in ranked_ids if eid in entries_by_id]
+            return [
+                (self._row_to_entry(entries_by_id[eid]), score_by_id.get(eid, 0.5))
+                for eid in ranked_ids if eid in entries_by_id
+            ]
 
     async def get(self, key: str) -> SharedEntry | None:
         """Get a shared knowledge entry by key."""
@@ -230,7 +244,8 @@ class SharedTier:
         """
         max_chars = max_chars or self._config.shared.max_chars_in_prompt
         if query:
-            entries = await self.search(query, top_k=20)
+            ranked = await self.search(query, top_k=20)
+            entries = [e for e, _score in ranked]
         else:
             entries = await self.list()
 

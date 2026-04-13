@@ -36,6 +36,7 @@ class PromptBuilder:
         policy: PolicyTier,
         *,
         db: object | None = None,
+        config: object | None = None,
     ):
         self._working = working
         self._journal = journal
@@ -44,6 +45,7 @@ class PromptBuilder:
         self._entity = entity
         self._policy = policy
         self._db = db
+        self._config = config
 
     async def build(
         self,
@@ -53,6 +55,7 @@ class PromptBuilder:
         *,
         entity_type: str | None = None,
         entity_id: str | None = None,
+        max_total_tokens: int | None = None,
     ) -> PromptContext:
         """Build all memory sections for prompt injection.
 
@@ -93,6 +96,30 @@ class PromptBuilder:
                 results[key] = ""
             else:
                 results[key] = result
+
+        # Token budget enforcement: truncate sections proportionally
+        budget_tokens = max_total_tokens
+        if budget_tokens is None and hasattr(self, '_config') and self._config is not None:
+            prompt_cfg = getattr(self._config, 'prompt', None)
+            if prompt_cfg:
+                budget_tokens = prompt_cfg.max_total_tokens
+
+        if budget_tokens and budget_tokens > 0:
+            total_chars = budget_tokens * 4
+            weights = {
+                "policy": 0.10, "shared": 0.15, "ltm": 0.30,
+                "journal": 0.20, "working": 0.10, "entity": 0.15,
+            }
+            weight_sum = sum(weights.values())
+            for section_name, text in results.items():
+                section_budget = int(total_chars * weights.get(section_name, 0.10) / weight_sum)
+                if len(text) > section_budget:
+                    # Truncate at last complete line within budget
+                    truncated = text[:section_budget]
+                    last_newline = truncated.rfind("\n")
+                    if last_newline > 0:
+                        truncated = truncated[:last_newline]
+                    results[section_name] = truncated
 
         ctx = PromptContext(
             working=results.get("working", ""),

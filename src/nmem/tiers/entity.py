@@ -125,6 +125,23 @@ class EntityTier:
             self._db, "nmem_entity_memory", entry_id,
             f"{entity_name} {content[:2000]}",
         )
+
+        # Scan for conflicts with peer entity records
+        try:
+            from nmem.conflicts import scan_conflicts
+            await scan_conflicts(
+                self._db,
+                content=content,
+                embedding=list(emb),
+                agent_id=agent_id,
+                target_table="nmem_entity_memory",
+                target_id=record.id,
+                project_scope=project_scope,
+                config=self._config.belief,
+            )
+        except Exception as e:
+            logger.debug("Entity conflict scan failed (non-fatal): %s", e)
+
         return entity_record
 
     ALLOWED_GROUNDING = {"source_material", "inferred", "confirmed", "disputed"}
@@ -241,7 +258,7 @@ class EntityTier:
         top_k: int = 5,
         project_scope: str | None = ...,
         agent_id: str | None = None,
-    ) -> list[EntityRecord]:
+    ) -> list[tuple[EntityRecord, float]]:
         """Search entity memory using hybrid vector + FTS search.
 
         Args:
@@ -251,7 +268,7 @@ class EntityTier:
             top_k: Maximum results.
 
         Returns:
-            List of EntityRecord objects, ranked by relevance.
+            List of (EntityRecord, relevance_score) tuples, ranked by relevance.
         """
         if project_scope is ...:
             project_scope = self._config.project_scope
@@ -285,6 +302,7 @@ class EntityTier:
         if not ranked:
             return []
 
+        score_by_id = {r[0]: r[1] for r in ranked}
         ranked_ids = [r[0] for r in ranked]
 
         async with self._db.session() as session:
@@ -292,16 +310,20 @@ class EntityTier:
                 select(EntityMemoryModel).where(EntityMemoryModel.id.in_(ranked_ids))
             )
             records_by_id = {r.id: r for r in result.scalars().all()}
-            records = [self._row_to_record(records_by_id[eid]) for eid in ranked_ids if eid in records_by_id]
+            records = [
+                (self._row_to_record(records_by_id[eid]), score_by_id.get(eid, 0.5))
+                for eid in ranked_ids if eid in records_by_id
+            ]
 
         # Auto-journal entity access (background, non-blocking)
+        entry_records = [r for r, _s in records]
         if (
-            records
+            entry_records
             and agent_id
             and self._auto_journal_callback
             and self._config.entity.auto_journal_on_search
         ):
-            meaningful = [r for r in records if r.confidence >= self._config.entity.auto_journal_min_score]
+            meaningful = [r for r in entry_records if r.confidence >= self._config.entity.auto_journal_min_score]
             if len(meaningful) >= self._config.entity.auto_journal_min_results:
                 top = meaningful[0]
                 asyncio.create_task(

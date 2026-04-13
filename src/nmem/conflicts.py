@@ -24,6 +24,7 @@ import numpy as np
 from sqlalchemy import and_, or_, select, text as sa_text
 
 from nmem.db.models import (
+    EntityMemoryModel,
     LTMModel,
     MemoryConflictModel,
     SharedKnowledgeModel,
@@ -40,6 +41,7 @@ logger = logging.getLogger(__name__)
 _MODEL_BY_TABLE: dict[str, type] = {
     "nmem_long_term_memory": LTMModel,
     "nmem_shared_knowledge": SharedKnowledgeModel,
+    "nmem_entity_memory": EntityMemoryModel,
 }
 
 

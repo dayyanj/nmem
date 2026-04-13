@@ -48,6 +48,7 @@ class JournalTier:
         self._llm = llm
         # Consolidation signal callback (set by MemorySystem)
         self._on_high_importance: callable | None = None
+        self._on_event: callable | None = None
 
     async def add(
         self,
@@ -172,7 +173,7 @@ class JournalTier:
             if self._on_high_importance:
                 self._on_high_importance(f"journal_{entry_type}_imp{importance}")
 
-        return JournalEntry(
+        entry = JournalEntry(
             id=entry_id,
             agent_id=agent_id,
             entry_type=entry_type,
@@ -189,6 +190,147 @@ class JournalTier:
             project_scope=project_scope,
             created_at=actual_created_at,
         )
+
+        if self._on_event:
+            try:
+                await self._on_event("journal.added", {
+                    "id": entry.id, "agent_id": agent_id,
+                    "title": title[:300], "importance": importance,
+                    "entry_type": entry_type,
+                })
+            except Exception:
+                pass
+
+        return entry
+
+    async def add_batch(
+        self,
+        entries: list[dict],
+        *,
+        compress: bool = False,
+    ) -> list[JournalEntry]:
+        """Add multiple journal entries with batched embedding.
+
+        Embeds all entries in a single batch call for 3-5x speedup.
+        Deduplication is skipped for batch speed — rely on consolidation.
+
+        Each dict should have: agent_id, entry_type, title, content.
+        Optional: importance, tags, record_type, grounding, session_id,
+        project_scope, created_at, expires_at.
+
+        Args:
+            entries: List of entry dicts.
+            compress: Whether to LLM-compress content (default False for speed).
+
+        Returns:
+            List of created JournalEntry objects.
+        """
+        if not entries:
+            return []
+
+        # Batch embed all texts at once
+        texts = [f"{e['title']} {e['content'][:500]}" for e in entries]
+        embeddings = await asyncio.to_thread(self._embedding.embed_batch, texts)
+
+        results = []
+        for entry_dict, emb in zip(entries, embeddings):
+            agent_id = entry_dict["agent_id"]
+            entry_type = entry_dict["entry_type"]
+            title = entry_dict["title"]
+            content = entry_dict["content"]
+            session_id = entry_dict.get("session_id")
+            tags = entry_dict.get("tags")
+            record_type = entry_dict.get("record_type", "evidence")
+            grounding = entry_dict.get("grounding", "inferred")
+
+            # Explicit importance flips auto_importance off. Missing / None means
+            # "let the consolidator score this" and gets the default of 5 for now.
+            raw_importance = entry_dict.get("importance")
+            auto_importance = raw_importance is None
+            importance = 5 if auto_importance else min(max(int(raw_importance), 1), 10)
+
+            # Resolve project scope: sentinel (...) pattern — missing key uses config default
+            scope = entry_dict.get("project_scope", ...)
+            if scope is ...:
+                scope = self._config.project_scope
+
+            # Compress content if requested
+            if compress and len(content) > self._config.llm.compression_max_chars:
+                content = await self._compress(title, content)
+
+            # Assign context thread
+            thread_id = assign_context_thread(
+                emb, agent_id, self._config.clustering.similarity_threshold
+            )
+
+            # Compute timestamps: explicit expires_at wins, then created_at-based,
+            # then default (NOW + expiry_days).
+            created_at = entry_dict.get("created_at")
+            base_time = created_at or datetime.utcnow()
+            entry_expires_at = entry_dict.get("expires_at")
+            if entry_expires_at is not None:
+                effective_expires = entry_expires_at
+            else:
+                effective_expires = base_time + timedelta(
+                    days=self._config.journal.default_expiry_days
+                )
+
+            async with self._db.session() as session:
+                record = JournalEntryModel(
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    entry_type=entry_type,
+                    title=title[:300],
+                    content=content,
+                    importance=importance,
+                    auto_importance=auto_importance,
+                    relevance_score=min(importance / 10.0, 1.0),
+                    expires_at=effective_expires,
+                    context_thread_id=thread_id,
+                    tags=tags,
+                    record_type=record_type,
+                    grounding=grounding,
+                    embedding=emb,
+                    project_scope=scope,
+                )
+                # Override created_at for historical imports (bypasses server_default)
+                if created_at is not None:
+                    record.created_at = created_at
+                session.add(record)
+                await session.flush()
+                entry_id = record.id
+                actual_created_at = record.created_at
+
+            # Populate TSVECTOR (fire-and-forget, non-blocking)
+            await populate_tsvector(
+                self._db, "nmem_journal_entries", entry_id,
+                f"{title} {content[:2000]}",
+            )
+
+            # Signal consolidator for high-importance entries
+            if importance >= self._config.journal.auto_promote_importance:
+                if self._on_high_importance:
+                    self._on_high_importance(f"journal_{entry_type}_imp{importance}")
+
+            results.append(JournalEntry(
+                id=entry_id,
+                agent_id=agent_id,
+                entry_type=entry_type,
+                title=title[:300],
+                content=content,
+                importance=importance,
+                auto_importance=auto_importance,
+                relevance_score=min(importance / 10.0, 1.0),
+                expires_at=effective_expires,
+                context_thread_id=thread_id,
+                tags=tags,
+                record_type=record_type,
+                grounding=grounding,
+                project_scope=scope,
+                created_at=actual_created_at,
+            ))
+
+        return results
 
     async def search(
         self,
@@ -269,7 +411,6 @@ class JournalTier:
                     continue
                 e.access_count += 1
                 e.last_accessed_at = now
-                e.relevance_score = min((e.relevance_score or 0) + 0.05, 1.0)
                 entry = self._row_to_entry(e)
                 # Override relevance_score with hybrid search score
                 results.append(JournalEntry(

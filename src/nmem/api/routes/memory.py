@@ -183,7 +183,7 @@ async def search_entity(
         agent_id=body.agent_id,
         project_scope=body.project_scope if body.project_scope is not None else ...,
     )
-    return [to_dict(r) for r in records]
+    return [to_dict(r) for r, _score in records]
 
 
 # ── Cross-Tier Search ─────────────────────────────────────────────────────────

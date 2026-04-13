@@ -41,6 +41,7 @@ class LTMTier:
         self._config = config
         self._embedding = embedding
         self._llm = llm
+        self._on_event: callable | None = None
 
     async def save(
         self,
@@ -175,6 +176,15 @@ class LTMTier:
             )
         except Exception as e:
             logger.debug("LTM conflict scan failed (non-fatal): %s", e)
+
+        if self._on_event:
+            try:
+                await self._on_event("ltm.saved", {
+                    "id": entry.id, "agent_id": agent_id,
+                    "key": key, "version": entry.version,
+                })
+            except Exception:
+                pass
 
         return entry
 
@@ -462,7 +472,8 @@ class LTMTier:
         """
         max_chars = max_chars or self._config.ltm.max_chars_in_prompt
         if query:
-            entries = await self.search(agent_id, query, top_k=20)
+            ranked = await self.search(agent_id, query, top_k=20)
+            entries = [e for e, _score in ranked]
         else:
             async with self._db.session() as session:
                 stmt = (

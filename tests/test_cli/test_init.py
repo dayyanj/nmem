@@ -33,4 +33,4 @@ def test_version(runner):
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
     assert "nmem" in result.output
-    assert "0.1.0" in result.output
+    assert "0.5.1" in result.output

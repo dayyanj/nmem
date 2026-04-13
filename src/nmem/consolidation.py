@@ -272,6 +272,70 @@ class Consolidator:
         )
         return stats
 
+    # ── Dreamstate (multi-cycle with convergence) ─────────────────────────
+
+    @staticmethod
+    def _material_actions(stats: ConsolidationStats) -> int:
+        """Count material consolidation actions in a cycle."""
+        return (
+            stats.expired_promoted
+            + stats.promoted_to_ltm
+            + stats.promoted_to_shared
+            + stats.duplicates_merged
+            + stats.auto_importance_rescored
+        )
+
+    def is_converged(
+        self,
+        current: ConsolidationStats,
+        previous: ConsolidationStats | None,
+    ) -> bool:
+        """Check if consolidation has converged (diminishing returns).
+
+        Convergence requires material actions below threshold for 2
+        consecutive cycles to avoid false positives from single idle cycles.
+        """
+        threshold = self._config.consolidation.convergence_threshold
+        cur_material = self._material_actions(current)
+        if previous is None:
+            return cur_material < threshold
+        prev_material = self._material_actions(previous)
+        return cur_material < threshold and prev_material < threshold
+
+    async def run_dreamstate(
+        self,
+        max_cycles: int | None = None,
+    ) -> list[ConsolidationStats]:
+        """Run multiple consolidation cycles until convergence or max reached.
+
+        Benchmark evidence: 3 cycles outperformed 18 ($5.10 vs $9.53).
+        Over-consolidation promotes low-value entries that dilute search.
+
+        Args:
+            max_cycles: Override maximum cycles (default from config).
+
+        Returns:
+            List of ConsolidationStats, one per cycle executed.
+        """
+        max_cycles = max_cycles or self._config.consolidation.max_dreamstate_cycles
+        all_stats: list[ConsolidationStats] = []
+        prev_stats: ConsolidationStats | None = None
+
+        for i in range(max_cycles):
+            stats = await self.run_full_cycle()
+            all_stats.append(stats)
+            if self.is_converged(stats, prev_stats):
+                logger.info(
+                    "Dreamstate converged after %d cycle(s) "
+                    "(material actions: %d)",
+                    i + 1,
+                    self._material_actions(stats),
+                )
+                break
+            prev_stats = stats
+
+        return all_stats
+
     # ── Micro Cycle ──────────────────────────────────────────────────────
 
     async def run_micro_cycle(self, reason: str = "") -> ConsolidationStats:
@@ -627,11 +691,20 @@ class Consolidator:
             # row keeps that sovereignty forever.
             source_auto = getattr(entry, "auto_importance", True)
 
+            # Salience proportional to importance: low-importance archived
+            # entries rank lower in search but remain retrievable.
+            initial_salience = (
+                0.4 if entry.importance <= 3
+                else 0.7 if entry.importance <= 6
+                else 1.0
+            )
+
             if row:
                 row.content = content
                 row.importance = max(row.importance, entry.importance)
                 if not source_auto:
                     row.auto_importance = False
+                row.salience = max(row.salience, initial_salience)
                 row.embedding = emb
                 row.source = "promotion"
                 row.source_journal_id = entry.id
@@ -646,6 +719,7 @@ class Consolidator:
                     content=content,
                     importance=entry.importance,
                     auto_importance=source_auto,
+                    salience=initial_salience,
                     source="promotion",
                     source_journal_id=entry.id,
                     embedding=emb,

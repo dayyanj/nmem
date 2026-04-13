@@ -73,6 +73,7 @@ class MemorySystem:
             self._working, self._journal, self._ltm,
             self._shared, self._entity, self._policy,
             db=self._db,
+            config=self._config,
         )
 
         # Initialize cognitive engine
@@ -94,8 +95,13 @@ class MemorySystem:
         # Wire entity → auto-journal callback
         self._entity._auto_journal_callback = self._auto_journal_entity_access
 
-        # Event handlers
+        # Event handlers (must be created before wiring _on_event callbacks)
         self._event_handlers: dict[str, list[Callable]] = {}
+
+        # Wire event emission callbacks
+        self._journal._on_event = self._emit
+        self._ltm._on_event = self._emit
+        self._shared._on_event = self._emit
 
     # ── Properties ───────────────────────────────────────────────────────
 
@@ -216,6 +222,27 @@ class MemorySystem:
         """Stop the background consolidation loop."""
         self._consolidator.stop()
 
+    async def end_session(
+        self,
+        session_id: str,
+        agent_id: str,
+        *,
+        flush_to_journal: bool = True,
+    ) -> int:
+        """End a session: flush working memory to journal and clear it.
+
+        Returns:
+            Number of working memory slots flushed.
+        """
+        flushed = 0
+        if flush_to_journal:
+            flushed = await self._working.flush_to_journal(
+                session_id, agent_id, self._journal
+            )
+        else:
+            await self._working.clear(session_id, agent_id)
+        return flushed
+
     # ── Cross-tier Search ────────────────────────────────────────────────
 
     async def search(
@@ -250,6 +277,8 @@ class MemorySystem:
             shared=self._shared,
             entity=self._entity,
             policy=self._policy,
+            link_engine=self._link_engine,
+            config=self._config,
             tiers=tiers,
             top_k=top_k,
             project_scope=project_scope,
@@ -357,6 +386,131 @@ class MemorySystem:
 
         results.sort(key=lambda r: r.score, reverse=True)
         return results[:limit]
+
+    # ── Session Briefing ─────────────────────────────────────────────────
+
+    async def briefing(
+        self,
+        agent_id: str = "default",
+        *,
+        session_id: str | None = None,
+        max_tokens: int = 1500,
+    ) -> str:
+        """Build a session-start briefing: policies, priorities, recent activity, conflicts.
+
+        Call at the start of a session for warm-up context. No query needed.
+
+        Args:
+            agent_id: Agent to brief.
+            session_id: Current session ID (for working memory inclusion).
+            max_tokens: Approximate token budget for the briefing.
+
+        Returns:
+            Structured markdown briefing string.
+        """
+        import asyncio
+        from datetime import datetime, timedelta, timezone
+        from sqlalchemy import select, func, text as sa_text
+
+        max_chars = max_tokens * 4
+        sections: list[str] = []
+
+        # Gather data in parallel
+        coros = {
+            "policies": self._policy.list(),
+            "priorities": self.priorities(agent_id=agent_id, min_importance=7, since_days=30, limit=5),
+            "recent": self._journal.recent(agent_id, days=3, limit=5),
+        }
+        if session_id:
+            coros["working"] = self._working.get(session_id, agent_id)
+
+        keys = list(coros.keys())
+        results_raw = await asyncio.gather(*coros.values(), return_exceptions=True)
+        data = {}
+        for k, v in zip(keys, results_raw):
+            data[k] = v if not isinstance(v, Exception) else []
+
+        # Count open conflicts
+        conflict_count = 0
+        try:
+            from nmem.db.models import MemoryConflictModel
+            async with self._db.session() as session:
+                result = await session.execute(
+                    select(func.count(MemoryConflictModel.id)).where(
+                        MemoryConflictModel.status == "open"
+                    )
+                )
+                conflict_count = result.scalar() or 0
+        except Exception:
+            pass
+
+        # Build sections with proportional budget
+        budget = {"policies": 0.15, "priorities": 0.30, "recent": 0.30, "conflicts": 0.05, "working": 0.20}
+        char_budget = {k: int(max_chars * v) for k, v in budget.items()}
+
+        # Policies
+        policies = data.get("policies", [])
+        if policies:
+            lines = [f"### Active Policies ({len(policies)})"]
+            chars = 0
+            for p in policies[:5]:
+                line = f"- [{p.scope}] {p.key}: {p.content[:100]}"
+                if chars + len(line) > char_budget["policies"]:
+                    break
+                lines.append(line)
+                chars += len(line)
+            sections.append("\n".join(lines))
+
+        # Priorities
+        priorities = data.get("priorities", [])
+        if priorities:
+            lines = [f"### Priority Items ({len(priorities)})"]
+            chars = 0
+            for p in priorities:
+                imp = p.metadata.get("importance", "?") if p.metadata else "?"
+                line = f"- [{p.tier}] imp={imp}: {p.content[:120]}"
+                if chars + len(line) > char_budget["priorities"]:
+                    break
+                lines.append(line)
+                chars += len(line)
+            sections.append("\n".join(lines))
+
+        # Recent activity
+        recent = data.get("recent", [])
+        if recent:
+            lines = [f"### Recent Activity ({len(recent)} entries, last 3 days)"]
+            chars = 0
+            for e in recent:
+                ts = e.created_at.strftime("%m-%d %H:%M") if e.created_at else "?"
+                line = f"- [{ts}] ({e.entry_type}) {e.title[:80]}"
+                if chars + len(line) > char_budget["recent"]:
+                    break
+                lines.append(line)
+                chars += len(line)
+            sections.append("\n".join(lines))
+
+        # Conflicts
+        if conflict_count > 0:
+            sections.append(f"### Open Conflicts: {conflict_count}")
+
+        # Working memory
+        working = data.get("working", [])
+        if working:
+            lines = [f"### Working Memory ({len(working)} slots)"]
+            chars = 0
+            for s in working:
+                line = f"- [{s.slot}] {s.content[:100]}"
+                if chars + len(line) > char_budget["working"]:
+                    break
+                lines.append(line)
+                chars += len(line)
+            sections.append("\n".join(lines))
+
+        if not sections:
+            return "No memory context available for briefing."
+
+        header = f"## Session Briefing for {agent_id}\n"
+        return header + "\n\n".join(sections)
 
     # ── Event System ─────────────────────────────────────────────────────
 
