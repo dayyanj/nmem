@@ -56,6 +56,7 @@ class LTMTier:
         grounding: str = "inferred",
         compress: bool = True,
         project_scope: str | None = ...,
+        created_at: datetime | None = None,
     ) -> LTMEntry:
         """Save or update a long-term memory entry.
 
@@ -76,6 +77,9 @@ class LTMTier:
             record_type: "fact", "preference", "procedure", "lesson", etc.
             grounding: "source_material", "inferred", "confirmed", "disputed".
             compress: Whether to LLM-compress content.
+            created_at: Override creation timestamp (for bulk imports). When
+                set, staleness_days for salience decay is computed from this
+                date, not the import date.
 
         Returns:
             The created/updated LTMEntry.
@@ -140,6 +144,9 @@ class LTMTier:
                     embedding=emb,
                     project_scope=project_scope,
                 )
+                # Override created_at for historical imports (bypasses server_default)
+                if created_at is not None:
+                    record.created_at = created_at
                 session.add(record)
                 await session.flush()
                 await session.refresh(record)
@@ -254,6 +261,10 @@ class LTMTier:
                         embedding=emb,
                         project_scope=scope,
                     )
+                    # Override created_at for historical imports
+                    entry_created_at = entry_dict.get("created_at")
+                    if entry_created_at is not None:
+                        record.created_at = entry_created_at
                     session.add(record)
                     await session.flush()
                     await session.refresh(record)
@@ -326,6 +337,8 @@ class LTMTier:
         if not ranked:
             return []
 
+        # Map id → hybrid search relevance score
+        score_by_id = {r[0]: r[1] for r in ranked}
         ranked_ids = [r[0] for r in ranked]
 
         async with self._db.session() as session:
@@ -346,7 +359,10 @@ class LTMTier:
                 agents = set(e.accessed_by_agents or [])
                 agents.add(agent_id)
                 e.accessed_by_agents = sorted(agents)
-                results.append(self._row_to_entry(e))
+                entry = self._row_to_entry(e)
+                # Carry the hybrid search relevance score through
+                entry.relevance_score = score_by_id.get(eid, 0.5)
+                results.append(entry)
 
         return results
 

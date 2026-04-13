@@ -349,11 +349,19 @@ async def _search_ltm(
         SearchResult(
             tier="ltm",
             id=e.id,
-            score=(e.importance / 10.0) * e.salience,
+            # Use hybrid search relevance as the primary score.
+            # Importance is a lifecycle signal (consolidation/expiry),
+            # NOT a retrieval signal. Salience provides a mild freshness
+            # boost without dominating relevance.
+            score=e.relevance_score * (0.8 + 0.2 * e.salience),
             content=e.content,
             key=e.key,
             agent_id=e.agent_id,
-            metadata={"category": e.category, "salience": e.salience},
+            metadata={
+                "category": e.category,
+                "salience": e.salience,
+                "importance": e.importance,
+            },
         )
         for e in entries
     ]
@@ -364,11 +372,16 @@ async def _search_shared(
     *, project_scope: str | None = ...,
 ) -> list[SearchResult]:
     entries = await tier.search(query, top_k=5, project_scope=project_scope)
-    return [
-        SearchResult(
+    # Shared tier returns entries in hybrid-search ranked order.
+    # Use position-based scoring since SharedEntry doesn't carry
+    # the raw hybrid score yet. Top result gets 1.0, declining.
+    scored = []
+    for i, e in enumerate(entries):
+        position_score = 1.0 - (i * 0.15)  # 1.0, 0.85, 0.7, 0.55, 0.4
+        scored.append(SearchResult(
             tier="shared",
             id=e.id,
-            score=e.importance / 10.0,
+            score=max(0.1, position_score),
             content=e.content,
             key=e.key,
             agent_id=e.last_updated_by,
@@ -376,10 +389,10 @@ async def _search_shared(
                 "category": e.category,
                 "confirmed": e.confirmed,
                 "created_by": e.created_by,
+                "importance": e.importance,
             },
-        )
-        for e in entries
-    ]
+        ))
+    return scored
 
 
 async def _search_entity(
@@ -388,11 +401,15 @@ async def _search_entity(
     agent_id: str | None = None,
 ) -> list[SearchResult]:
     records = await tier.search(query, top_k=5, project_scope=project_scope, agent_id=agent_id)
-    return [
-        SearchResult(
+    # Entity records: use confidence as a quality signal but not as
+    # the dominant score. Position from hybrid search matters more.
+    scored = []
+    for i, r in enumerate(records):
+        position_score = 1.0 - (i * 0.15)
+        scored.append(SearchResult(
             tier="entity",
             id=r.id,
-            score=r.confidence,
+            score=max(0.1, position_score) * (0.7 + 0.3 * r.confidence),
             content=r.content,
             agent_id=r.agent_id,
             metadata={
@@ -400,10 +417,10 @@ async def _search_entity(
                 "entity_id": r.entity_id,
                 "entity_name": r.entity_name,
                 "record_type": r.record_type,
+                "confidence": r.confidence,
             },
-        )
-        for r in records
-    ]
+        ))
+    return scored
 
 
 async def _search_policy(

@@ -107,6 +107,7 @@ async def memory_search(
     tiers: str | None = None,
     top_k: int = 10,
     all_scopes: bool = False,
+    compact: bool = False,
 ) -> str:
     """Search across all memory tiers using hybrid vector + full-text search.
 
@@ -115,6 +116,10 @@ async def memory_search(
     cross-project patterns, portfolio-wide insights, or past lessons from
     other projects/customers.
 
+    When compact=True, returns ~80% fewer tokens per result: just id, tier,
+    score, title/key, and a 100-char preview. Use memory_get(ids=...) to
+    fetch full content for specific entries.
+
     Args:
         query: Natural language search query.
         agent_id: Agent perspective for search.
@@ -122,6 +127,8 @@ async def memory_search(
             Policy is NOT searched by default — add "policy" explicitly.
         top_k: Maximum results to return.
         all_scopes: If True, search across ALL project scopes (ignores current scope).
+        compact: If True, return compact previews instead of full content.
+            Use memory_get(ids=...) to fetch full details for specific results.
     """
     mem = _get_mem(ctx)
     tier_tuple = tuple(tiers.split(",")) if tiers else None
@@ -138,8 +145,100 @@ async def memory_search(
     for i, r in enumerate(results, 1):
         title = getattr(r, "title", None) or getattr(r, "key", None) or ""
         score = f"{r.score:.3f}" if isinstance(r.score, float) else str(r.score)
-        lines.append(f"{i}. [{r.tier}] (score: {score}) {title}")
-        lines.append(f"   {r.content[:200]}")
+        if compact:
+            preview = r.content[:100].replace("\n", " ")
+            lines.append(f"{i}. [{r.tier}#{r.id}] (score: {score}) {title}")
+            lines.append(f"   {preview}...")
+        else:
+            lines.append(f"{i}. [{r.tier}] (score: {score}) {title}")
+            lines.append(f"   {r.content[:200]}")
+        lines.append("")
+
+    if compact:
+        lines.append("Use memory_get(ids=[...]) to fetch full content for specific entries.")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def memory_get(
+    ctx: Context,
+    ids: list[int],
+    tier: str = "ltm",
+) -> str:
+    """Fetch full content for specific memory entries by ID (batch-capable).
+
+    Use this after memory_search(compact=True) to retrieve the full content of
+    entries you're interested in. Completes the two-step progressive disclosure
+    pattern: search compact -> inspect IDs -> get full content.
+
+    Args:
+        ids: List of entry IDs to fetch.
+        tier: Which tier the IDs belong to: journal, ltm, shared, entity, policy.
+    """
+    mem = _get_mem(ctx)
+    from sqlalchemy import select
+    from nmem.db.models import (
+        JournalEntryModel,
+        LTMModel,
+        SharedKnowledgeModel,
+        EntityMemoryModel,
+        PolicyMemoryModel,
+    )
+
+    tier_models = {
+        "journal": JournalEntryModel,
+        "ltm": LTMModel,
+        "shared": SharedKnowledgeModel,
+        "entity": EntityMemoryModel,
+        "policy": PolicyMemoryModel,
+    }
+
+    model = tier_models.get(tier)
+    if not model:
+        return f"Error: unknown tier '{tier}'. Valid: {', '.join(tier_models)}"
+
+    if not ids:
+        return "No IDs provided."
+
+    async with mem._db.session() as session:
+        result = await session.execute(
+            select(model).where(model.id.in_(ids))
+        )
+        rows = {r.id: r for r in result.scalars().all()}
+
+    if not rows:
+        return f"No entries found for IDs {ids} in {tier}."
+
+    lines = [f"Full content for {len(rows)} {tier} entries:\n"]
+    for entry_id in ids:
+        row = rows.get(entry_id)
+        if not row:
+            lines.append(f"#{entry_id}: [not found]")
+            lines.append("")
+            continue
+
+        # Build header based on tier
+        if tier == "journal":
+            header = f"#{row.id} [{row.entry_type}] {row.title}"
+            ts = row.created_at.strftime("%Y-%m-%d %H:%M") if row.created_at else "?"
+            meta = f"importance={row.importance}, created={ts}"
+        elif tier == "ltm":
+            header = f"#{row.id} [{row.category}] {row.key}"
+            meta = f"importance={row.importance}, salience={row.salience:.2f}, v{row.version}"
+        elif tier == "shared":
+            header = f"#{row.id} [{row.category}] {row.key}"
+            meta = f"importance={row.importance}, v{row.version}"
+        elif tier == "entity":
+            header = f"#{row.id} [{row.entity_type}] {row.entity_name}"
+            meta = f"type={row.record_type}, grounding={row.grounding}"
+        else:
+            header = f"#{row.id} [{getattr(row, 'scope', '')}] {getattr(row, 'key', '')}"
+            meta = f"status={row.status}"
+
+        lines.append(f"--- {header} ---")
+        lines.append(f"({meta})")
+        lines.append(row.content)
         lines.append("")
 
     return "\n".join(lines)
@@ -284,6 +383,45 @@ async def memory_linked(
         lines.append(f"  [{link.link_type}|{link.strength:.2f}] → {link.target_tier}#{link.target_id}")
         if link.evidence:
             lines.append(f"    {link.evidence}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def memory_priorities(
+    ctx: Context,
+    min_importance: int = 7,
+    since_days: int = 30,
+    limit: int = 10,
+    agent_id: str = "default",
+) -> str:
+    """Get high-importance items that need attention — for planning, not retrieval.
+
+    Unlike memory_search (which finds what's RELEVANT to a query),
+    this finds what's IMPORTANT regardless of topic. Use it for:
+    - Start-of-session briefing
+    - Planning and prioritization
+    - Reviewing critical decisions
+
+    For knowledge retrieval, use memory_search instead.
+    """
+    mem = _get_mem(ctx)
+    results = await mem.priorities(
+        agent_id=agent_id,
+        min_importance=min_importance,
+        since_days=since_days if since_days > 0 else None,
+        limit=limit,
+    )
+
+    if not results:
+        return "No high-importance items found."
+
+    lines = [f"High-importance items (importance >= {min_importance}):\n"]
+    for r in results:
+        imp = r.metadata.get("importance", "?")
+        created = r.metadata.get("created_at", "?")[:10]
+        lines.append(f"[{r.tier}] importance={imp} ({created})")
+        lines.append(f"  {r.content}\n")
+
     return "\n".join(lines)
 
 

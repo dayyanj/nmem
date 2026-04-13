@@ -188,8 +188,19 @@ class MemorySystem:
         logger.info("nmem initialized successfully")
 
     async def close(self) -> None:
-        """Shutdown — stop consolidator and close database connections."""
+        """Shutdown — stop consolidator and close database connections.
+
+        Explicitly releases the embedding model so a subsequent MemorySystem
+        instance in the same process can reload it without hitting stale
+        meta-tensor errors from torch's garbage collector.
+        """
         self._consolidator.stop()
+
+        # Release embedding model for GC before closing DB
+        if hasattr(self._embedding, "_model") and self._embedding._model is not None:
+            self._embedding._model = None
+            self._embedding._dimensions = None
+
         await self._db.close()
         logger.info("nmem closed")
 
@@ -243,6 +254,109 @@ class MemorySystem:
             top_k=top_k,
             project_scope=project_scope,
         )
+
+    # ── Priorities (importance-ranked, for planning not retrieval) ──────
+
+    async def priorities(
+        self,
+        agent_id: str | None = None,
+        *,
+        min_importance: int = 7,
+        since_days: int | None = 30,
+        tiers: tuple[str, ...] = ("journal", "ltm"),
+        limit: int = 10,
+        project_scope: str | None = ...,
+    ) -> list[SearchResult]:
+        """Return high-importance items for planning and attention.
+
+        Unlike search() which ranks by *relevance* to a query, priorities()
+        ranks by *importance* — what needs attention, what's consequential,
+        what shouldn't be forgotten.
+
+        This reflects a fundamental cognitive distinction:
+          - search() = hippocampal retrieval (association-driven)
+          - priorities() = prefrontal attention (importance-driven)
+
+        Use this for:
+          - Start-of-session briefing ("what's urgent?")
+          - Planning ("what are the high-priority items?")
+          - Audit ("what critical decisions were made recently?")
+
+        Do NOT use this for knowledge retrieval — use search() instead.
+
+        Args:
+            agent_id: Filter to a specific agent, or None for all.
+            min_importance: Minimum importance threshold (default 7).
+            since_days: Only include entries from the last N days (None = all time).
+            tiers: Which tiers to query (default: journal + ltm).
+            limit: Maximum results.
+            project_scope: Scope filter.
+
+        Returns:
+            List of SearchResult objects, ranked by importance DESC.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from sqlalchemy import text as sa_text
+
+        if project_scope is ...:
+            project_scope = self._config.project_scope
+
+        results: list[SearchResult] = []
+
+        for tier_name in tiers:
+            table = {
+                "journal": "nmem_journal_entries",
+                "ltm": "nmem_long_term_memory",
+                "shared": "nmem_shared_knowledge",
+            }.get(tier_name)
+            if not table:
+                continue
+
+            where_parts = ["importance >= :min_imp"]
+            params: dict = {"min_imp": min_importance, "limit": limit}
+
+            if agent_id and tier_name != "shared":
+                where_parts.append("agent_id = :agent_id")
+                params["agent_id"] = agent_id
+
+            if since_days is not None:
+                cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+                where_parts.append("created_at >= :cutoff")
+                params["cutoff"] = cutoff
+
+            if project_scope is not None and project_scope != "*":
+                where_parts.append(
+                    "(project_scope = :scope OR project_scope IS NULL)"
+                )
+                params["scope"] = project_scope
+
+            sql = sa_text(
+                f"SELECT id, importance, "
+                f"SUBSTRING(content FROM 1 FOR 300) as preview, "
+                f"created_at "
+                f"FROM {table} "
+                f"WHERE {' AND '.join(where_parts)} "
+                f"ORDER BY importance DESC, created_at DESC "
+                f"LIMIT :limit"
+            )
+
+            async with self._db.session() as session:
+                rows = await session.execute(sql, params)
+                for row in rows.all():
+                    results.append(SearchResult(
+                        tier=tier_name,
+                        id=row[0],
+                        score=row[1] / 10.0,
+                        content=row[2],
+                        metadata={
+                            "importance": row[1],
+                            "created_at": str(row[3]),
+                        },
+                    ))
+
+        results.sort(key=lambda r: r.score, reverse=True)
+        return results[:limit]
 
     # ── Event System ─────────────────────────────────────────────────────
 
