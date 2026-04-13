@@ -660,7 +660,12 @@ class Consolidator:
             f"{key} {content[:2000]}",
         )
 
-        # Mark journal entry as promoted
+        # Compress journal entry to a stub with pointer to LTM.
+        # The journal becomes a lightweight timeline index; full knowledge
+        # lives in LTM. This avoids content duplication and keeps the
+        # journal scannable.
+        stub_content = await self._compress_to_stub(entry.title, content, key)
+
         async with self._db.session() as session:
             result = await session.execute(
                 select(JournalEntryModel).where(JournalEntryModel.id == entry.id)
@@ -668,9 +673,45 @@ class Consolidator:
             row = result.scalar_one_or_none()
             if row:
                 row.promoted_to_ltm = True
+                row.content = stub_content
+                row.pointers = [{"type": "ltm", "id": ltm_id, "key": key}]
 
         logger.info("Promoted journal #%d (%s) to LTM for %s",
                      entry.id, entry.title[:40], entry.agent_id)
+
+    async def _compress_to_stub(
+        self, title: str, full_content: str, ltm_key: str,
+    ) -> str:
+        """Compress a journal entry to a stub pointing at its LTM archive.
+
+        Uses the LLM to distill the content to a one-line summary.
+        Falls back to title + truncation if LLM is unavailable.
+
+        The stub serves as a timeline marker: "what happened" without
+        "all the details" — those live in LTM now.
+        """
+        max_chars = 200
+
+        # Try LLM compression
+        system = (
+            "Compress this into a single-line summary (max 200 chars). "
+            "Keep the key fact, action, or decision. Output ONLY the summary."
+        )
+        user = f"{title}: {full_content[:800]}"
+        try:
+            result = await self._llm.complete(
+                system, user, max_tokens=64, temperature=0.1, timeout=10.0,
+            )
+            stub = result.strip()
+            if stub and len(stub) <= max_chars * 2:
+                return stub[:max_chars]
+        except Exception:
+            pass
+
+        # Fallback: title + truncation
+        if len(title) > 10:
+            return title[:max_chars]
+        return f"{title}: {full_content[:max_chars - len(title) - 2]}"
 
     async def _dedup_similar_memories(self) -> int:
         """Merge semantically duplicate LTM entries per agent.
