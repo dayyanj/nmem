@@ -182,8 +182,9 @@ class TestRealHybridSearch:
 
         results = await mem.ltm.search("agent-1", "how to deploy code")
         assert len(results) > 0
-        assert results[0].key == "deploy_process", \
-            f"Expected deploy_process first, got: {results[0].key}"
+        entry, score = results[0]
+        assert entry.key == "deploy_process", \
+            f"Expected deploy_process first, got: {entry.key}"
 
     async def test_cross_tier_search(self, mem: MemorySystem):
         """Cross-tier search finds relevant entries across all tiers."""
@@ -390,7 +391,7 @@ class TestRealConsolidation:
         # Verify the promoted entry is searchable in LTM
         results = await mem.ltm.search("agent-1", "input validation security")
         assert len(results) > 0
-        assert any("input" in r.content.lower() or "validat" in r.content.lower() for r in results)
+        assert any("input" in e.content.lower() or "validat" in e.content.lower() for e, _ in results)
 
     @pytest.mark.timeout(30)
     async def test_full_cycle_with_real_models(self, mem: MemorySystem):

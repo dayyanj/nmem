@@ -67,3 +67,29 @@ async def test_delete_nonexistent(mem: MemorySystem) -> None:
     """Deleting nonexistent key returns False."""
     deleted = await mem.ltm.delete("agent1", "does_not_exist")
     assert deleted is False
+
+
+@pytest.mark.asyncio
+async def test_search_returns_frozen_entries(mem: MemorySystem) -> None:
+    """LTM search returns valid frozen LTMEntry objects without crashing.
+
+    Regression test: a linter once introduced a mutation on the frozen
+    LTMEntry dataclass (setting `relevance_score` which doesn't exist),
+    causing FrozenInstanceError at runtime.
+    """
+    await mem.ltm.save(
+        agent_id="agent1",
+        category="fact",
+        key="search_test",
+        content="This entry should be searchable without errors",
+        importance=5,
+    )
+    results = await mem.ltm.search("agent1", "searchable")
+    # Just verifying it doesn't crash — noop embeddings may return
+    # zero results, but the search() method itself should not raise.
+    # Returns list of (LTMEntry, relevance_score) tuples.
+    assert isinstance(results, list)
+    if results:
+        entry, score = results[0]
+        assert hasattr(entry, "key")
+        assert isinstance(score, float)

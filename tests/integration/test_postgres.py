@@ -191,7 +191,7 @@ class TestLTMWithPostgres:
         # Search with terms that overlap with deploy_process content
         results = await mem.ltm.search("test-agent", "deploy migrations code production")
         assert len(results) > 0
-        keys = [r.key for r in results]
+        keys = [e.key for e, _ in results]
         assert "deploy_process" in keys, f"Expected 'deploy_process' in {keys}"
 
     async def test_tsvector_on_save(self, mem: MemorySystem):
@@ -644,7 +644,7 @@ class TestBeliefRevision:
             ), {"w": winner.id, "l": loser.id})
 
         results = await mem.ltm.search("t", "widget")
-        ids = {r.id for r in results}
+        ids = {e.id for e, _ in results}
         assert winner.id in ids
         assert loser.id not in ids
 
@@ -665,8 +665,8 @@ class TestBeliefRevision:
         audit_results = await mem.ltm.search(
             "t2", "audit widget", include_superseded=True,
         )
-        assert a.id not in {r.id for r in default_results}
-        assert a.id in {r.id for r in audit_results}
+        assert a.id not in {e.id for e, _ in default_results}
+        assert a.id in {e.id for e, _ in audit_results}
 
     async def test_stale_conflict_marked_when_record_deleted(self, mem: MemorySystem):
         """If one of the referenced records is gone, the conflict goes stale."""
@@ -833,15 +833,15 @@ class TestProjectScope:
             "agent-a", "checkout timeout cause", project_scope="customer:acme",
         )
         # Should find acme entry but not beta/gamma
-        assert any("stripe" in r.content for r in scoped_results)
-        assert not any("database lock" in r.content for r in scoped_results)
+        assert any("stripe" in e.content for e, _ in scoped_results)
+        assert not any("database lock" in e.content for e, _ in scoped_results)
 
         # Cross-scope search — finds all three
         all_results = await mem.ltm.search(
             "agent-a", "checkout timeout cause", project_scope="*",
         )
         # Should find all three different causes
-        contents = " ".join(r.content for r in all_results)
+        contents = " ".join(e.content for e, _ in all_results)
         assert "stripe" in contents
         assert "database lock" in contents
         assert "CDN routing" in contents
