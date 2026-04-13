@@ -684,32 +684,37 @@ class Consolidator:
     ) -> str:
         """Compress a journal entry to a stub pointing at its LTM archive.
 
-        Uses the LLM to distill the content to a one-line summary.
-        Falls back to title + truncation if LLM is unavailable.
+        Uses the LLM to extract the core knowledge from the content,
+        ignoring conversational preamble ("I'm ready to help", "Let me
+        explore..."). The stub should answer "what was learned or done?"
+        not "what was said?"
 
-        The stub serves as a timeline marker: "what happened" without
-        "all the details" — those live in LTM now.
+        Falls back to title if LLM is unavailable.
         """
         max_chars = 200
 
-        # Try LLM compression
+        # Try LLM extraction
         system = (
-            "Compress this into a single-line summary (max 200 chars). "
-            "Keep the key fact, action, or decision. Output ONLY the summary."
+            "Extract the ONE key technical fact, decision, or action from this text. "
+            "Ignore any conversational preamble, greetings, or 'I will do X' statements. "
+            "Focus on WHAT WAS DONE or WHAT WAS LEARNED — the actual knowledge. "
+            "If there is no substantive knowledge (just conversation), respond with: "
+            "NO_KNOWLEDGE\n"
+            "Max 200 characters. Output ONLY the extracted fact."
         )
-        user = f"{title}: {full_content[:800]}"
+        user = f"Title: {title}\nContent: {full_content[:1000]}"
         try:
             result = await self._llm.complete(
-                system, user, max_tokens=64, temperature=0.1, timeout=10.0,
+                system, user, max_tokens=80, temperature=0.1, timeout=10.0,
             )
             stub = result.strip()
-            if stub and len(stub) <= max_chars * 2:
+            if stub and "NO_KNOWLEDGE" not in stub and len(stub) <= max_chars * 2:
                 return stub[:max_chars]
         except Exception:
             pass
 
-        # Fallback: title + truncation
-        if len(title) > 10:
+        # Fallback: title (which is usually the first meaningful line)
+        if len(title) > 15:
             return title[:max_chars]
         return f"{title}: {full_content[:max_chars - len(title) - 2]}"
 
