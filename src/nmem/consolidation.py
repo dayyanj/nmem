@@ -216,10 +216,11 @@ class Consolidator:
         stats = ConsolidationStats()
         logger.info("Starting full consolidation cycle")
 
-        # Step 1: Decay expired journal entries
-        deleted, promoted = await self._decay_expired_entries()
-        stats.expired_deleted = deleted
-        stats.expired_promoted = promoted
+        # Step 1: Archive expired journal entries to LTM
+        # Nothing is deleted — all expired entries flow to the cold tier.
+        archived, _ = await self._decay_expired_entries()
+        stats.expired_deleted = 0       # nothing is ever deleted
+        stats.expired_promoted = archived  # all expired entries → LTM
 
         # Step 2: Promote high-importance journal entries to LTM
         stats.promoted_to_ltm = await self._promote_important_entries()
@@ -442,11 +443,20 @@ class Consolidator:
     # ── Consolidation Steps ──────────────────────────────────────────────
 
     async def _decay_expired_entries(self) -> tuple[int, int]:
-        """Delete expired journal entries with low importance. Promote high-importance ones."""
-        promote_threshold = self._config.journal.auto_promote_importance
-        access_threshold = self._config.journal.auto_promote_access_count
+        """Archive ALL expired journal entries to LTM.
+
+        Nothing is ever deleted — knowledge flows from the hot tier (journal)
+        to the cold tier (LTM). This mirrors how human memory works: episodic
+        memories are gradually transferred to semantic memory, becoming less
+        detailed but more durable. The dedup/merge pass in dreamstate handles
+        corpus size management, not deletion.
+
+        High-importance entries get full salience in LTM.
+        Low-importance entries get reduced salience (rank lower in search
+        but remain retrievable by association).
+        """
         now = datetime.utcnow()
-        deleted = 0
+        archived = 0
         promoted = 0
 
         async with self._db.session() as session:
@@ -460,18 +470,12 @@ class Consolidator:
             expired = result.scalars().all()
 
             for entry in expired:
-                should_promote = (
-                    entry.importance >= promote_threshold
-                    or (entry.access_count or 0) >= access_threshold
-                )
-                if should_promote:
-                    await self._promote_entry(entry)
-                    promoted += 1
-                else:
-                    await session.delete(entry)
-                    deleted += 1
+                await self._promote_entry(entry)
+                archived += 1
 
-        return deleted, promoted
+        # Return (archived, promoted) — archived replaces deleted.
+        # Both go to LTM; "promoted" kept for backward compat in stats.
+        return archived, 0
 
     async def _promote_important_entries(self) -> int:
         """Promote journal entries that have earned long-term status."""
