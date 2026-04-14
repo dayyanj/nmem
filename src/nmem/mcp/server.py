@@ -147,12 +147,15 @@ async def memory_search(
         score = f"{r.score:.3f}" if isinstance(r.score, float) else str(r.score)
         recog_tag = f" [{r.recognition}]" if r.recognition != "UNCERTAIN" else ""
         if compact:
-            preview = r.content[:100].replace("\n", " ")
+            # Show passage (best matching section) if available, otherwise preview
+            preview = (r.passage or r.content[:100]).replace("\n", " ")[:150]
             lines.append(f"{i}. [{r.tier}#{r.id}]{recog_tag} (score: {score}) {title}")
             lines.append(f"   {preview}...")
         else:
+            # Show passage with full content fallback
+            display = r.passage or r.content[:200]
             lines.append(f"{i}. [{r.tier}]{recog_tag} (score: {score}) {title}")
-            lines.append(f"   {r.content[:200]}")
+            lines.append(f"   {display}")
         lines.append("")
 
     if compact:

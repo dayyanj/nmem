@@ -169,6 +169,7 @@ class SearchResult:
     recognition: str = "UNCERTAIN"  # "KNOWN", "FAMILIAR", "UNCERTAIN"
     recognition_score: float = 0.0
     recognition_reasons: tuple[str, ...] = ()
+    passage: str | None = None  # Best matching passage within content (for long entries)
 
 
 # ── Prompt Context ────────────────────────────────────────────────────────────

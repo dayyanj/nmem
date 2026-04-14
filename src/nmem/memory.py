@@ -286,6 +286,7 @@ class MemorySystem:
             top_k=top_k,
             project_scope=project_scope,
             bump_access=bump_access,
+            embedder=self._embedding,
         )
 
     # ── Priorities (importance-ranked, for planning not retrieval) ──────

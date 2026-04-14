@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +17,11 @@ import numpy as np
 from sqlalchemy import text as sa_text
 
 from nmem.types import SearchResult
+
+# Passage extraction: only extract for entries longer than this
+PASSAGE_MIN_CONTENT_LENGTH = 800
+# Target passage size in chars
+PASSAGE_TARGET_CHARS = 500
 
 if TYPE_CHECKING:
     from nmem.config import NmemConfig, RecognitionConfig
@@ -52,16 +58,19 @@ async def hybrid_memory_search(
 ) -> list[tuple[int, float]]:
     """Hybrid search (vector + FTS) returning ranked (id, score) pairs.
 
-    Uses a CTE pattern: vector similarity as the primary signal,
-    FTS as a secondary re-ranking factor.  FTS scores are normalized
-    to [0, 1] within each candidate set so that the fts_weight is
-    meaningful (raw ts_rank_cd returns ~[0, 0.3]).
+    Uses a CTE pattern: vector similarity as the primary ranking signal,
+    FTS (BM25) as an additive boost when keywords match.
+
+    The FTS boost is capped (default 0.1) to prevent keyword matches from
+    overwhelming semantic relevance.  This avoids the pool-max normalization
+    bug where FTS scores are divided by the candidate-pool maximum, which
+    crushes entries with high vector similarity but low FTS match.
 
     When recency_weight > 0, a temporal recency factor is added to
     the scoring formula.  The recency signal decays exponentially with
     a configurable half-life (default 30 days).
 
-    Falls back gracefully when content_tsv is NULL (FTS score = 0).
+    Falls back gracefully when content_tsv is NULL (FTS boost = 0).
 
     Args:
         db: Database manager.
@@ -102,13 +111,8 @@ async def hybrid_memory_search(
         min_vec_filter = f"AND 1 - (embedding <=> CAST(:embedding_vec AS vector)) > :min_vec_score"
         params["min_vec_score"] = min_vector_score
 
-    # When recency is enabled, scale the existing weights so total still sums to 1.
-    effective_vec = vector_weight
-    effective_fts = fts_weight
+    # When recency is enabled, set up decay parameters.
     if recency_weight > 0:
-        scale = (1.0 - recency_weight) / (vector_weight + fts_weight) if (vector_weight + fts_weight) > 0 else 1.0
-        effective_vec = vector_weight * scale
-        effective_fts = fts_weight * scale
         halflife_seconds = recency_halflife_days * 86400
         params["recency_halflife_secs"] = halflife_seconds
 
@@ -127,6 +131,12 @@ async def hybrid_memory_search(
         recency_join = "LEFT JOIN recency_scores rs ON vs.id = rs.id"
         recency_term = f"+ {recency_weight} * COALESCE(rs.recency, 0)"
 
+    # FTS boost cap: keyword matches add at most this much to the vector score.
+    # Keeps FTS from overwhelming semantic relevance while still rewarding
+    # exact keyword hits.  ts_rank_cd typically returns 0.0-0.3.
+    # Scale cap by fts_weight so callers can disable FTS with fts_weight=0.
+    fts_boost_cap = 0.1 * (fts_weight / 0.4) if fts_weight > 0 else 0
+
     sql = sa_text(f"""
         WITH vector_scores AS (
             SELECT id,
@@ -138,27 +148,22 @@ async def hybrid_memory_search(
             ORDER BY embedding <=> CAST(:embedding_vec AS vector)
             LIMIT :candidate_limit
         ),
-        fts_raw AS (
+        fts_boost AS (
             SELECT vs.id,
-                   CASE WHEN t.content_tsv IS NOT NULL
-                        THEN ts_rank_cd(t.content_tsv, plainto_tsquery('english', :query_text))
-                        ELSE 0 END AS raw_fts
+                   CASE WHEN t.content_tsv @@ plainto_tsquery('english', :query_text)
+                        THEN LEAST(
+                            ts_rank_cd(t.content_tsv, plainto_tsquery('english', :query_text)),
+                            {fts_boost_cap}
+                        )
+                        ELSE 0 END AS boost
             FROM vector_scores vs
             JOIN {table} t ON vs.id = t.id
-        ),
-        fts_scores AS (
-            SELECT id,
-                   CASE WHEN MAX(raw_fts) OVER () > 0
-                        THEN raw_fts / MAX(raw_fts) OVER ()
-                        ELSE 0 END AS fts_score
-            FROM fts_raw
         ){recency_cte}
         SELECT vs.id,
-               ({effective_vec} * vs.vec_score
-                + {effective_fts} * COALESCE(fs.fts_score, 0)
+               (vs.vec_score + COALESCE(fb.boost, 0)
                 {recency_term}) AS combined_score
         FROM vector_scores vs
-        LEFT JOIN fts_scores fs ON vs.id = fs.id
+        LEFT JOIN fts_boost fb ON vs.id = fb.id
         {recency_join}
         ORDER BY combined_score DESC
         LIMIT :top_k
@@ -405,6 +410,133 @@ def assign_context_thread(
         return thread_id
 
 
+# ── Passage Extraction ────────────────────────────────────────────────────────
+
+
+def _split_into_passages(content: str) -> list[str]:
+    """Split content into semantic passages for extraction.
+
+    Uses a hierarchy of boundaries:
+    1. Markdown headers (## / ###)
+    2. Bold sub-headers (**Label:**)
+    3. Double newlines (paragraph breaks)
+
+    Adjacent short passages are merged to reach target size.
+    """
+    # First split on headers and bold sub-headers
+    parts = re.split(
+        r"(?=^#{1,3}\s+|\n\*\*[^*]+\*\*[:\s—–-])",
+        content,
+        flags=re.MULTILINE,
+    )
+
+    # If no structural splits found, fall back to paragraph breaks
+    if len(parts) <= 1:
+        parts = re.split(r"\n\s*\n", content)
+
+    # Merge very small passages with neighbors
+    merged: list[str] = []
+    current = ""
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if len(current) + len(part) < PASSAGE_TARGET_CHARS:
+            current = f"{current}\n\n{part}".strip() if current else part
+        else:
+            if current:
+                merged.append(current)
+            current = part
+    if current:
+        merged.append(current)
+
+    return merged if merged else [content]
+
+
+def extract_passage(
+    content: str,
+    query_embedding: np.ndarray,
+    embedder: Any,
+) -> str | None:
+    """Extract the most relevant passage from long content.
+
+    Uses the embedding model to find which passage within the content
+    best matches the query. Like Google's featured snippet extraction.
+
+    Args:
+        content: Full entry content.
+        query_embedding: Pre-computed query embedding vector.
+        embedder: Embedding provider with encode() method.
+
+    Returns:
+        Best matching passage, or None if content is short enough to use as-is.
+    """
+    if len(content) < PASSAGE_MIN_CONTENT_LENGTH:
+        return None
+
+    passages = _split_into_passages(content)
+    if len(passages) <= 1:
+        return None
+
+    # Batch-embed all passages
+    try:
+        passage_embeddings = embedder.embed_batch(passages)
+    except AttributeError:
+        # Single embed fallback
+        passage_embeddings = [embedder.embed(p) for p in passages]
+
+    if not passage_embeddings:
+        return None
+
+    # Cosine similarity of each passage against query
+    passage_embs = np.array(passage_embeddings)
+    # Normalize
+    norms = np.linalg.norm(passage_embs, axis=1, keepdims=True)
+    norms[norms == 0] = 1
+    passage_embs = passage_embs / norms
+
+    q_norm = np.linalg.norm(query_embedding)
+    if q_norm > 0:
+        q_normalized = query_embedding / q_norm
+    else:
+        return None
+
+    similarities = passage_embs @ q_normalized
+    best_idx = int(np.argmax(similarities))
+
+    return passages[best_idx]
+
+
+async def extract_passages_for_results(
+    results: list[SearchResult],
+    query: str,
+    embedder: Any,
+) -> list[SearchResult]:
+    """Add passage extraction to search results with long content.
+
+    Runs synchronously since embedding is CPU-bound and typically fast
+    for small batches (5-10 passages per result).
+    """
+    if not embedder or not results:
+        return results
+
+    try:
+        query_embedding = np.array(embedder.embed(query))
+    except Exception:
+        return results
+
+    for result in results:
+        if len(result.content) >= PASSAGE_MIN_CONTENT_LENGTH:
+            try:
+                passage = extract_passage(result.content, query_embedding, embedder)
+                if passage:
+                    result.passage = passage
+            except Exception as e:
+                logger.debug("Passage extraction failed for %s: %s", result.key or result.id, e)
+
+    return results
+
+
 # ── Cross-Tier Search ─────────────────────────────────────────────────────────
 
 
@@ -423,6 +555,7 @@ async def cross_tier_search(
     top_k: int = 10,
     project_scope: str | None = ...,
     bump_access: bool = True,
+    embedder: Any = None,
 ) -> list[SearchResult]:
     """Search across multiple memory tiers in parallel.
 
@@ -487,6 +620,10 @@ async def cross_tier_search(
         except Exception as e:
             logger.warning("Link expansion failed (non-fatal): %s", e)
 
+    # Extract best-matching passages from long entries
+    if embedder:
+        top_results = await extract_passages_for_results(top_results, query, embedder)
+
     return top_results
 
 
@@ -549,10 +686,10 @@ async def _search_ltm(
         results.append(SearchResult(
             tier="ltm",
             id=e.id,
-            # Relevance from hybrid search, with a mild freshness boost from salience.
-            # Importance is a lifecycle signal (consolidation/expiry),
-            # NOT a retrieval signal.
-            score=relevance * (0.8 + 0.2 * e.salience),
+            # Use relevance from hybrid search directly.
+            # Salience and importance are lifecycle signals (consolidation/expiry),
+            # NOT retrieval signals — they belong in priorities(), not search().
+            score=relevance,
             content=e.content,
             key=e.key,
             agent_id=e.agent_id,
@@ -623,8 +760,9 @@ async def _search_entity(
         results.append(SearchResult(
             tier="entity",
             id=r.id,
-            # Confidence modulates the hybrid score — a quality signal
-            score=relevance * (0.7 + 0.3 * r.confidence),
+            # Use relevance from hybrid search directly.
+            # Confidence is exposed in metadata for recognition signals.
+            score=relevance,
             content=r.content,
             agent_id=r.agent_id,
             metadata=meta,
