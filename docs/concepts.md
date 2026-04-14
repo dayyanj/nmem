@@ -1,5 +1,10 @@
 # Concepts
 
+<!-- i18n:start -->
+**English** | [简体中文](i18n/zh-hans/concepts.md) | [日本語](i18n/ja/concepts.md) | [한국어](i18n/ko/concepts.md) | [Español](i18n/es/concepts.md) | [Português](i18n/pt/concepts.md) | [Français](i18n/fr/concepts.md) | [Deutsch](i18n/de/concepts.md) | [Русский](i18n/ru/concepts.md)
+<!-- i18n:end -->
+
+
 nmem is a hierarchical memory system for AI agents. This page explains the mental model: what each tier is for, how entries flow between tiers, and how the consolidation engine works.
 
 ## The 6-tier hierarchy

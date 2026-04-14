@@ -1,5 +1,10 @@
 # Quickstart
 
+<!-- i18n:start -->
+**English** | [简体中文](i18n/zh-hans/quickstart.md) | [日本語](i18n/ja/quickstart.md) | [한국어](i18n/ko/quickstart.md) | [Español](i18n/es/quickstart.md) | [Português](i18n/pt/quickstart.md) | [Français](i18n/fr/quickstart.md) | [Deutsch](i18n/de/quickstart.md) | [Русский](i18n/ru/quickstart.md)
+<!-- i18n:end -->
+
+
 Get nmem running with real data in under 5 minutes.
 
 > **Note**: nmem is not yet on PyPI. All install commands below use `pip install -e` from a local clone:

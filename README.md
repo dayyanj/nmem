@@ -1,5 +1,10 @@
 # nmem
 
+<!-- i18n:start -->
+**English** | [简体中文](docs/i18n/zh-hans/README.md) | [日本語](docs/i18n/ja/README.md) | [한국어](docs/i18n/ko/README.md) | [Español](docs/i18n/es/README.md) | [Português](docs/i18n/pt/README.md) | [Français](docs/i18n/fr/README.md) | [Deutsch](docs/i18n/de/README.md) | [Русский](docs/i18n/ru/README.md)
+<!-- i18n:end -->
+
+
 **Cognitive memory for AI agents**: hierarchical, self-refining, and framework-agnostic.
 
 nmem gives your agents a brain that learns. Not just storage and retrieval, but active cognition — automatic promotion, belief revision, nightly retrospectives, social learning across agents, and token-tracked prompt injection.
@@ -127,6 +132,24 @@ Your Agent (LangChain / CrewAI / Plain Python)
 - **Framework adapters**: LangChain (`BaseMemory` compatible), CrewAI, or plain Python — `pip install nmem[langchain]`
 - **Pluggable providers**: bring your own LLM (OpenAI-compatible, Anthropic), embedding model (sentence-transformers, OpenAI), and database (PostgreSQL + pgvector, SQLite)
 
+## Benchmarked
+
+nmem has been tested with **Claude Code** (Claude Sonnet 4.6) against a real-world 17-repository eCommerce platform (45 tasks, 225 dual-judge evaluations). Full methodology and results: [docs/benchmarks/](docs/benchmarks/)
+
+| | Without nmem | With nmem (MCP) | Improvement |
+|---|---|---|---|
+| **Factual accuracy** | 3.60/5 | **4.00/5** | +11% |
+| **Cost per task** | $0.182 | **$0.097** | **47% cheaper** |
+| **Wall clock** | 69s/task | **43s/task** | **38% faster** |
+| **Documentation quality** | 4.00/5 | **4.20/5** | +5% |
+
+- Tested with Claude Code (Sonnet 4.6) via MCP integration — the primary validated use case
+- Scores from independent dual-judge evaluation (Qwen3-14B + Qwen3-30B, $0 judging cost)
+- "Without nmem" is a new developer with no prior context exploring all repositories from scratch
+- "With nmem" uses MCP tool search against a corpus of LLM-distilled conversations, docs, and git history
+- Both variants have identical codebase access — the difference is memory
+- Agentic use cases (support agents, autonomous systems with smaller context windows) are next on the benchmark roadmap
+
 ## Quick Start
 
 > **Note**: nmem is not yet on PyPI. Install from source:
@@ -197,6 +220,7 @@ mem.start_consolidation()
 | [Configuration](docs/configuration.md) | Every config option with tradeoffs and examples |
 | [MCP Integration](docs/mcp-integration.md) | Connect to Claude Code / Cursor with persistent memory |
 | [API Reference](docs/api-reference.md) | Full method documentation with signatures and examples |
+| [Benchmarks](docs/benchmarks/) | Empirical evaluations — institutional knowledge retrieval, recognition signals |
 | [Testing](TESTING.md) | Run tests, benchmarks, E2E QA checklist |
 
 ## Contributing

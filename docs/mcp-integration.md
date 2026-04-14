@@ -1,5 +1,10 @@
 # MCP Integration
 
+<!-- i18n:start -->
+**English** | [简体中文](i18n/zh-hans/mcp-integration.md) | [日本語](i18n/ja/mcp-integration.md) | [한국어](i18n/ko/mcp-integration.md) | [Español](i18n/es/mcp-integration.md) | [Português](i18n/pt/mcp-integration.md) | [Français](i18n/fr/mcp-integration.md) | [Deutsch](i18n/de/mcp-integration.md) | [Русский](i18n/ru/mcp-integration.md)
+<!-- i18n:end -->
+
+
 nmem ships an MCP (Model Context Protocol) server that lets Claude Code, Cursor, and other AI tools use nmem as persistent memory across conversations.
 
 ## Setup
