@@ -475,7 +475,13 @@ class LTMTier:
         max_chars = max_chars or self._config.ltm.max_chars_in_prompt
         if query:
             ranked = await self.search(agent_id, query, top_k=20)
-            entries = [e for e, _score in ranked]
+            # search() returns list[tuple[LTMEntry, float]]
+            entries = []
+            for item in ranked:
+                if isinstance(item, tuple) and len(item) >= 2:
+                    entries.append(item[0])
+                else:
+                    entries.append(item)
         else:
             async with self._db.session() as session:
                 stmt = (
@@ -493,7 +499,14 @@ class LTMTier:
         lines: list[str] = []
         chars = 0
         for e in entries:
-            line = f"- [{e.category}] {e.key}: {e.content}"
+            # Defensive: handle both LTMEntry objects and raw tuples
+            if isinstance(e, tuple):
+                cat = e[2] if len(e) > 2 else "?"
+                key = e[3] if len(e) > 3 else "?"
+                content = e[4] if len(e) > 4 else ""
+                line = f"- [{cat}] {key}: {content}"
+            else:
+                line = f"- [{e.category}] {e.key}: {e.content}"
             if chars + len(line) > max_chars:
                 break
             lines.append(line)
