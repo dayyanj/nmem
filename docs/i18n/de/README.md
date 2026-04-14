@@ -5,12 +5,12 @@
 <!-- i18n:end -->
 
 
-**Kognitive Gedächtnis für AI-Agenten**: hierarchisch, selbstverbessernd und framework-agnostisch.
+**Kognitive Speicher für KI-Agenten**: hierarchisch, selbstoptimierend und framework-agnostisch.
 
-nmem verleiht Ihren Agenten ein Gehirn, das lernt. Nicht nur Speicherung und Abruf, sondern aktive Kognition – automatische Promotion, Glaubensrevision, nächtliche Retrospektiven, soziales Lernen zwischen Agenten und token-gestützte Prompt-Injektion.
+nmem verleiht Ihren Agenten ein Gehirn, das lernt. Nicht nur Speicherung und Abruf, sondern aktive Kognition – automatische Beförderung, Glaubensrevision, nächtliche Retrospektiven, soziales Lernen zwischen Agenten und token-gestützte Prompt-Injektion.
 
-> **Wir suchen aktiv nach Mitwirkenden.** nmem wurde bewusst als Community-gestufter Projekt entwickelt. Code, Dokumentation, Ideen, Fehlerberichte, unabhängige Benchmarks und adversärer Test sind willkommen. Siehe [Beitragen](#beitragen) unten.
+> **Wir suchen aktiv nach Mitwirkenden.** nmem wurde bewusst als Community-gestufter Projekt erstellt. Code, Dokumentation, Ideen, Fehlermeldungen, unabhängige Benchmarks und adversärer Test sind willkommen. Siehe [Beitragen](#beitragen) unten.
 
 ## Wie es funktioniert
 
-### Gedächtnis fließt nach oben: Einträge verdienen sich ihren Platz
+### Der Speicher fließt nach oben: Einträge verdienen sich ihren Platz

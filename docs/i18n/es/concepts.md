@@ -9,4 +9,4 @@ nmem es un sistema de memoria jerárquica para agentes de IA. Esta página expli
 
 ## La jerarquía de 6 niveles
 
-Piensa en nmem como la memoria humana:
+Piensa en nmem como en la memoria humana:

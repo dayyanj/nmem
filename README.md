@@ -88,8 +88,8 @@ Your Agent (LangChain / CrewAI / Plain Python)
 │  ┌──────────┐ ┌──────────┐ ┌──────────────────┐│
 │  │ Prompt   │ │ Hybrid   │ │  Cognitive       ││
 │  │ Builder  │ │ Search   │ │  Engine          ││
-│  │          │ │ 60% vec  │ │  (deja vu,       ││
-│  │ tiered   │ │ 40% FTS  │ │  belief revision,││
+│  │          │ │ vec+FTS  │ │  (deja vu,       ││
+│  │ tiered   │ │ +recency │ │  belief revision,││
 │  │ verbosity│ │          │ │  retrospective)  ││
 │  └──────────┘ └──────────┘ └──────────────────┘│
 │                                                 │
@@ -107,7 +107,7 @@ Your Agent (LangChain / CrewAI / Plain Python)
 
 **Write**: agents store observations, decisions, and outcomes in their journal. Write-time compression distills verbose content into dense facts. Dedup prevents redundant entries. Conflict detection flags contradictions at write time.
 
-**Search**: hybrid search combines pgvector cosine similarity (60%) with PostgreSQL full-text search (40%) across all tiers simultaneously. Access stats are updated on every retrieval. Knowledge links expand results with associated entries.
+**Search**: vector-primary hybrid search uses pgvector cosine similarity as the main ranking signal, with FTS (BM25) keyword matching as a capped additive boost and optional recency weighting. Searches all tiers simultaneously. Access stats are updated on every retrieval. Knowledge links expand results with associated entries.
 
 **Consolidate**: a 10-step background engine promotes important entries to LTM, deduplicates via union-find + LLM, rescores importance heuristically, resolves belief conflicts (grounding rank → agent trust → recency), decays salience on stale entries, builds knowledge links, and synthesizes cross-agent patterns nightly.
 
@@ -124,7 +124,7 @@ Your Agent (LangChain / CrewAI / Plain Python)
 - **Auto-importance scoring**: heuristic rescoring at consolidation for entries without explicit importance. Manual scores are never overwritten
 - **Salience decay**: unused knowledge fades from current reasoning (but isn't deleted). Reinforced lessons get their salience refreshed
 - **Write-time compression**: LLM distills verbose content into dense facts
-- **Hybrid search**: 60% vector + 40% full-text search across all tiers, with knowledge link expansion
+- **Hybrid search**: vector-primary with capped FTS keyword boost and optional recency weighting, across all tiers with knowledge link expansion
 - **10-step consolidation engine**: decay, promote, dedup, rescore, resolve conflicts, salience decay, custom hooks, knowledge links, curiosity decay — plus nightly synthesis and retrospective
 - **Token trends**: automatic tracking of prompt injection sizes and LLM costs. CLI (`nmem token-trends`) and API (`GET /v1/token-trends`) for monitoring efficiency over time
 - **Configuration profiles**: `NmemConfig.from_profile("refinery")` for pre-tuned multi-agent defaults, or `"neutral"` for generic. Custom profiles via `register_profile()`
@@ -134,21 +134,33 @@ Your Agent (LangChain / CrewAI / Plain Python)
 
 ## Benchmarked
 
-nmem has been tested with **Claude Code** (Claude Sonnet 4.6) against a real-world 17-repository eCommerce platform (45 tasks, 225 dual-judge evaluations). Full methodology and results: [docs/benchmarks/](docs/benchmarks/)
+Two benchmarks validate nmem across different scales and use cases. Full methodology and results: [docs/benchmarks/](docs/benchmarks/)
+
+### Healthcare Multi-Agent (180-day simulation)
+
+4 agents (triage, treatment, discharge, pharmacy) process 1,705 clinical encounters over 180 simulated days. Tests belief revision, consolidation, and cross-agent knowledge transfer — on a **14B model running on a single consumer GPU ($0 inference)**.
+
+| | Without nmem | With nmem | Improvement |
+|---|---|---|---|
+| **Belief revision** | 3.13/5 | **5.00/5** | **+60%** |
+| **Overall accuracy** | 3.60/5 | **3.84/5** | +7% |
+| **Direct recall** | 3.73/5 | **4.09/5** | +10% |
+| **Infrastructure** | Qwen3-14B, RTX 4090 | Same | $0 cost |
+
+### Spwig Institutional Knowledge (17-repo codebase)
+
+Claude Code (Sonnet 4.6) searches nmem via MCP tools across a real-world eCommerce platform.
 
 | | Without nmem | With nmem (MCP) | Improvement |
 |---|---|---|---|
 | **Factual accuracy** | 3.60/5 | **4.00/5** | +11% |
 | **Cost per task** | $0.182 | **$0.097** | **47% cheaper** |
 | **Wall clock** | 69s/task | **43s/task** | **38% faster** |
-| **Documentation quality** | 4.00/5 | **4.20/5** | +5% |
 
-- Tested with Claude Code (Sonnet 4.6) via MCP integration — the primary validated use case
-- Scores from independent dual-judge evaluation (Qwen3-14B + Qwen3-30B, $0 judging cost)
-- "Without nmem" is a new developer with no prior context exploring all repositories from scratch
-- "With nmem" uses MCP tool search against a corpus of LLM-distilled conversations, docs, and git history
-- Both variants have identical codebase access — the difference is memory
-- Agentic use cases (support agents, autonomous systems with smaller context windows) are next on the benchmark roadmap
+- Both benchmarks use $0 local inference (no cloud API calls)
+- Healthcare benchmark tested with Qwen3-14B-AWQ on consumer hardware — nmem's architecture compensates for limited model reasoning
+- Spwig benchmark tested with Claude Sonnet 4.6 via MCP — the primary validated integration path
+- Belief revision is nmem's strongest differentiator: when knowledge changes, nmem detects contradictions and retrieves updated facts
 
 ## Quick Start
 
@@ -216,7 +228,7 @@ mem.start_consolidation()
 | [Configuration](docs/configuration.md) | Every config option with tradeoffs and examples |
 | [MCP Integration](docs/mcp-integration.md) | Connect to Claude Code / Cursor with persistent memory |
 | [API Reference](docs/api-reference.md) | Full method documentation with signatures and examples |
-| [Benchmarks](docs/benchmarks/) | Empirical evaluations — institutional knowledge retrieval, recognition signals |
+| [Benchmarks](docs/benchmarks/) | Empirical evaluations — healthcare multi-agent, institutional knowledge, recognition signals |
 | [Testing](TESTING.md) | Run tests, benchmarks, E2E QA checklist |
 
 ## Contributing

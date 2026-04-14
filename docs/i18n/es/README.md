@@ -5,7 +5,7 @@
 <!-- i18n:end -->
 
 
-**Memoria cognitiva para agentes de IA**: jerárquica, autoregulada y independiente del marco.
+**Memoria cognitiva para agentes de IA**: jerárquica, autorrefinada y ajena al marco.
 
 nmem le da a sus agentes un cerebro que aprende. No solo almacenamiento y recuperación, sino cognición activa — promoción automática, revisión de creencias, retrospectivas nocturnas, aprendizaje social entre agentes y inyección de prompts con seguimiento de tokens.
 

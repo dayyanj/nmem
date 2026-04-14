@@ -210,16 +210,18 @@ The consolidation engine runs in the background (every 6 hours by default) and p
 
 ## Hybrid search
 
-Every search in nmem combines two signals:
+Every search in nmem uses a vector-primary hybrid algorithm with three signals:
 
-- **Vector similarity (60%)**: pgvector cosine distance against embeddings
-- **Full-text search (40%)**: PostgreSQL `tsvector` / `ts_rank_cd`
+- **Vector similarity (primary)**: pgvector cosine distance ranks candidates by semantic relevance
+- **FTS keyword boost (additive, capped)**: PostgreSQL `tsvector` / `ts_rank_cd` adds a small bonus when exact keywords match, capped to prevent keyword matches from overwhelming semantic relevance
+- **Recency weighting (optional)**: exponential decay with configurable half-life boosts recent entries when temporal freshness matters
 
 This means a search for "deploy process" finds entries that:
 - Are semantically similar (vector catches "deployment procedure", "release workflow")
-- Contain the exact words (FTS catches "deploy" even if the embedding model doesn't rank it highest)
+- Contain the exact words (FTS boosts "deploy" when the embedding model ranks it slightly lower)
+- Are recent (when recency weighting is enabled)
 
-The 60/40 weighting is tuned from production experience in the Spwig refinery system. Vector catches semantic meaning, FTS catches precise terminology.
+Vector similarity drives the ranking. FTS acts as a tiebreaker — it never overrides a strong semantic match, but it can promote a weaker semantic match that happens to contain the exact query terms. This avoids the classic hybrid search failure mode where keyword-heavy entries drown out semantically relevant ones.
 
 ## Context threads
 
