@@ -1,7 +1,7 @@
 # Benchmarks
 
 <!-- i18n:start -->
-**English** | [简体中文](i18n/zh-hans/benchmarks.md) | [日本語](i18n/ja/benchmarks.md) | [한국어](i18n/ko/benchmarks.md) | [Español](i18n/es/benchmarks.md) | [Português](i18n/pt/benchmarks.md) | [Français](i18n/fr/benchmarks.md) | [Deutsch](i18n/de/benchmarks.md) | [Русский](i18n/ru/benchmarks.md)
+**English** | [简体中文](../i18n/zh-hans/benchmarks.md) | [日本語](../i18n/ja/benchmarks.md) | [한국어](../i18n/ko/benchmarks.md) | [Español](../i18n/es/benchmarks.md) | [Português](../i18n/pt/benchmarks.md) | [Français](../i18n/fr/benchmarks.md) | [Deutsch](../i18n/de/benchmarks.md) | [Русский](../i18n/ru/benchmarks.md)
 <!-- i18n:end -->
 
 
