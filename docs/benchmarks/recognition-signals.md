@@ -48,19 +48,20 @@ Each response is scored by counting how many key facts (case-insensitive exact m
 
 ### Models
 
-All three models are from the Qwen3 family, chosen to span the range of open-weight models commonly used for agentic applications:
+We tested four models spanning the full range from small open-weight to frontier proprietary:
 
 | Model | Parameters | Architecture | Hardware | Inference |
 |-------|-----------|--------------|----------|-----------|
 | Qwen3-8B-AWQ | 8B | Dense, 4-bit quantised | RTX 4090 16GB | vLLM |
 | Qwen3-14B-AWQ | 14B | Dense, 4-bit quantised | RTX 3090 24GB | vLLM |
 | Qwen3-30B-A3B | 30B (3B active) | Mixture of Experts, Q4_K_M | CPU (64GB RAM) | llama.cpp |
+| Claude Sonnet 4 | Frontier | Proprietary | Anthropic API | API |
 
-All runs used `temperature=0`, `seed=42`, and thinking mode disabled to ensure deterministic outputs.
+All local runs used `temperature=0`, `seed=42`, and thinking mode disabled to ensure deterministic outputs. The Claude Sonnet 4 run used `temperature=0` via the Messages API.
 
 ### What we did not test
 
-We did not test proprietary frontier models (GPT-4o, Claude, Gemini). The research literature suggests larger models may respond to trust framing, but the target use case for nmem is local/self-hosted inference where 8B-30B models are the practical ceiling. We also did not test fine-tuned models that have been specifically trained to respect trust labels.
+We did not test fine-tuned models that have been specifically trained to respect trust labels, nor models with tool-use or retrieval augmentation enabled (which would allow verification rather than trust).
 
 ---
 
@@ -97,8 +98,9 @@ Question: What deployment method does Spwig use?
 | Qwen3-8B | 62% | 65% | **-3%** | 49% |
 | Qwen3-14B | 67% | 66% | **+2%** | 54% |
 | Qwen3-30B-A3B | 82% | 79% | **+3%** | 64% |
+| Claude Sonnet 4 | 84% | 82% | **+1%** | 76% |
 
-The delta between KNOWN and UNCERTAIN is within noise on both models. The 8B model actually scored *lower* with `[KNOWN]` tags than `[UNCERTAIN]`.
+The delta between KNOWN and UNCERTAIN is within noise across all four models, including the frontier model. The 8B model actually scored *lower* with `[KNOWN]` tags than `[UNCERTAIN]`.
 
 ---
 
@@ -198,8 +200,9 @@ Cross-model comparison (inline tags strategy, 30 questions each):
 | Qwen3-8B | 62% | 65% | -3% | 49% |
 | Qwen3-14B | 67% | 66% | +2% | 54% |
 | Qwen3-30B-A3B | 82% | 79% | +3% | 64% |
+| Claude Sonnet 4 | 84% | 82% | +1% | 76% |
 
-Total evaluations: 900+ across all runs.
+Total evaluations: 990+ across all runs.
 
 ---
 
@@ -207,15 +210,11 @@ Total evaluations: 900+ across all runs.
 
 ### 1. Trust tags produce zero behavioural delta
 
-Across three prompt strategies, two model sizes, and 810+ evaluations, the delta between `[KNOWN]` and `[UNCERTAIN]` conditions ranged from -3% to +2%. All within statistical noise. No prompt engineering approach made Qwen3 models treat trust-tagged content differently.
+Across three prompt strategies, four models (8B to frontier), and 990+ evaluations, the delta between `[KNOWN]` and `[UNCERTAIN]` conditions ranged from -3% to +3%. All within statistical noise. No prompt engineering approach made any model treat trust-tagged content differently. This holds for open-weight and proprietary frontier models alike.
 
-### 2. Adversarial over-trust
+### 2. Adversarial over-trust scales with model capability
 
-When wrong facts are tagged `[KNOWN]`, models adopt them roughly 50% of the time (49-55% across runs). The tag does not help the model use correct information more confidently, but it does not protect against wrong information either. The model treats all injected content as equally plausible regardless of trust labels.
-
-### 3. Bigger models are smarter but still don't differentiate
-
-The 30B MoE model is significantly better at using injected context overall (82% vs 67% vs 62%), but the trust tag delta remains at +3%, within noise. More concerning, adversarial over-trust actually *increases* with model size: 49% (8B), 54% (14B), 64% (30B). Larger models are better at absorbing provided context, which means they are also better at absorbing wrong context. The trust tag does nothing to counteract this.
+When wrong facts are tagged `[KNOWN]`, models adopt them at rates that increase with capability: 49% (8B), 54% (14B), 64% (30B MoE), 76% (Sonnet 4). Overall accuracy also improves with size (62% -> 67% -> 82% -> 84%), but trust tag differentiation does not. Larger models are better at absorbing provided context, which makes them *more* susceptible to wrong context, not less. The trust tag helps with neither correct nor incorrect information.
 
 ### 4. Why this happens
 
@@ -247,7 +246,7 @@ If your use case requires the model to genuinely treat different facts with diff
 
 3. **Physical section separation**: Instead of tagging facts inline, separate verified and unverified content into distinct prompt sections with explicit behavioural rules for each section. This is stronger than inline tags but still limited by model size.
 
-4. **Pre-filtering (the nmem approach)**: Do not inject uncertain content at all. Make the trust decision upstream and only send the model content you want it to use. This is the most reliable approach for 8B-14B class models.
+4. **Pre-filtering (the nmem approach)**: Do not inject uncertain content at all. Make the trust decision upstream and only send the model content you want it to use. This is the most reliable approach across all model sizes tested, including frontier models.
 
 ---
 
@@ -271,7 +270,7 @@ for strategy in original system_per_condition xml_framing; do
 done
 ```
 
-Configure backends in `VLLM_BACKENDS` in `run_vllm.py`. Any OpenAI-compatible chat completions endpoint works (vLLM, llama.cpp, Ollama, etc).
+Configure backends in `VLLM_BACKENDS` in `run_vllm.py`. Any OpenAI-compatible chat completions endpoint works (vLLM, llama.cpp, Ollama, etc). The Anthropic Messages API is also supported via the `"anthropic": True` backend flag.
 
 ---
 
@@ -315,4 +314,12 @@ uncertain_correct: 65% avg, 6x 100%, 25x 50%+, 2x 0%
 known_correct:     82% avg, 16x 100%, 28x 50%+, 0x 0%
 known_wrong:       64% avg, 10x 100%, 24x 50%+, 5x 0%
 uncertain_correct: 79% avg, 14x 100%, 27x 50%+, 0x 0%
+```
+
+### Claude Sonnet 4 (inline tags, 30 tasks)
+
+```
+known_correct:     84% avg, 18x 100%, 28x 50%+, 1x 0%
+known_wrong:       76% avg, 17x 100%, 26x 50%+, 3x 0%
+uncertain_correct: 82% avg, 17x 100%, 29x 50%+, 1x 0%
 ```
