@@ -96,7 +96,7 @@ Question: What deployment method does Spwig use?
 |-------|----------------|--------------------:|------:|----------------------------:|
 | Qwen3-8B | 62% | 65% | **-3%** | 49% |
 | Qwen3-14B | 67% | 66% | **+2%** | 54% |
-| Qwen3-30B-A3B | *pending* | *pending* | *pending* | *pending* |
+| Qwen3-30B-A3B | 82% | 79% | **+3%** | 64% |
 
 The delta between KNOWN and UNCERTAIN is within noise on both models. The 8B model actually scored *lower* with `[KNOWN]` tags than `[UNCERTAIN]`.
 
@@ -197,9 +197,9 @@ Cross-model comparison (inline tags strategy, 30 questions each):
 |-------|----------------:|--------------------:|------:|------------:|
 | Qwen3-8B | 62% | 65% | -3% | 49% |
 | Qwen3-14B | 67% | 66% | +2% | 54% |
-| Qwen3-30B-A3B | *pending* | *pending* | *pending* | *pending* |
+| Qwen3-30B-A3B | 82% | 79% | +3% | 64% |
 
-Total evaluations: 810+ across all runs.
+Total evaluations: 900+ across all runs.
 
 ---
 
@@ -213,9 +213,9 @@ Across three prompt strategies, two model sizes, and 810+ evaluations, the delta
 
 When wrong facts are tagged `[KNOWN]`, models adopt them roughly 50% of the time (49-55% across runs). The tag does not help the model use correct information more confidently, but it does not protect against wrong information either. The model treats all injected content as equally plausible regardless of trust labels.
 
-### 3. The approach does not scale with model size
+### 3. Bigger models are smarter but still don't differentiate
 
-The 8B and 14B models show the same null result. The 8B model actually performed slightly *worse* with `[KNOWN]` tags (62%) than `[UNCERTAIN]` (65%), suggesting the tag adds noise rather than signal. The 30B MoE results (pending at time of writing) will complete this picture.
+The 30B MoE model is significantly better at using injected context overall (82% vs 67% vs 62%), but the trust tag delta remains at +3%, within noise. More concerning, adversarial over-trust actually *increases* with model size: 49% (8B), 54% (14B), 64% (30B). Larger models are better at absorbing provided context, which means they are also better at absorbing wrong context. The trust tag does nothing to counteract this.
 
 ### 4. Why this happens
 
@@ -307,4 +307,12 @@ uncertain_correct: 63% avg, 7x 100%, 24x 50%+, 2x 0%
 known_correct:     67% avg, 8x 100%, 25x 50%+, 2x 0%
 known_wrong:       55% avg, 5x 100%, 19x 50%+, 6x 0%
 uncertain_correct: 65% avg, 6x 100%, 25x 50%+, 2x 0%
+```
+
+### Qwen3-30B-A3B MoE (inline tags, 30 tasks)
+
+```
+known_correct:     82% avg, 16x 100%, 28x 50%+, 0x 0%
+known_wrong:       64% avg, 10x 100%, 24x 50%+, 5x 0%
+uncertain_correct: 79% avg, 14x 100%, 27x 50%+, 0x 0%
 ```
