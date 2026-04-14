@@ -7,17 +7,10 @@
 
 Get nmem running with real data in under 5 minutes.
 
-> **Note**: nmem is not yet on PyPI. All install commands below use `pip install -e` from a local clone:
->
-> ```bash
-> git clone https://github.com/dayyanj/nmem.git
-> cd nmem
-> ```
-
 ## Option A: Zero-config demo (30 seconds)
 
 ```bash
-pip install -e ".[cli]"
+pip install nmem[cli]
 nmem demo
 ```
 
@@ -26,7 +19,7 @@ This uses SQLite (no Docker needed) and loads a built-in dataset showing 3 agent
 ## Option B: Import your Claude Code memories (2 minutes)
 
 ```bash
-pip install -e ".[cli,sqlite]"
+pip install nmem[cli,sqlite]
 nmem init --sqlite
 nmem import claude-code
 nmem search "your topic"
@@ -40,7 +33,7 @@ This imports your existing `~/.claude/` memory files into nmem. Each memory file
 ### 1. Start PostgreSQL + pgvector
 
 ```bash
-pip install -e ".[cli,postgres,st]"
+pip install nmem[cli,postgres,st]
 docker compose up -d
 ```
 

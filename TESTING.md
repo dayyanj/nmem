@@ -46,7 +46,7 @@ Run through this before each release:
 
 ### Zero-config path
 - [ ] `python -m venv /tmp/nmem-test && . /tmp/nmem-test/bin/activate`
-- [ ] `pip install -e ".[cli,sqlite]"`
+- [ ] `pip install nmem[cli,sqlite]`
 - [ ] `nmem --version`: prints version
 - [ ] `nmem demo`: runs full demo, shows search results + consolidation + prompt injection
 - [ ] `nmem stats`: shows tier counts

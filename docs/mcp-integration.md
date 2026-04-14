@@ -9,14 +9,10 @@ nmem ships an MCP (Model Context Protocol) server that lets Claude Code, Cursor,
 
 ## Setup
 
-> **Note**: nmem is not yet on PyPI. Clone and install from source:
-
 ### 1. Install nmem with MCP support
 
 ```bash
-git clone https://github.com/dayyanj/nmem.git
-cd nmem
-pip install -e ".[cli,postgres,st,mcp-server]"
+pip install nmem[cli,postgres,st,mcp-server]
 ```
 
 ### 2. Start the database

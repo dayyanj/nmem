@@ -3,14 +3,15 @@ nmem multi-agent example — shared memory across a team of agents.
 
 Demonstrates:
   - Multiple agents writing to their own journals
-  - Shared knowledge propagation
+  - Shared knowledge propagation (social learning)
   - Entity memory (collaborative workspace per customer)
   - Cross-tier search from any agent's perspective
   - Consolidation promoting learnings across the team
 
 Prerequisites:
-    pip install nmem[postgres,st]
+    pip install nmem[postgres,st,cli]
     docker compose up -d
+    nmem init
 
 Run:
     python examples/multi_agent.py
@@ -21,7 +22,7 @@ from nmem import MemorySystem, NmemConfig
 
 
 async def main():
-    mem = MemorySystem(NmemConfig(
+    mem = MemorySystem(NmemConfig.from_profile("neutral",
         database_url="postgresql+asyncpg://nmem:nmem@localhost:5433/nmem",
         embedding={"provider": "sentence-transformers"},
     ))

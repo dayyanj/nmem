@@ -1,9 +1,14 @@
 """
 nmem quickstart — minimal example showing core features.
 
-Prerequisites:
-    pip install nmem[postgres,st]
+Prerequisites (PostgreSQL):
+    pip install nmem[postgres,st,cli]
     docker compose up -d   # PostgreSQL + pgvector
+    nmem init
+
+Prerequisites (SQLite, no Docker needed):
+    pip install nmem[sqlite,st,cli]
+    nmem init --sqlite
 
 Run:
     python examples/quickstart.py
@@ -15,7 +20,8 @@ from nmem import MemorySystem, NmemConfig
 
 async def main():
     # Initialize with sentence-transformers (local, no API key needed)
-    mem = MemorySystem(NmemConfig(
+    # Switch to sqlite+aiosqlite:///nmem.db for SQLite
+    mem = MemorySystem(NmemConfig.from_profile("neutral",
         database_url="postgresql+asyncpg://nmem:nmem@localhost:5433/nmem",
         embedding={"provider": "sentence-transformers"},
         # Optional: wire an LLM for content compression + nightly synthesis

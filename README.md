@@ -152,14 +152,10 @@ nmem has been tested with **Claude Code** (Claude Sonnet 4.6) against a real-wor
 
 ## Quick Start
 
-> **Note**: nmem is not yet on PyPI. Install from source:
->
-> ```bash
-> git clone https://github.com/dayyanj/nmem.git
-> cd nmem
-> pip install -e ".[postgres,st]"
-> docker compose up -d  # PostgreSQL + pgvector
-> ```
+```bash
+pip install nmem[postgres,st]
+docker compose up -d  # PostgreSQL + pgvector
+```
 
 ```python
 from nmem import MemorySystem, NmemConfig
