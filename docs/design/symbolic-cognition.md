@@ -1,4 +1,4 @@
-# Symbolic Cognition: The Slow Brain
+# Symbolic Cognition: Associative Reasoning for AI Agents
 
 A design concept for associative reasoning over memory — the missing layer between storage and decision-making.
 
@@ -14,85 +14,135 @@ These aren't memory failures. The right facts were in nmem. The failure is in **
 
 No memory system will fix this. No LLM will reliably do this from unstructured context. The gap is structural.
 
-## The Human Analogy
+## The Three-Layer Model
 
-Consider two cognitive experiences:
+An LLM on its own is already a fast brain — it pattern-matches, generates fluent responses, and reasons from its training data. It's fast, confident, and sometimes wrong. Adding nmem gives it memory: stored experience that persists across sessions and agents. But memory alone doesn't explain how a brilliant diagnostician solves a case they've never seen before.
 
-**Fast:** "What's the capital of France?" → "Paris." Instant. No effort. This is what nmem does — retrieve a stored fact.
+The missing piece is **associative reasoning** — the ability to traverse connections between stored facts and construct novel explanations. This gives us three layers, each independently valuable, each making the layers above it more capable:
 
-**Slow:** You're watching a film and the lead actor looks familiar. You know you know them. You can almost see the other film they were in. You describe the shape of the knowledge — "older actor, Sundance, blonde in the 70s, worked with Newman" — but the name won't come. Two days later, completely out of context, you blurt out "Robert Redford."
+```
+┌─────────────────────────────────────────────────────────┐
+│                   Agent / Application                    │
+└──────────────────────┬──────────────────────────────────┘
+                       │
+    ┌──────────────────┼──────────────────────┐
+    │                  │                      │
+    ▼                  ▼                      ▼
+┌────────┐     ┌──────────────┐     ┌─────────────────┐
+│  LLM   │     │    nmem      │     │    Symbolic      │
+│        │     │   (Memory)   │     │   Cognition      │
+│ raw    │     │              │     │                  │
+│ intel- │     │  storage     │     │  graph           │
+│ ligence│     │  retrieval   │     │  traversal       │
+│        │     │  consolid.   │     │  hypothesis      │
+│        │     │  grounding   │     │  creativity      │
+└────────┘     └──────────────┘     └─────────────────┘
 
-What happened? Your brain didn't search harder. It **traversed an associative graph** — following links from "Sundance" to "festival" to "independent film" to "Redford" — but the traversal took time because the links were indirect. A random stimulus activated a node close enough to cascade to the answer.
+ Layer 1          Layer 2               Layer 3
+ Fast,            Augmented             Associative
+ confident,       memory,               reasoning,
+ sometimes        grounded,             honestly
+ wrong            reliable              speculative
+```
 
-Now consider a third experience:
+### Layer 1: Raw Intelligence (the LLM)
 
-**Creative:** A researcher studying two unrelated drugs notices that Drug A inhibits pathway X and Drug B activates pathway Y. Both pathways regulate protein Z. Nobody has combined them. The researcher thinks: "What if they neutralise each other's side effects while both targeting Z?" This isn't memory. It isn't pattern matching. It's **graph traversal over typed relationships** — connecting nodes that were never explicitly linked, generating a hypothesis that may be wrong but is worth testing.
+The LLM is the fast brain. It pattern-matches against training data, generates fluent responses, and reasons within its context window. It's System 1 in Kahneman's terms — fast, automatic, confidently wrong when it's wrong.
 
-Humans do this naturally. AI agents currently cannot.
+Every LLM already does this. No additional infrastructure needed.
 
-## Two Brains, Not One
+### Layer 2: Augmented Memory (nmem)
 
-Kahneman's "Thinking, Fast and Slow" provides the architecture:
+nmem gives the LLM persistent, grounded memory. Instead of starting every session fresh, the agent recalls past experiences, lessons, and policies. Belief revision catches stale knowledge. Consolidation promotes important patterns. Social learning transfers knowledge across agents.
 
-### System 1: The Fast Brain (nmem)
+This is still fast — search returns in milliseconds. But it's more reliable than the raw LLM because it's grounded in stored evidence, not training data.
 
-What it does today:
-- Store observations, lessons, policies
-- Consolidate: promote, deduplicate, revise beliefs, decay salience
-- Retrieve: hybrid search (vector + FTS), entity dossiers, knowledge links
-- Synthesise: nightly dreamstate detects patterns from journal activity
+### Layer 3: Associative Reasoning (symbolic cognition)
+
+This is the new layer. It doesn't store facts (that's nmem's job) and it doesn't generate language (that's the LLM's job). It **traverses connections between facts** and constructs hypotheses that neither the LLM nor nmem could produce alone.
 
 Characteristics:
-- **Fast.** Search returns in milliseconds. Consolidation runs in seconds.
-- **Cheap.** Mostly heuristic. LLM calls only for compression, dedup merge, synthesis.
-- **Reliable.** Grounded in stored evidence. Belief revision prevents stale knowledge.
-- **Limited.** Returns what's stored, not what's implied. Cannot infer novel connections.
+- **Slow.** Graph traversal, multi-hop reasoning. Seconds to minutes.
+- **Expensive.** LLM calls to evaluate candidate connections, score plausibility.
+- **Honestly speculative.** Generates hypotheses it knows might be wrong. Labels them as such.
+- **Creative.** The source of "what if" thinking — connecting dots that were never explicitly linked.
 
-### System 2: The Slow Brain (new)
+### Why "Honestly Speculative" Matters
 
-What it would do:
-- Maintain a **typed knowledge graph** of entities, relationships, and properties
-- Perform **spreading activation** — when one node is accessed, adjacent nodes light up
-- Generate **hypotheses** — "A relates to B because A→X→Y→B"
-- Score **novelty** — how surprising is this connection? Has anyone made it before?
-- Feed hypotheses back to the fast brain for **grounding** — does the evidence support this?
+The original design used Kahneman's System 1/System 2 framing. A fair critique pointed out that human System 2 is *more* reliable than System 1, but the proposed slow brain is *less* reliable. The analogy seemed to break.
 
-Characteristics:
-- **Slow.** Graph traversal, LLM-powered inference, multi-hop reasoning. Seconds to minutes.
-- **Expensive.** Requires LLM calls to evaluate candidate connections, score plausibility.
-- **Unreliable.** Generates hypotheses, not facts. Will hallucinate. That's the point.
-- **Creative.** The source of "what if" thinking, non-obvious connections, novel insights.
+But it doesn't break — it reveals something deeper about how reliability works across the layers:
+
+- **Layer 1 (LLM):** Fast, **confidently wrong.** When an LLM hallucinates, it does so with full authority. It doesn't flag uncertainty. It presents fabricated facts as if they were retrieved from a database.
+- **Layer 2 (nmem):** Fast, **grounded.** Returns stored evidence with provenance. Belief revision catches contradictions. When nmem says "the protocol changed on day 75," it's because an agent recorded that event.
+- **Layer 3 (symbolic):** Slow, **honestly speculative.** When it generates "Drug A + Drug B may interact because both affect Protein Z," it labels this as a hypothesis, not a fact. The hypothesis enters nmem with `grounding: speculative` and must survive belief revision before being trusted.
+
+The three layers form a trust gradient: raw confidence → grounded evidence → labelled speculation. Each layer is more careful than the last, not less.
+
+### The Diagnostician
+
+Consider a brilliant diagnostician with 20 years of experience. A patient presents with unusual symptoms. The diagnostician:
+
+1. **Pattern-matches** (Layer 1): "These symptoms look like Disease X." This is the LLM — fast, based on training, sometimes right.
+
+2. **Recalls** (Layer 2): "I saw a similar presentation three years ago. That patient had an unusual drug interaction." This is nmem — retrieving stored experience that the LLM's training data doesn't have.
+
+3. **Reasons** (Layer 3): The diagnostician prescribes Treatment A for Disease X. It should improve Symptom 3, but it doesn't. Symptom 5 disappears when it shouldn't have. Something doesn't add up.
+
+   Now the slow reasoning begins. The diagnostician traces associations:
+   - Treatment A → expected to improve Symptom 3 → but Symptom 3 persists → why?
+   - Symptom 5 → should be unaffected by Treatment A → but it resolved → what else could cause that?
+   - What if the patient has **two diseases**? Disease X explains Symptoms 1-3. But Disease B, running silently underneath, is **countering** some of Treatment A's expected effects while also resolving Symptom 5 through a different pathway.
+   - The combined presentation looks like a completely separate Disease C — but it's actually X + B interfering with each other.
+
+4. **Hypothesises and tests** (Layer 3 → Layer 2): "Two conflicting diseases." The diagnostician orders a test for Disease B. The result comes back positive. The hypothesis is grounded — it moves from speculative to confirmed in memory.
+
+This four-step process — observe, recall, traverse, hypothesise — is exactly the cycle between the three layers:
+
+```
+Step 1: LLM pattern-matches           → "looks like Disease X"
+Step 2: nmem recalls similar cases     → "I've seen this before"
+Step 3: Symbolic cognition traverses   → "what if two diseases are interacting?"
+        Treatment A ──expected_effect──► Symptom 3 improvement
+        Symptom 3 ──status──► persists ──why?──► unexpected_resistance
+        Treatment A ──NOT_expected──► Symptom 5 resolution
+        Symptom 5 ──resolved_by?──► unknown_mechanism
+        Graph traversal finds: Disease B ──inhibits──► Treatment A pathway
+                               Disease B ──treats──► Symptom 5 (side effect)
+        Hypothesis: Patient has Disease X + Disease B
+Step 4: nmem grounds the hypothesis    → test ordered, result confirms
+```
+
+No single layer could solve this case alone. The LLM doesn't have this patient's history. nmem has the history but can't reason over it. Symbolic cognition has the reasoning scaffold but needs nmem's evidence to ground its hypotheses. The three layers are complementary, not competitive.
 
 ### The Interaction
 
 ```
-        ┌─────────────────────────────────────┐
-        │         Agent / Application          │
-        └────────────┬────────────────────────┘
-                     │
-          ┌──────────┴──────────┐
-          ▼                     ▼
-   ┌─────────────┐     ┌──────────────┐
-   │  System 1   │     │   System 2   │
-   │  Fast Brain │◄───►│  Slow Brain  │
-   │   (nmem)    │     │  (symbolic)  │
-   │             │     │              │
-   │  storage    │     │  graph       │
-   │  retrieval  │     │  traversal   │
-   │  consolid.  │     │  hypothesis  │
-   │  grounding  │     │  creativity  │
-   └─────────────┘     └──────────────┘
-         │                     │
-         │   curiosity         │   hypotheses
-         │   signals ─────────►│   need grounding
-         │◄────────────────────│
-         │   evidence          │
-         │   for/against       │
+         ┌──────────────────────────────────────────┐
+         │           Agent / Application             │
+         └──────────────────┬───────────────────────┘
+                            │
+              ┌─────────────┼─────────────────┐
+              ▼             ▼                 ▼
+        ┌──────────┐  ┌──────────┐  ┌─────────────────┐
+        │   LLM    │  │   nmem   │  │    Symbolic      │
+        │          │  │ (memory) │  │   Cognition      │
+        │ pattern  │  │          │  │  (reasoning)     │
+        │ matching │  │ storage  │◄─┤                  │
+        │ language │  │ retrieval│  │ graph traversal  │
+        │ gen.     │  │ grounding│──►  hypothesis gen. │
+        └──────────┘  └──────────┘  └─────────────────┘
+                           │                 │
+                           │   curiosity     │  hypotheses
+                           │   signals ─────►│  need grounding
+                           │◄────────────────│
+                           │   evidence      │
+                           │   for/against   │
 ```
 
-The fast brain triggers the slow brain via **curiosity signals** — nmem already detects "this is interesting, I've seen something related" but currently those signals decay and die. In the two-brain architecture, curiosity signals wake System 2: "go think about this."
+nmem triggers symbolic cognition via **curiosity signals** — it detects "this is interesting, something doesn't match expectations" but currently those signals decay and die. In the three-layer architecture, curiosity signals wake the reasoning layer: "go think about this."
 
-The slow brain returns **hypotheses** to the fast brain for **grounding** — does the stored evidence support this inference? The fast brain's belief revision machinery evaluates: confirmed, disputed, or needs investigation.
+Symbolic cognition returns **hypotheses** to nmem for **grounding** — does the stored evidence support this inference? nmem's belief revision machinery evaluates: confirmed, disputed, or needs investigation. The agent never interacts with symbolic cognition directly — it's invisible, working behind nmem to enrich the context the LLM receives.
 
 ## The Symbol Graph
 
@@ -240,9 +290,9 @@ Even with threshold gating, the system needs a hard ceiling:
 
 This means the worst case is bounded and predictable: 50 nodes, 3 hops deep, under 100ms. The graph can grow to millions of nodes without affecting query-time performance.
 
-## When the Slow Brain Thinks
+## When the Reasoning Layer Activates
 
-System 2 doesn't run on every query. It activates under specific conditions:
+The symbolic cognition layer doesn't run on every query. It activates under specific conditions:
 
 ### Curiosity trigger
 
@@ -250,20 +300,21 @@ nmem's existing curiosity engine detects:
 - **Déjà vu:** "I've seen something like this before but in a different context"
 - **Novelty:** A new fact that doesn't fit existing patterns
 - **Conflict:** Two symbols connected by contradictory edges
+- **Expectation violation:** An outcome that contradicts what the graph predicted (like the diagnostician's Treatment A failing to improve Symptom 3)
 
-When curiosity fires, System 2 wakes up and traverses the graph from the triggering node.
+When curiosity fires, the reasoning layer wakes up and traverses the graph from the triggering node.
 
 ### Scheduled exploration
 
-During dreamstate (nightly consolidation), System 2 can:
+During its own dreamstate cycle (separate from nmem's nightly consolidation), the reasoning layer can:
 - Traverse under-explored regions of the graph
 - Look for **structural holes** — clusters of symbols that should be connected but aren't
 - Generate hypotheses about missing edges
 - Score and prune weak hypotheses from prior explorations
 
-### Explicit invocation
+### Hypnosis mode (direct invocation)
 
-The agent or application can ask System 2 directly: "What connections exist between [Drug A] and [Drug B]?" This triggers a targeted multi-hop traversal.
+A developer or diagnostic tool can query the graph explicitly: "What connections exist between [Drug A] and [Drug B]?" This bypasses the normal invisible operation for debugging, benchmarking, or edge cases that require forced deep reasoning. This is not part of the normal agent workflow — agents never know the reasoning layer exists.
 
 ## The Creativity Engine
 
@@ -295,29 +346,31 @@ The system doesn't need to be right most of the time. It needs to occasionally s
 
 ### Separate system, shared database
 
-The slow brain is not a layer inside nmem. It's a companion service:
+Symbolic cognition is not a layer inside nmem. It's a companion service — Layer 3 alongside Layer 2, not embedded within it:
 
 ```
-nmem (fast brain)
+Layer 1: LLM (any model — the agent's raw intelligence)
+
+Layer 2: nmem (memory)
   ├── Journal, LTM, Shared, Entity, Policy, Working  (existing tiers)
   ├── Knowledge Links (existing, flat associations)
-  ├── Curiosity Engine (existing, currently underused)
-  └── SymbolBridge API (new, sends signals to slow brain)
+  ├── Curiosity Engine (existing, signals → Layer 3)
+  └── SymbolBridge API (new, sends curiosity signals, receives hypotheses)
 
-symbolic-cognition (slow brain)
+Layer 3: symbolic-cognition (reasoning)
   ├── Symbol Graph (PostgreSQL + typed edges, or dedicated graph DB)
   ├── Activation Engine (spreading activation, multi-hop traversal)
   ├── Hypothesis Generator (LLM-powered inference over graph paths)
   ├── Novelty Scorer (how surprising is this connection?)
-  └── nmem Client (reads evidence, writes speculative entries)
+  └── nmem Client (reads evidence, writes speculative entries back to Layer 2)
 ```
 
 ### Why separate?
 
-1. **Different performance profiles.** The fast brain must be fast. Adding graph traversal to every search would slow it down.
-2. **Different reliability guarantees.** The fast brain is grounded. The slow brain speculates. Mixing them contaminates trust.
-3. **Different scaling.** The slow brain is compute-heavy (LLM calls for each hypothesis). It should scale independently.
-4. **Optional.** Not every nmem deployment needs creativity. The fast brain works alone (the healthcare benchmark proved this).
+1. **Different performance profiles.** Memory must be fast. Adding graph traversal to every search would slow it down.
+2. **Different trust levels.** Memory is grounded. Reasoning is speculative. Mixing them contaminates the trust gradient (confident → grounded → speculative).
+3. **Different scaling.** Reasoning is compute-heavy (LLM calls for each hypothesis). It should scale independently.
+4. **Optional.** Not every nmem deployment needs associative reasoning. Layer 2 works alone — the healthcare benchmark proved +7% improvement with memory alone. Layer 3 is for deployments that need the diagnostician's ability to construct novel explanations.
 
 ### Symbol extraction pipeline
 
