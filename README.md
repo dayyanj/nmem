@@ -132,6 +132,10 @@ Your Agent (LangChain / CrewAI / Plain Python)
 - **Framework adapters**: LangChain (`BaseMemory` compatible), CrewAI, or plain Python — `pip install nmem[langchain]`
 - **Pluggable providers**: bring your own LLM (OpenAI-compatible, Anthropic), embedding model (sentence-transformers, OpenAI), and database (PostgreSQL + pgvector, SQLite)
 
+## Companion packages
+
+- **[nmem-sym](https://github.com/dayyanj/nmem-sym)** — Symbolic cognition layer (Layer 3). Extracts a typed knowledge graph from nmem memory entries, then uses spreading activation to surface multi-hop connections the LLM cannot find from unstructured context. Features neural gating, graph plasticity (LTP/LTD), autonomous dreamstate exploration, and a crash-safe bridge to nmem's consolidation lifecycle. Improves cross-agent synthesis by +7% on the healthcare benchmark.
+
 ## Benchmarked
 
 Two benchmarks validate nmem across different scales and use cases. Full methodology and results: [docs/benchmarks/](docs/benchmarks/)
