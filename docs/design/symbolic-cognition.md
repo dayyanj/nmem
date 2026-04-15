@@ -154,6 +154,92 @@ Query: "metformin"
 
 The agent asking "is metformin safe?" now gets not just the recall notice but the full context: which patients are affected, what the replacement is, and the history of protocol changes. The LLM doesn't have to infer these connections — they're pre-computed.
 
+### Activation control: the neural gating model
+
+Naive spreading activation is dangerous — a hub node like [Hypertension] connects to thousands of patients, drugs, and protocols. Activating everything at 2 hops returns half the graph. Real neural networks solve this with gating mechanisms. The symbol graph must do the same.
+
+#### Threshold firing
+
+A neuron only fires when combined input exceeds a threshold. In the graph:
+
+- Each edge carries an **activation weight** (0.0–1.0), derived from the edge's salience, recency, and co-activation history.
+- A node accumulates incoming activation from all edges that reach it in the current traversal.
+- The node only **fires** (propagates to its own neighbours) if accumulated activation exceeds its **firing threshold**.
+- Hub nodes (high degree) have **higher thresholds** — they require stronger signals to activate. A weak query about "blood pressure" won't cascade through [Hypertension] to thousands of patients. A strong, specific query about "hypertension treatment protocol change March 2025" will.
+
+```
+Node: [Hypertension]
+  Incoming edges: 847
+  Firing threshold: 0.70 (auto-scaled by degree)
+
+Query: "metformin safety" → arrives via [treats] edge, weight 0.35
+  Accumulated: 0.35 < 0.70 → does NOT fire. Hypertension acknowledged but not traversed.
+
+Query: "hypertension protocol update" → arrives via [treats] + [protocol] edges, weight 0.45 + 0.40
+  Accumulated: 0.85 > 0.70 → FIRES. Traversal continues to protocol-related neighbours.
+```
+
+This prevents the combinatorial explosion the critique identified. Most paths die at hub nodes unless the signal is strong enough.
+
+#### Long-Term Potentiation / Depression (LTP/LTD)
+
+Connections that fire together strengthen. Connections that go unused weaken:
+
+- **LTP:** When a traversal path `A → B → C` produces a result that the agent actually uses (measured by whether the search result was included in the LLM's answer), the edge weights along that path increase. The path becomes easier to activate next time.
+- **LTD:** Edges that are traversed but produce unused results weaken over time. The graph self-prunes noisy connections without deleting them — they fade to archive threshold.
+- **Hebbian learning:** "Nodes that fire together wire together." When two nodes are consistently co-activated across different queries, a direct edge can be created between them even if they were originally connected only through intermediate nodes. This is how the graph learns shortcuts.
+
+```
+Day 1:   [Metformin] → [Type 2 Diabetes] → [Patient Tom]  (3 hops, weight 0.3)
+Day 30:  Same path activated 12 times, results used 8 times
+Day 31:  Edge weight strengthened to 0.7 — [Patient Tom] now fires easily from [Metformin]
+Day 60:  Hebbian shortcut created: [Metformin] ──relevant_patient──► [Patient Tom] (direct edge)
+```
+
+#### Myelination: fast paths
+
+In neuroscience, myelin sheaths insulate frequently-used axons, making signal transmission faster. In the graph:
+
+- Edges with high LTP scores (frequently used, results valued) get **myelinated** — marked as fast paths.
+- Myelinated edges are traversed first during activation, before exploring weaker connections.
+- This creates a natural priority ordering: well-established connections are explored quickly, speculative connections only when the fast paths don't yield results.
+- Myelinated paths can be cached in memory for sub-millisecond traversal.
+
+#### Pathway types
+
+Three activation patterns, modelled on neural pathway types:
+
+**Converging pathways:** Multiple weak signals combining to activate a single node. When several edges each carry sub-threshold activation, their sum can exceed the threshold. This allows the graph to detect patterns that no single connection reveals — exactly the cross-agent synthesis scenario where triage, pharmacy, and discharge each contribute a weak signal about [Patient Tom] that converges to a strong one.
+
+**Diverging pathways:** A single strong activation spreading to multiple targets. When a high-salience node fires, it activates several downstream paths simultaneously. This is useful for exploratory queries ("what do we know about diabetes?") where breadth matters. A **fan-out budget** limits how many downstream nodes can activate from a single source, preventing runaway cascading.
+
+**Reverberating pathways:** Feedback loops where activation cycles back through the same nodes. In neuroscience, these sustain attention and working memory (e.g., breathing rhythm). In the graph, they represent:
+- **Persistent curiosity:** A loop that keeps firing means the system keeps "thinking about" a topic. This is the trigger for System 2's deeper exploration.
+- **Rumination detection:** If a loop fires more than K times without producing new results, it's dampened. Endless cycling is wasteful, just like anxious rumination.
+
+#### Consolidation parallels
+
+The neuroscience of pathway formation maps directly to existing nmem consolidation:
+
+| Neural process | Graph equivalent |
+|---|---|
+| **Sleep consolidation** | Nightly dreamstate: replay the day's activations, strengthen productive paths, prune dead ends |
+| **Exercise / new experiences** | New events ingested: create new nodes and edges, expand the graph's reach |
+| **Repetition** | Repeated queries on same topics: LTP strengthens those paths |
+| **Environmental cues** | Curiosity signals: external triggers that activate dormant regions |
+| **Nutrition** | Data quality: better-extracted triples → cleaner graph → more reliable activation |
+
+#### Activation budget
+
+Even with threshold gating, the system needs a hard ceiling:
+
+- **Max activated nodes per query:** Configurable, default 50. Once 50 nodes have fired, traversal stops regardless of remaining paths.
+- **Max depth:** Default 3 hops. Deeper traversal only in explicit exploration mode.
+- **Time budget:** Default 100ms. Traversal terminates if time limit is reached, returning whatever has been activated so far.
+- **Diminishing activation:** Each hop reduces the signal by a decay factor (e.g., 0.6). By hop 3, a signal that started at 1.0 is at 0.216 — unlikely to exceed any threshold.
+
+This means the worst case is bounded and predictable: 50 nodes, 3 hops deep, under 100ms. The graph can grow to millions of nodes without affecting query-time performance.
+
 ## When the Slow Brain Thinks
 
 System 2 doesn't run on every query. It activates under specific conditions:
