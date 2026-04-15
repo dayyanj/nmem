@@ -279,19 +279,43 @@ Today: Search for vague descriptions returns weakly relevant results. The answer
 
 With symbols: Partial activation. "Sundance" activates [Sundance Film Festival] which activates [Robert Redford] via a `founded_by` edge. Even without the name, the graph finds it through association.
 
-## Open Questions
+## Design Decisions
 
-1. **Graph database choice.** PostgreSQL with a graph-like schema (nodes table + edges table + pgvector on nodes)? Or a dedicated graph DB (Neo4j, DGraph)? PostgreSQL keeps the stack simple and shares the existing nmem DB.
+1. **Graph database choice.** PostgreSQL may be too slow for multi-hop traversal at scale. Three candidates need evaluation:
 
-2. **Extraction model.** Can a 14B model extract triples reliably enough? Early tests with Qwen3-14B on clinical notes suggest yes for simple triples, but complex multi-hop relationships may need 30B+.
+   | Option | Strengths | Weaknesses |
+   |--------|-----------|------------|
+   | **PostgreSQL** (nodes + edges + pgvector) | Shared infra with nmem, no new dependency, familiar tooling, pgvector for node embeddings | Recursive CTEs for multi-hop are expensive, no native graph query language, join-heavy at depth 3+ |
+   | **Neo4j** | Purpose-built for graph traversal, Cypher query language, native multi-hop, mature ecosystem | Heavy dependency (JVM), separate deployment, data sync with nmem needed, overkill for small deployments |
+   | **DGraph** | Native GraphQL, distributed, fast traversal, Go-based (lighter than JVM) | Less mature ecosystem, another operational dependency, smaller community |
 
-3. **Graph size management.** The symbol graph will grow faster than nmem's memory tiers. Salience decay on nodes and edges is essential — unused corners of the graph should fade rather than accumulate noise.
+   Decision: **Evaluate all three with a prototype.** Start with PostgreSQL (simplest integration), benchmark multi-hop query latency at graph sizes of 10K, 50K, 100K nodes. If PostgreSQL handles 3-hop traversal under 100ms at 50K nodes, stay with it. If not, move to Neo4j (most mature graph option). The key metric is traversal latency, not storage — the graph is read-heavy during activation.
 
-4. **Hypothesis evaluation cost.** Each hypothesis requires an LLM call to score plausibility. With thousands of potential connections, budgeting is critical. The dreamstate budget model (max N calls per night) extends naturally.
+2. **Extraction model.** Target 14B for triple extraction. Complex multi-hop relationships may need 30B+ but this requires experimentation — start with 14B, measure extraction quality, escalate only if needed. The goal is to keep the slow brain runnable on the same consumer hardware as nmem.
 
-5. **Integration surface.** How does the agent interact with System 2? MCP tools? A separate API? Auto-enrichment of search results? All three, probably, with different latency profiles.
+3. **Graph size management.** Salience decay on nodes and edges, but faded nodes don't disappear — they move to an **archival tier**. The archival store maintains all nodes and edges but with reduced activation weight. Active graph stays fast and focused. Archived connections are still traversable but require more activation energy to reach — like the Robert Redford problem, where the answer surfaces eventually through indirect activation rather than direct search. Two tiers:
+   - **Active graph:** Recently activated, high-salience nodes. Fast traversal. In-memory cache candidate.
+   - **Archive:** Decayed nodes. Still linked. Reachable via deep traversal or explicit exploration. Reactivated if accessed (promotion back to active).
 
-6. **Evaluation.** The healthcare benchmark temporal reasoning and cross-agent questions become the test suite. If the slow brain improves those categories without regressing belief revision and direct recall, it's working.
+4. **Hypothesis evaluation cost.** The slow brain needs its own dreamstate cycle, separate from nmem's nightly consolidation. The hypothesis space grows combinatorially — logarithmic approaches are essential:
+   - **Log-scaled exploration budget:** As the graph grows, the number of hypotheses evaluated per cycle scales as O(log N) not O(N). Prioritise high-novelty, high-groundedness candidates.
+   - **Cascade filtering:** Cheap heuristic filters (edge type compatibility, hop distance, activation overlap) before expensive LLM plausibility scoring. Most candidates are eliminated without an LLM call.
+   - **Diminishing returns detection:** If a dreamstate cycle produces zero confirmed hypotheses for K consecutive runs, reduce the budget. Increase it again when new high-curiosity signals arrive.
+
+5. **Integration surface.** System 2 is an **invisible brain** — it is not directly accessible to agents or applications. The fast brain (nmem) decides when to invoke it based on curiosity signals, conflict detection, and dreamstate scheduling. The agent never knows System 2 exists; it just gets better search results when the slow brain has pre-computed relevant connections.
+
+   One exception: a **direct invocation API** ("hypnosis mode") allows developers and diagnostic tools to query the graph explicitly. This is for debugging, benchmarking, and edge cases where an application needs to force deep reasoning. It is not part of the normal agent workflow.
+
+   ```
+   Normal path:  Agent → nmem search → (System 2 enriches silently) → results
+   Hypnosis:     Developer → System 2 API → graph traversal → hypotheses
+   ```
+
+6. **Evaluation.** The healthcare benchmark temporal reasoning (-0.39) and cross-agent (-0.20) questions are the primary test suite. But evaluation should extend beyond fixing benchmark regressions:
+   - **Novel hypothesis quality:** Does the slow brain surface connections that neither agent nor developer anticipated? Measure with held-out scenarios not in the training data.
+   - **Creative inference:** Can it generate "Drug A + Drug B might treat Disease R" hypotheses? Measure against known drug interaction databases for precision.
+   - **Knowledge gap detection:** Does it identify structural holes in the graph — things the agents should know but don't? This becomes a proactive learning signal.
+   - **Transfer learning:** When a new agent joins, does the pre-computed graph give it a richer starting context than nmem's shared knowledge alone?
 
 ## Not In Scope
 
