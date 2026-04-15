@@ -342,6 +342,8 @@ class JournalTier:
         min_importance: int = 0,
         project_scope: str | None = ...,
         bump_access: bool = True,
+        recency_weight: float = 0.0,
+        recency_halflife_days: int = 30,
     ) -> list[JournalEntry]:
         """Search journal entries using hybrid vector + FTS search.
 
@@ -355,6 +357,8 @@ class JournalTier:
             entry_type: Filter by entry type.
             min_importance: Minimum importance threshold.
             project_scope: Scope filter. Sentinel (...) = use config default.
+            recency_weight: Weight for temporal recency boost (0.0 = disabled).
+            recency_halflife_days: Half-life for recency decay.
 
         Returns:
             List of JournalEntry objects, ranked by relevance.
@@ -389,6 +393,8 @@ class JournalTier:
             where_clause=" AND ".join(where_parts),
             params=params,
             top_k=top_k,
+            recency_weight=recency_weight,
+            recency_halflife_days=recency_halflife_days,
         )
 
         if not ranked:

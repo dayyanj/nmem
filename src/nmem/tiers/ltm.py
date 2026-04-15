@@ -298,6 +298,8 @@ class LTMTier:
         project_scope: str | None = ...,
         include_superseded: bool = False,
         bump_access: bool = True,
+        recency_weight: float = 0.0,
+        recency_halflife_days: int = 30,
     ) -> list[tuple[LTMEntry, float]]:
         """Search LTM using hybrid vector + FTS search.
 
@@ -313,6 +315,8 @@ class LTMTier:
             include_superseded: Audit hatch — when True, drops the
                 `status='validated'` filter and returns superseded rows
                 alongside winners. Default False excludes them.
+            recency_weight: Weight for temporal recency boost (0.0 = disabled).
+            recency_halflife_days: Half-life for recency decay.
 
         Returns:
             List of (LTMEntry, relevance_score) tuples, ranked by relevance.
@@ -344,6 +348,8 @@ class LTMTier:
             where_clause=" AND ".join(where_parts),
             params=params,
             top_k=top_k,
+            recency_weight=recency_weight,
+            recency_halflife_days=recency_halflife_days,
         )
 
         if not ranked:

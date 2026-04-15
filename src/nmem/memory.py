@@ -254,6 +254,9 @@ class MemorySystem:
         top_k: int = 10,
         project_scope: str | None = ...,
         bump_access: bool = True,
+        recency_weight: float = 0.0,
+        recency_halflife_days: int = 30,
+        all_agents: bool = False,
     ) -> list[SearchResult]:
         """Search across multiple memory tiers in parallel.
 
@@ -266,6 +269,13 @@ class MemorySystem:
                 str = specific scope + global, ... = use config default.
             bump_access: If True (default), increment access_count on returned
                 entries. Set False for read-only queries like briefings.
+            recency_weight: Weight for temporal recency boost (0.0 = disabled,
+                0.3 = strong recency preference). Entries are still ranked by
+                relevance but recent entries get a scoring boost.
+            recency_halflife_days: Half-life for recency decay in days.
+            all_agents: When True, search journal and LTM across ALL agents
+                instead of filtering to agent_id only. Results are balanced
+                to include entries from each agent.
 
         Returns:
             List of SearchResult objects, ranked by score.
@@ -287,6 +297,9 @@ class MemorySystem:
             project_scope=project_scope,
             bump_access=bump_access,
             embedder=self._embedding,
+            recency_weight=recency_weight,
+            recency_halflife_days=recency_halflife_days,
+            all_agents=all_agents,
         )
 
     # ── Priorities (importance-ranked, for planning not retrieval) ──────

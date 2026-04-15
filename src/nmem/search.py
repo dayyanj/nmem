@@ -2,7 +2,10 @@
 Cross-tier unified search engine.
 
 Searches across all memory tiers in parallel, merges and ranks results.
-Implements the hybrid search algorithm (60/40 vector/FTS weighting).
+Implements a hybrid search algorithm: vector similarity as the primary
+ranking signal with FTS (BM25) as an additive keyword boost. Optional
+recency weighting for temporal queries and all-agents mode for cross-agent
+synthesis.
 """
 
 from __future__ import annotations
@@ -556,6 +559,9 @@ async def cross_tier_search(
     project_scope: str | None = ...,
     bump_access: bool = True,
     embedder: Any = None,
+    recency_weight: float = 0.0,
+    recency_halflife_days: int = 30,
+    all_agents: bool = False,
 ) -> list[SearchResult]:
     """Search across multiple memory tiers in parallel.
 
@@ -575,6 +581,14 @@ async def cross_tier_search(
         top_k: Maximum total results.
         project_scope: Scope filter. Sentinel (...) = use tier config defaults.
         bump_access: Whether to increment access counters on matched entries.
+        embedder: Embedding provider for passage extraction.
+        recency_weight: Weight for temporal recency boost (0.0 = disabled,
+            0.3 = strong recency preference). Entries are still ranked by
+            relevance but recent entries get a scoring boost.
+        recency_halflife_days: Half-life for recency decay in days.
+        all_agents: When True, search journal and LTM across ALL agents
+            instead of filtering to agent_id only. Results are balanced
+            to include at least min_per_agent entries from each agent.
 
     Returns:
         List of SearchResult objects, ranked by score.
@@ -583,12 +597,39 @@ async def cross_tier_search(
     recog_config = config.recognition if config else None
     # Pass scope through as sentinel — each tier resolves its own config default
     scope_kwarg = {"project_scope": project_scope}
+    recency_kwarg = {
+        "recency_weight": recency_weight,
+        "recency_halflife_days": recency_halflife_days,
+    }
     tasks = []
 
     if "journal" in tiers:
-        tasks.append(_search_journal(agent_id, query, journal, recognition_config=recog_config, bump_access=bump_access, **scope_kwarg))
+        if all_agents:
+            # Search across all agents — discover agents from DB
+            tasks.append(_search_journal_all_agents(
+                query, journal,
+                recognition_config=recog_config, bump_access=bump_access,
+                **scope_kwarg, **recency_kwarg,
+            ))
+        else:
+            tasks.append(_search_journal(
+                agent_id, query, journal,
+                recognition_config=recog_config, bump_access=bump_access,
+                **scope_kwarg, **recency_kwarg,
+            ))
     if "ltm" in tiers:
-        tasks.append(_search_ltm(agent_id, query, ltm, recognition_config=recog_config, bump_access=bump_access, **scope_kwarg))
+        if all_agents:
+            tasks.append(_search_ltm_all_agents(
+                query, ltm,
+                recognition_config=recog_config, bump_access=bump_access,
+                **scope_kwarg, **recency_kwarg,
+            ))
+        else:
+            tasks.append(_search_ltm(
+                agent_id, query, ltm,
+                recognition_config=recog_config, bump_access=bump_access,
+                **scope_kwarg, **recency_kwarg,
+            ))
     if "shared" in tiers:
         tasks.append(_search_shared(query, shared, recognition_config=recog_config, **scope_kwarg))
     if "entity" in tiers:
@@ -603,8 +644,13 @@ async def cross_tier_search(
             continue
         all_results.extend(coro_result)
 
-    # Sort by score descending, take top_k
-    all_results.sort(key=lambda r: r.score, reverse=True)
+    # When all_agents is enabled, balance results across agents
+    if all_agents:
+        all_results = _balance_agent_results(all_results, top_k)
+    else:
+        # Sort by score descending, take top_k
+        all_results.sort(key=lambda r: r.score, reverse=True)
+
     top_results = all_results[:top_k]
 
     # Expand via knowledge links (surfaces related entries not in the direct results)
@@ -627,13 +673,67 @@ async def cross_tier_search(
     return top_results
 
 
+def _balance_agent_results(
+    results: list[SearchResult], top_k: int, min_per_agent: int = 2,
+) -> list[SearchResult]:
+    """Balance search results across agents.
+
+    Ensures each agent gets at least min_per_agent slots in the final
+    results, preventing dominant agents from crowding out others.
+    Remaining slots are filled by top scores regardless of agent.
+    """
+    from collections import defaultdict
+
+    by_agent: dict[str, list[SearchResult]] = defaultdict(list)
+    for r in results:
+        agent = r.agent_id or "unknown"
+        by_agent[agent].append(r)
+
+    # Sort each agent's results by score
+    for agent_results in by_agent.values():
+        agent_results.sort(key=lambda r: r.score, reverse=True)
+
+    balanced: list[SearchResult] = []
+    seen_ids: set[tuple[str, int]] = set()
+
+    # Phase 1: guarantee min_per_agent from each agent
+    for agent, agent_results in by_agent.items():
+        for r in agent_results[:min_per_agent]:
+            key = (r.tier, r.id)
+            if key not in seen_ids:
+                balanced.append(r)
+                seen_ids.add(key)
+
+    # Phase 2: fill remaining slots with top scores across all agents
+    remaining = top_k - len(balanced)
+    if remaining > 0:
+        all_sorted = sorted(results, key=lambda r: r.score, reverse=True)
+        for r in all_sorted:
+            key = (r.tier, r.id)
+            if key not in seen_ids:
+                balanced.append(r)
+                seen_ids.add(key)
+                if len(balanced) >= top_k:
+                    break
+
+    # Final sort by score
+    balanced.sort(key=lambda r: r.score, reverse=True)
+    return balanced
+
+
 async def _search_journal(
     agent_id: str, query: str, tier: JournalTier,
     *, project_scope: str | None = ...,
     recognition_config: RecognitionConfig | None = None,
     bump_access: bool = True,
+    recency_weight: float = 0.0,
+    recency_halflife_days: int = 30,
 ) -> list[SearchResult]:
-    entries = await tier.search(agent_id, query, top_k=5, project_scope=project_scope, bump_access=bump_access)
+    entries = await tier.search(
+        agent_id, query, top_k=5, project_scope=project_scope,
+        bump_access=bump_access, recency_weight=recency_weight,
+        recency_halflife_days=recency_halflife_days,
+    )
     results: list[SearchResult] = []
     for e in entries:
         meta: dict[str, Any] = {
@@ -667,8 +767,14 @@ async def _search_ltm(
     *, project_scope: str | None = ...,
     recognition_config: RecognitionConfig | None = None,
     bump_access: bool = True,
+    recency_weight: float = 0.0,
+    recency_halflife_days: int = 30,
 ) -> list[SearchResult]:
-    ranked_entries = await tier.search(agent_id, query, top_k=5, project_scope=project_scope, bump_access=bump_access)
+    ranked_entries = await tier.search(
+        agent_id, query, top_k=5, project_scope=project_scope,
+        bump_access=bump_access, recency_weight=recency_weight,
+        recency_halflife_days=recency_halflife_days,
+    )
     results: list[SearchResult] = []
     for e, relevance in ranked_entries:
         meta: dict[str, Any] = {
@@ -797,3 +903,176 @@ async def _search_policy(
         )
         for entry, score in raw_results
     ]
+
+
+# ── All-Agents Search Variants ──────────────────────────────────────────────
+
+
+async def _search_journal_all_agents(
+    query: str, tier: JournalTier,
+    *, project_scope: str | None = ...,
+    recognition_config: RecognitionConfig | None = None,
+    bump_access: bool = True,
+    recency_weight: float = 0.0,
+    recency_halflife_days: int = 30,
+) -> list[SearchResult]:
+    """Search journal across ALL agents by removing the agent_id filter.
+
+    Uses hybrid_memory_search directly with a relaxed WHERE clause.
+    """
+    if project_scope is ...:
+        project_scope = tier._config.project_scope
+
+    query_embedding = await asyncio.to_thread(tier._embedding.embed, query)
+
+    where_parts = [
+        "promoted_to_ltm = FALSE",
+        "importance >= 0",
+    ]
+    params: dict = {}
+    if project_scope == "*":
+        pass
+    elif project_scope is not None:
+        where_parts.append("(project_scope = :project_scope OR project_scope IS NULL)")
+        params["project_scope"] = project_scope
+
+    ranked = await hybrid_memory_search(
+        db=tier._db,
+        table="nmem_journal_entries",
+        query_embedding=query_embedding,
+        query_text=query,
+        where_clause=" AND ".join(where_parts),
+        params=params,
+        top_k=15,  # Wider net for cross-agent
+        recency_weight=recency_weight,
+        recency_halflife_days=recency_halflife_days,
+    )
+
+    if not ranked:
+        return []
+
+    ranked_ids = [r[0] for r in ranked]
+    scores = {r[0]: r[1] for r in ranked}
+
+    from sqlalchemy import select as sa_select
+    from nmem.db.models import JournalEntryModel
+
+    async with tier._db.session() as session:
+        result = await session.execute(
+            sa_select(JournalEntryModel).where(JournalEntryModel.id.in_(ranked_ids))
+        )
+        entries_by_id = {e.id: e for e in result.scalars().all()}
+
+    results: list[SearchResult] = []
+    for eid in ranked_ids:
+        e = entries_by_id.get(eid)
+        if not e:
+            continue
+        meta: dict[str, Any] = {
+            "entry_type": e.entry_type,
+            "record_type": e.record_type,
+            "grounding": e.grounding,
+            "access_count": e.access_count,
+            "importance": e.importance,
+        }
+        if recognition_config:
+            level, r_score, reasons = compute_recognition(meta, recognition_config)
+        else:
+            level, r_score, reasons = "UNCERTAIN", 0.0, []
+        results.append(SearchResult(
+            tier="journal",
+            id=e.id,
+            score=scores.get(eid, 0.0),
+            content=e.content,
+            title=e.title,
+            agent_id=e.agent_id,
+            metadata=meta,
+            recognition=level,
+            recognition_score=r_score,
+            recognition_reasons=tuple(reasons),
+        ))
+    return results
+
+
+async def _search_ltm_all_agents(
+    query: str, tier: LTMTier,
+    *, project_scope: str | None = ...,
+    recognition_config: RecognitionConfig | None = None,
+    bump_access: bool = True,
+    recency_weight: float = 0.0,
+    recency_halflife_days: int = 30,
+) -> list[SearchResult]:
+    """Search LTM across ALL agents by removing the agent_id filter.
+
+    Uses hybrid_memory_search directly with a relaxed WHERE clause.
+    """
+    if project_scope is ...:
+        project_scope = tier._config.project_scope
+
+    query_embedding = await asyncio.to_thread(tier._embedding.embed, query)
+
+    where_parts = ["status = 'validated'"]
+    params: dict = {}
+    if project_scope == "*":
+        pass
+    elif project_scope is not None:
+        where_parts.append("(project_scope = :project_scope OR project_scope IS NULL)")
+        params["project_scope"] = project_scope
+
+    ranked = await hybrid_memory_search(
+        db=tier._db,
+        table="nmem_long_term_memory",
+        query_embedding=query_embedding,
+        query_text=query,
+        where_clause=" AND ".join(where_parts),
+        params=params,
+        top_k=15,  # Wider net for cross-agent
+        recency_weight=recency_weight,
+        recency_halflife_days=recency_halflife_days,
+    )
+
+    if not ranked:
+        return []
+
+    score_by_id = {r[0]: r[1] for r in ranked}
+    ranked_ids = [r[0] for r in ranked]
+
+    from sqlalchemy import select as sa_select
+    from nmem.db.models import LTMModel
+
+    async with tier._db.session() as session:
+        result = await session.execute(
+            sa_select(LTMModel).where(LTMModel.id.in_(ranked_ids))
+        )
+        entries_by_id = {e.id: e for e in result.scalars().all()}
+
+    results: list[SearchResult] = []
+    for eid in ranked_ids:
+        e = entries_by_id.get(eid)
+        if not e:
+            continue
+        meta: dict[str, Any] = {
+            "category": e.category,
+            "salience": e.salience,
+            "importance": e.importance,
+            "grounding": e.grounding,
+            "access_count": e.access_count,
+            "record_type": e.record_type,
+        }
+        if recognition_config:
+            level, r_score, reasons = compute_recognition(meta, recognition_config)
+        else:
+            level, r_score, reasons = "UNCERTAIN", 0.0, []
+        results.append(SearchResult(
+            tier="ltm",
+            id=e.id,
+            score=score_by_id.get(eid, 0.5),
+            content=e.content,
+            key=e.key,
+            agent_id=e.agent_id,
+            metadata=meta,
+            recognition=level,
+            recognition_score=r_score,
+            recognition_reasons=tuple(reasons),
+        ))
+    return results
