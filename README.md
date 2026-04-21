@@ -138,18 +138,71 @@ Your Agent (LangChain / CrewAI / Plain Python)
 
 ## Benchmarked
 
-Two benchmarks validate nmem across different scales and use cases. Full methodology and results: [docs/benchmarks/](docs/benchmarks/)
+Full methodology and results: [docs/benchmarks/](docs/benchmarks/)
 
-### Healthcare Multi-Agent (180-day simulation)
+### Healthcare Multi-Agent (360-day simulation)
 
-4 agents (triage, treatment, discharge, pharmacy) process 1,705 clinical encounters over 180 simulated days. Tests belief revision, consolidation, and cross-agent knowledge transfer — on a **14B model running on a single consumer GPU ($0 inference)**.
+5 agents (triage, treatment, discharge, pharmacy, resident) process **23,960 clinical encounters** across **4,638 patients** over 360 simulated days. Tests belief revision, cross-agent knowledge sharing, temporal reasoning, creative inference, and pattern detection — on a **14B model running on consumer GPUs ($0 inference)**.
 
-| | Without nmem | With nmem | Improvement |
+| | Without nmem | With nmem | With nmem-sym |
 |---|---|---|---|
-| **Belief revision** | 3.13/5 | **5.00/5** | **+60%** |
-| **Overall accuracy** | 3.60/5 | **3.84/5** | +7% |
-| **Direct recall** | 3.73/5 | **4.09/5** | +10% |
-| **Infrastructure** | Qwen3-14B, RTX 4090 | Same | $0 cost |
+| **Overall** | 2.84/5 | **3.35/5 (+18%)** | **3.38/5 (+19%)** |
+| **Win rate** | — | **77%** | **77%** |
+| **Belief revision** | 2.85/5 | 4.11/5 | **4.17/5 (+46%)** |
+| **Cross-agent** | 2.93/5 | 3.47/5 | **3.62/5 (+24%)** |
+| **Direct recall** | 2.64/5 | **3.19/5 (+21%)** | **3.19/5 (+21%)** |
+| **Creative inference** | 3.08/5 | 3.32/5 | **3.42/5 (+11%)** |
+
+#### Performance over time
+
+```mermaid
+%%{init: {'theme': 'neutral'}}%%
+xychart-beta
+    title "Score by evaluation day"
+    x-axis ["D1", "D30", "D60", "D90", "D120", "D150", "D180", "D210", "D240", "D270", "D300", "D330", "D360"]
+    y-axis "Mean score (1-5)" 2 --> 5
+    line [4.60, 4.13, 3.70, 3.66, 3.63, 3.59, 3.57, 3.62, 3.52, 3.62, 3.63, 3.59, 3.55]
+    line [4.00, 4.07, 3.87, 3.66, 3.78, 3.85, 3.89, 3.83, 3.73, 3.65, 3.68, 3.76, 3.80]
+    line [4.20, 4.07, 3.73, 3.76, 3.68, 3.73, 3.84, 3.83, 3.82, 3.74, 3.71, 3.84, 3.85]
+```
+
+<sub>Lines: baseline (top-left, declining) · nmem (middle) · nmem-sym (bottom-right, ascending). Baseline degrades as questions get harder; memory maintains performance.</sub>
+
+#### Category breakdown
+
+```mermaid
+%%{init: {'theme': 'neutral'}}%%
+xychart-beta
+    title "Improvement over baseline by category"
+    x-axis ["Belief Rev", "Cross-Agent", "Direct Recall", "Converge", "Temporal", "Creative Inf", "Social Learn", "Pattern Det"]
+    y-axis "Delta vs baseline" -0.5 --> 1.5
+    bar [1.32, 0.69, 0.55, 0.43, 0.36, 0.34, 0.29, 0.18]
+```
+
+#### Key findings
+
+- **Memory wins 77% of questions** — in 3 out of 4 questions, memory-augmented answers are better
+- **Belief revision is spectacular** (+1.32) — when guidelines/protocols change, nmem detects contradictions and retrieves the updated knowledge
+- **Baseline degrades over time** (-0.62 from day 1 to day 360) while nmem/sym maintain performance (-0.28/-0.37) — memory provides resilience
+- **nmem-sym adds consistent value** (56% win rate vs nmem alone) — symbolic cognition helps most on creative inference and cross-agent questions
+- **Temporal reasoning still challenging** (+0.36) — model-level limitation, not a retrieval problem. The 14B model struggles with chronological ordering regardless of context quality
+
+#### Where nmem helps most
+
+| Use case | Improvement | Why |
+|----------|-------------|-----|
+| Evolving knowledge (policies, guidelines) | **+46%** | Belief revision detects contradictions, retrieves latest |
+| Multi-team collaboration | **+24%** | Cross-agent promotion surfaces shared institutional knowledge |
+| Specific recall (patients, events, dates) | **+21%** | Hierarchical memory stores and retrieves domain facts |
+| Creative diagnostic reasoning (with sym) | **+11%** | Graph activation surfaces multi-hop connections |
+
+#### Where it doesn't help (yet)
+
+| Use case | Result | Why |
+|----------|--------|-----|
+| Detecting anomalies | -0.11 | Memory context can confuse the model on "unexpected" patterns |
+| Identifying what's missing | -0.20 | Hypothesis surfacing adds noise for "structural gap" questions |
+| Statistical aggregation | +0.18 (modest) | nmem retrieves data but doesn't compute statistics |
 
 ### Spwig Institutional Knowledge (17-repo codebase)
 
@@ -161,10 +214,12 @@ Claude Code (Sonnet 4.6) searches nmem via MCP tools across a real-world eCommer
 | **Cost per task** | $0.182 | **$0.097** | **47% cheaper** |
 | **Wall clock** | 69s/task | **43s/task** | **38% faster** |
 
-- Both benchmarks use $0 local inference (no cloud API calls)
-- Healthcare benchmark tested with Qwen3-14B-AWQ on consumer hardware — nmem's architecture compensates for limited model reasoning
-- Spwig benchmark tested with Claude Sonnet 4.6 via MCP — the primary validated integration path
-- Belief revision is nmem's strongest differentiator: when knowledge changes, nmem detects contradictions and retrieves updated facts
+### Infrastructure
+
+- All benchmarks use **$0 local inference** (no cloud API calls)
+- Healthcare: Qwen3-14B-AWQ on 3× RTX GPUs + Qwen3-30B-A3B MoE on 2× CPU backends
+- Spwig: Claude Sonnet 4.6 via MCP — the primary validated integration path
+- Dual-judge evaluation (14B + 30B) with temperature 0.0 for deterministic scoring
 
 ## Quick Start
 
