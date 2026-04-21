@@ -102,6 +102,7 @@ class MemorySystem:
         self._journal._on_event = self._emit
         self._ltm._on_event = self._emit
         self._shared._on_event = self._emit
+        self._consolidator._on_event = self._emit
 
     # ── Properties ───────────────────────────────────────────────────────
 
@@ -282,7 +283,7 @@ class MemorySystem:
         """
         from nmem.search import cross_tier_search
 
-        return await cross_tier_search(
+        results = await cross_tier_search(
             agent_id=agent_id,
             query=query,
             journal=self._journal,
@@ -301,6 +302,16 @@ class MemorySystem:
             recency_halflife_days=recency_halflife_days,
             all_agents=all_agents,
         )
+        await self._emit("search.executed", {
+            "agent_id": agent_id,
+            "query": query,
+            "result_count": len(results),
+            "tiers": list(tiers) if tiers else ["journal", "ltm", "shared", "entity", "policy"],
+            "result_ids": [
+                {"tier": r.tier, "id": r.id} for r in results[:20]
+            ],
+        })
+        return results
 
     # ── Priorities (importance-ranked, for planning not retrieval) ──────
 

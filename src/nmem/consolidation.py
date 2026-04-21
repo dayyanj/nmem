@@ -26,11 +26,13 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Callable, Awaitable
 
 from sqlalchemy import or_, select, func, text as sa_text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from nmem.db.models import (
     JournalEntryModel,
     LTMModel,
     MemoryConflictModel,
+    NmemMetadata,
     SharedKnowledgeModel,
     CuriositySignalModel,
 )
@@ -156,6 +158,10 @@ class Consolidator:
         # Knowledge link engine (set by MemorySystem)
         self._link_engine = None
 
+        # Event emission callback (wired by MemorySystem)
+        # Called as `await self._on_event(event_name, data)` when present.
+        self._on_event: Callable[..., Awaitable[None]] | None = None
+
         # Custom consolidation hooks
         self._full_cycle_hooks: list[tuple[str, Callable[[], Awaitable[None]]]] = []
         self._nightly_hooks: list[tuple[str, Callable[[], Awaitable[None]]]] = []
@@ -166,6 +172,7 @@ class Consolidator:
 
         # Timing
         self._last_full_cycle: datetime | None = None
+        self._last_full_cycle_loaded = False  # lazy-load from DB on first use
         self._last_micro: float = -(60 * 60)  # Ensure first micro-cycle always runs
         self._last_synthesis_date: object = None  # date object
 
@@ -208,46 +215,111 @@ class Consolidator:
             self._task = None
         logger.info("Consolidator stopped")
 
+    # ── Persistent state ────────────────────────────────────────────────
+
+    _LAST_CYCLE_KEY = "consolidation_last_full_cycle"
+
+    async def _load_last_full_cycle(self) -> None:
+        """Load _last_full_cycle from the metadata table (once)."""
+        if self._last_full_cycle_loaded:
+            return
+        self._last_full_cycle_loaded = True
+        try:
+            async with self._db.session() as session:
+                result = await session.execute(
+                    select(NmemMetadata).where(
+                        NmemMetadata.key == self._LAST_CYCLE_KEY
+                    )
+                )
+                row = result.scalar_one_or_none()
+                if row and row.value:
+                    self._last_full_cycle = datetime.fromisoformat(row.value)
+                    logger.debug(
+                        "Loaded last_full_cycle from DB: %s",
+                        self._last_full_cycle,
+                    )
+        except Exception as e:
+            logger.debug("Could not load last_full_cycle: %s", e)
+
+    async def _persist_last_full_cycle(self, ts: datetime) -> None:
+        """Persist _last_full_cycle to the metadata table."""
+        try:
+            async with self._db.session() as session:
+                result = await session.execute(
+                    select(NmemMetadata).where(
+                        NmemMetadata.key == self._LAST_CYCLE_KEY
+                    )
+                )
+                row = result.scalar_one_or_none()
+                if row:
+                    row.value = ts.isoformat()
+                else:
+                    session.add(NmemMetadata(
+                        key=self._LAST_CYCLE_KEY,
+                        value=ts.isoformat(),
+                    ))
+        except Exception as e:
+            logger.debug("Could not persist last_full_cycle: %s", e)
+
     # ── Full Cycle ───────────────────────────────────────────────────────
 
     async def run_full_cycle(self) -> ConsolidationStats:
         """Run a full consolidation cycle."""
+        await self._load_last_full_cycle()
         start = time.monotonic()
         stats = ConsolidationStats()
         logger.info("Starting full consolidation cycle")
+
+        def _step_time(label, t0):
+            elapsed = time.monotonic() - t0
+            if elapsed >= 1.0:
+                logger.info("  [step-timing] %s: %.1fs", label, elapsed)
+            return time.monotonic()
+
+        t = time.monotonic()
 
         # Step 1: Archive expired journal entries to LTM
         # Nothing is deleted — all expired entries flow to the cold tier.
         archived, _ = await self._decay_expired_entries()
         stats.expired_deleted = 0       # nothing is ever deleted
         stats.expired_promoted = archived  # all expired entries → LTM
+        t = _step_time("1_expire_promote", t)
 
         # Step 2: Promote high-importance journal entries to LTM
         stats.promoted_to_ltm = await self._promote_important_entries()
+        t = _step_time("2_importance_promote", t)
 
         # Step 3: Promote cross-agent LTM entries to shared knowledge
         stats.promoted_to_shared = await self._promote_ltm_to_shared()
+        t = _step_time("3_ltm_to_shared", t)
 
         # Step 4: Deduplicate similar LTM entries
         stats.duplicates_merged = await self._dedup_similar_memories()
+        t = _step_time("4_dedup", t)
 
         # Step 5: Auto-importance rescoring (heuristic, respects auto_importance flag)
         stats.auto_importance_rescored = await self._score_auto_importance()
+        t = _step_time("5_rescore", t)
 
         # Step 6: Belief revision — resolve pending conflict rows
         auto_resolved, needs_review = await self._resolve_conflicts()
         stats.conflicts_auto_resolved = auto_resolved
         stats.conflicts_needs_review = needs_review
+        t = _step_time("6_belief_revision", t)
 
         # Step 7: Salience decay on stale LTM
         stats.salience_decayed = await self._update_salience_scores()
+        t = _step_time("7_salience_decay", t)
 
         # Step 8: Custom hooks
         for name, fn in self._full_cycle_hooks:
             try:
+                t_hook = time.monotonic()
                 await fn()
+                _step_time(f"8_hook_{name}", t_hook)
             except Exception as e:
                 logger.warning("Custom consolidation step '%s' failed: %s", name, e)
+        t = time.monotonic()
 
         # Step 9: Build knowledge links
         if self._link_engine:
@@ -255,12 +327,14 @@ class Consolidator:
                 stats.links_created = await self._link_engine.build_links()
             except Exception as e:
                 logger.warning("Knowledge link building failed: %s", e)
+        t = _step_time("9_knowledge_links", t)
 
         # Step 10: Curiosity signal decay
         stats.curiosity_decayed = await self._decay_curiosity_signals()
 
         stats.duration_seconds = time.monotonic() - start
         self._last_full_cycle = datetime.utcnow()
+        await self._persist_last_full_cycle(self._last_full_cycle)
         logger.info(
             "Full consolidation completed in %.1fs: expired_del=%d, expired_promo=%d, "
             "promoted_ltm=%d, promoted_shared=%d, deduped=%d, rescored=%d, "
@@ -383,7 +457,12 @@ class Consolidator:
             if total_entries < min_entries:
                 logger.debug("Nightly synthesis skipped: only %d entries (need %d)",
                              total_entries, min_entries)
-                return stats
+                # Fall through to nightly hooks — they run independently of
+                # synthesis success (previously we returned here, silently
+                # skipping registered hooks).
+                skip_synthesis = True
+            else:
+                skip_synthesis = False
 
             # Get top high-importance entries for context
             result = await session.execute(
@@ -400,90 +479,90 @@ class Consolidator:
             )
             top_entries = result.all()
 
-        # Build synthesis prompt
-        summary_lines = [f"Total entries: {total_entries}"]
-        for agent_id, entry_type, count in grouped:
-            summary_lines.append(f"  {agent_id}/{entry_type}: {count}")
+        if not skip_synthesis:
+            # Build synthesis prompt
+            summary_lines = [f"Total entries: {total_entries}"]
+            for agent_id, entry_type, count in grouped:
+                summary_lines.append(f"  {agent_id}/{entry_type}: {count}")
 
-        entry_lines = [
-            f"  [{imp}] {aid}/{etype}: {title}"
-            for aid, etype, title, imp in top_entries
-        ]
+            entry_lines = [
+                f"  [{imp}] {aid}/{etype}: {title}"
+                for aid, etype, title, imp in top_entries
+            ]
 
-        context = (
-            "ACTIVITY SUMMARY (last 24h):\n" + "\n".join(summary_lines) +
-            "\n\nTOP ENTRIES:\n" + "\n".join(entry_lines)
-        )
-
-        system_prompt = (
-            "You are analyzing today's operational activity across a multi-agent "
-            "system. Identify 2-3 actionable patterns or trends.\n\n"
-            "For each pattern:\n"
-            "- What you observe (be specific, cite numbers)\n"
-            "- Why it matters\n"
-            "- What should change\n\n"
-            'Respond as JSON: {"patterns": [{"observation": "...", '
-            '"significance": "...", "recommendation": "..."}]}'
-        )
-
-        try:
-            result = await self._llm.complete_json(
-                system_prompt, context,
-                max_tokens=self._config.llm.synthesis_max_tokens,
-                temperature=0.3, timeout=30.0,
+            context = (
+                "ACTIVITY SUMMARY (last 24h):\n" + "\n".join(summary_lines) +
+                "\n\nTOP ENTRIES:\n" + "\n".join(entry_lines)
             )
 
-            # Record LLM usage for token trends
-            from nmem.token_stats import record_llm_usage
-            await record_llm_usage(
-                self._db, "synthesis",
-                self._config.llm.synthesis_max_tokens,
+            system_prompt = (
+                "You are analyzing today's operational activity across a multi-agent "
+                "system. Identify 2-3 actionable patterns or trends.\n\n"
+                "For each pattern:\n"
+                "- What you observe (be specific, cite numbers)\n"
+                "- Why it matters\n"
+                "- What should change\n\n"
+                'Respond as JSON: {"patterns": [{"observation": "...", '
+                '"significance": "...", "recommendation": "..."}]}'
             )
 
-            if not result or not isinstance(result, dict) or not result.get("patterns"):
-                logger.debug("Synthesis produced no patterns")
-                return stats
-
-            # Save patterns as shared knowledge
-            from nmem.search import populate_tsvector
-
-            patterns = result["patterns"][:3]
-            for i, pattern in enumerate(patterns):
-                obs = pattern.get("observation", "")
-                sig = pattern.get("significance", "")
-                rec = pattern.get("recommendation", "")
-                if not obs:
-                    continue
-
-                content = f"Pattern: {obs}\nSignificance: {sig}\nRecommendation: {rec}"
-                key = f"daily_synthesis_{datetime.utcnow().strftime('%Y%m%d')}_{i + 1}"
-                emb = await asyncio.to_thread(
-                    self._embedding.embed, f"{obs} {sig}"[:500]
+            try:
+                result = await self._llm.complete_json(
+                    system_prompt, context,
+                    max_tokens=self._config.llm.synthesis_max_tokens,
+                    temperature=0.3, timeout=30.0,
                 )
 
-                async with self._db.session() as session:
-                    record = SharedKnowledgeModel(
-                        key=key, content=content, category="daily_synthesis",
-                        created_by="consolidator", last_updated_by="consolidator",
-                        importance=7, embedding=emb,
-                    )
-                    session.add(record)
-                    await session.flush()
-                    await populate_tsvector(
-                        self._db, "nmem_shared_knowledge", record.id,
-                        f"{key} {content[:2000]}",
-                    )
+                # Record LLM usage for token trends
+                from nmem.token_stats import record_llm_usage
+                await record_llm_usage(
+                    self._db, "synthesis",
+                    self._config.llm.synthesis_max_tokens,
+                )
 
-                stats.patterns_synthesized += 1
+                if not result or not isinstance(result, dict) or not result.get("patterns"):
+                    logger.debug("Synthesis produced no patterns")
+                else:
+                    # Save patterns as shared knowledge
+                    from nmem.search import populate_tsvector
 
-            # Retroactive significance: boost journal entries that contributed
-            await self._retroactive_boost(patterns, since)
+                    patterns = result["patterns"][:3]
+                    for i, pattern in enumerate(patterns):
+                        obs = pattern.get("observation", "")
+                        sig = pattern.get("significance", "")
+                        rec = pattern.get("recommendation", "")
+                        if not obs:
+                            continue
 
-            logger.info("Nightly synthesis: %d patterns from %d entries",
-                        stats.patterns_synthesized, total_entries)
+                        content = f"Pattern: {obs}\nSignificance: {sig}\nRecommendation: {rec}"
+                        key = f"daily_synthesis_{datetime.utcnow().strftime('%Y%m%d')}_{i + 1}"
+                        emb = await asyncio.to_thread(
+                            self._embedding.embed, f"{obs} {sig}"[:500]
+                        )
 
-        except Exception as e:
-            logger.error("Nightly synthesis failed: %s", e)
+                        async with self._db.session() as session:
+                            record = SharedKnowledgeModel(
+                                key=key, content=content, category="daily_synthesis",
+                                created_by="consolidator", last_updated_by="consolidator",
+                                importance=7, embedding=emb,
+                            )
+                            session.add(record)
+                            await session.flush()
+                            await populate_tsvector(
+                                self._db, "nmem_shared_knowledge", record.id,
+                                f"{key} {content[:2000]}",
+                            )
+
+                        stats.patterns_synthesized += 1
+
+                    # Retroactive significance: boost journal entries that contributed
+                    await self._retroactive_boost(patterns, since)
+
+                    logger.info("Nightly synthesis: %d patterns from %d entries",
+                                stats.patterns_synthesized, total_entries)
+
+            except Exception as e:
+                logger.error("Nightly synthesis failed: %s", e)
 
         # Custom nightly hooks
         for name, fn in self._nightly_hooks:
@@ -533,9 +612,15 @@ class Consolidator:
             )
             expired = result.scalars().all()
 
-            for entry in expired:
-                await self._promote_entry(entry)
-                archived += 1
+            # Batch-promote in parallel (3 at a time to match GPU pool).
+            # Each _promote_entry uses its own DB session so concurrent
+            # execution is safe.  LLM compression calls round-robin across
+            # backends, giving ~3× throughput vs serial.
+            BATCH = 3
+            for i in range(0, len(expired), BATCH):
+                batch = expired[i:i + BATCH]
+                await asyncio.gather(*(self._promote_entry(e) for e in batch))
+                archived += len(batch)
 
         # Return (archived, promoted) — archived replaces deleted.
         # Both go to LTM; "promoted" kept for backward compat in stats.
@@ -559,9 +644,11 @@ class Consolidator:
             )
             entries = result.scalars().all()
 
-        for entry in entries:
-            await self._promote_entry(entry)
-            promoted += 1
+        BATCH = 3
+        for i in range(0, len(entries), BATCH):
+            batch = entries[i:i + BATCH]
+            await asyncio.gather(*(self._promote_entry(e) for e in batch))
+            promoted += len(batch)
 
         return promoted
 
@@ -657,6 +744,18 @@ class Consolidator:
                 entry.key[:40], agents, entry.access_count,
             )
 
+            # Emit shared.saved so bridges/listeners can react to shared
+            # knowledge promotion. Direct DB insert bypasses SharedTier.save().
+            if self._on_event:
+                try:
+                    await self._on_event("shared.saved", {
+                        "id": shared_id,
+                        "key": entry.key,
+                        "source": "promotion",
+                    })
+                except Exception:
+                    pass
+
         return promoted
 
     async def _promote_entry(self, entry: JournalEntryModel) -> None:
@@ -673,61 +772,59 @@ class Consolidator:
 
         scope = getattr(entry, 'project_scope', None)
 
+        # Inherit auto_importance from the source journal entry. If the
+        # author explicitly set the journal importance, the promoted LTM
+        # row keeps that sovereignty forever.
+        source_auto = getattr(entry, "auto_importance", True)
+
+        # Salience proportional to importance: low-importance archived
+        # entries rank lower in search but remain retrievable.
+        initial_salience = (
+            0.4 if entry.importance <= 3
+            else 0.7 if entry.importance <= 6
+            else 1.0
+        )
+
         async with self._db.session() as session:
-            # Check if key already exists for this agent + scope
-            filters = [
-                LTMModel.agent_id == entry.agent_id,
-                LTMModel.key == key,
-            ]
-            if scope is not None:
-                filters.append(LTMModel.project_scope == scope)
-            else:
-                filters.append(LTMModel.project_scope.is_(None))
-            existing = await session.execute(select(LTMModel).where(*filters))
-            row = existing.scalar_one_or_none()
-
-            # Inherit auto_importance from the source journal entry. If the
-            # author explicitly set the journal importance, the promoted LTM
-            # row keeps that sovereignty forever.
-            source_auto = getattr(entry, "auto_importance", True)
-
-            # Salience proportional to importance: low-importance archived
-            # entries rank lower in search but remain retrievable.
-            initial_salience = (
-                0.4 if entry.importance <= 3
-                else 0.7 if entry.importance <= 6
-                else 1.0
+            # Atomic upsert — avoids TOCTOU race when BATCH>1 coroutines
+            # try to promote entries with the same key concurrently.
+            insert_stmt = pg_insert(LTMModel).values(
+                agent_id=entry.agent_id,
+                category=category,
+                key=key,
+                content=content,
+                importance=entry.importance,
+                auto_importance=source_auto,
+                salience=initial_salience,
+                source="promotion",
+                source_journal_id=entry.id,
+                embedding=emb,
+                project_scope=scope,
             )
-
-            if row:
-                row.content = content
-                row.importance = max(row.importance, entry.importance)
-                if not source_auto:
-                    row.auto_importance = False
-                row.salience = max(row.salience, initial_salience)
-                row.embedding = emb
-                row.source = "promotion"
-                row.source_journal_id = entry.id
-                row.version += 1
-                await session.flush()
-                ltm_id = row.id
-            else:
-                ltm = LTMModel(
-                    agent_id=entry.agent_id,
-                    category=category,
-                    key=key,
-                    content=content,
-                    importance=entry.importance,
-                    auto_importance=source_auto,
-                    salience=initial_salience,
-                    source="promotion",
-                    source_journal_id=entry.id,
-                    embedding=emb,
-                    project_scope=scope,
-                )
-                session.add(ltm)
-                await session.flush()
-                ltm_id = ltm.id
+            stmt = insert_stmt.on_conflict_do_update(
+                index_elements=["agent_id", "key", "project_scope"],
+                set_={
+                    "content": insert_stmt.excluded.content,
+                    "importance": func.greatest(
+                        LTMModel.importance,
+                        insert_stmt.excluded.importance,
+                    ),
+                    "auto_importance": (
+                        LTMModel.auto_importance if source_auto
+                        else False
+                    ),
+                    "salience": func.greatest(
+                        LTMModel.salience,
+                        insert_stmt.excluded.salience,
+                    ),
+                    "embedding": insert_stmt.excluded.embedding,
+                    "source": insert_stmt.excluded.source,
+                    "source_journal_id": insert_stmt.excluded.source_journal_id,
+                    "version": LTMModel.version + 1,
+                },
+            ).returning(LTMModel.id)
+            result = await session.execute(stmt)
+            ltm_id = result.scalar_one()
 
         await populate_tsvector(
             self._db, "nmem_long_term_memory", ltm_id,
@@ -752,6 +849,20 @@ class Consolidator:
 
         logger.info("Promoted journal #%d (%s) to LTM for %s",
                      entry.id, entry.title[:40], entry.agent_id)
+
+        # Emit ltm.saved so downstream systems (nmem-sym bridge, etc.) can
+        # react to promotion. Promotion bypasses LTMTier.save() because it
+        # writes directly to the DB for performance, so we emit here.
+        if self._on_event:
+            try:
+                await self._on_event("ltm.saved", {
+                    "id": ltm_id,
+                    "agent_id": entry.agent_id,
+                    "key": key,
+                    "source": "promotion",
+                })
+            except Exception:
+                pass
 
     async def _compress_to_stub(
         self, title: str, full_content: str, ltm_key: str,
@@ -797,10 +908,16 @@ class Consolidator:
 
         Clusters similar entries (cosine > threshold) using union-find,
         then merges each cluster via LLM into a single entry.
+
+        Incremental: only compares entries created since the last dedup
+        against the full corpus, avoiding O(n²) all-pairs scans.
         """
         threshold = self._config.consolidation.similarity_merge_threshold
         max_clusters = 8
         merged_total = 0
+
+        # Incremental: only compare pairs where at least one entry is new
+        since = self._last_full_cycle or datetime(2000, 1, 1)
 
         # Get distinct agent_ids with validated LTM entries
         async with self._db.session() as session:
@@ -815,7 +932,9 @@ class Consolidator:
             if merged_total >= max_clusters:
                 break
 
-            # Find all similar pairs via pgvector cosine distance
+            # Find similar pairs where at least one entry is new (since
+            # last consolidation). This avoids re-comparing old-vs-old
+            # pairs that were already deduped in previous cycles.
             async with self._db.session() as session:
                 try:
                     result = await session.execute(
@@ -829,11 +948,12 @@ class Consolidator:
                                 AND a.embedding IS NOT NULL AND b.embedding IS NOT NULL
                                 AND a.project_scope IS NOT DISTINCT FROM b.project_scope
                             WHERE a.agent_id = :agent_id
+                                AND (a.created_at > :since OR b.created_at > :since)
                                 AND 1 - (a.embedding <=> b.embedding) > :threshold
                             ORDER BY similarity DESC
                             LIMIT 50
                         """),
-                        {"agent_id": agent_id, "threshold": threshold},
+                        {"agent_id": agent_id, "threshold": threshold, "since": since},
                     )
                     pairs = result.all()
                 except Exception as e:

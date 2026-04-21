@@ -55,6 +55,14 @@ class SentenceTransformersProvider:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+        # Limit PyTorch thread pools BEFORE loading the model. Without this,
+        # torch spawns 24+ threads per pool (intra-op + inter-op) and each
+        # asyncio.to_thread worker inherits them — at 36 workers × 24 threads
+        # = 860+ threads, causing severe GIL contention and ~25× slowdown on
+        # sequential embedding calls.
+        torch.set_num_threads(1)
+        torch.set_num_interop_threads(1)
+
         logger.info("Loading embedding model: %s (device=%s)", self._model_name, self._device)
         try:
             self._model = SentenceTransformer(self._model_name, device=self._device)

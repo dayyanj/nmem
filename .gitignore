@@ -29,6 +29,10 @@ htmlcov/
 # Distribution
 *.tar.gz
 
+# Claude Code
+.claude_code
+.claude/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -36,3 +40,7 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Private design thinking documents
+docs/design/memory-immune-system.md
+docs/design/memory-immune-system-story.md

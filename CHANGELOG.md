@@ -3,6 +3,57 @@
 All notable changes to nmem are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.0] — 2026-04-21
+
+**Theme: Scale & Correctness** — fixes discovered during the 360-day healthcare
+benchmark (4,638 patients, 23K encounters, 5 agents). All changes improve
+production reliability at scale.
+
+### Performance
+
+- **Parallel LTM compression**: expired + importance promotions now run in
+  batches of 3 via `asyncio.gather`, spreading load across multiple LLM
+  backends. ~3x throughput on promotion-heavy consolidation cycles.
+- **PyTorch thread explosion fix**: embedding provider now sets
+  `torch.set_num_threads(1)` and `torch.set_num_interop_threads(1)` at init.
+  Previously, each `asyncio.to_thread` call spawned a 24-thread PyTorch pool,
+  accumulating 890+ threads and severe GIL contention over time. Eliminates
+  progressive slowdown where journal.add degraded from 5ms to 1.4s per call.
+- **Incremental dedup**: `_dedup_similar_memories` now only compares entries
+  created since `_last_full_cycle` against the existing corpus, instead of
+  all-pairs comparison. O(new × total) instead of O(total²).
+- **Persisted `_last_full_cycle`**: consolidation timestamp now persists to
+  `nmem_metadata` table and loads on startup, eliminating the expensive
+  first-cycle all-pairs fallback after every restart.
+
+### Fixes
+
+- **TOCTOU upsert race condition** (critical): `_promote_entry` now uses
+  `INSERT ... ON CONFLICT DO UPDATE` via SQLAlchemy's `pg_insert()`. Previously,
+  concurrent batch promotions could both pass the "does key exist?" check and
+  one would fail with `UniqueViolationError`. Affects any deployment with
+  concurrent writes or BATCH > 1.
+- **Nightly synthesis hook bypass**: `run_nightly_synthesis` no longer returns
+  early when `skip_synthesis=True`, ensuring registered hooks (symbol dreamstate,
+  clustering) always execute regardless of synthesis outcome.
+- **Event emission on LTM promotion**: `ltm.saved` event now fires correctly on
+  the promotion path, enabling downstream listeners (e.g. nmem-sym extraction)
+  to react to new LTM entries.
+
+### Added
+
+- **Step-level timing**: each consolidation step now logs
+  `[step-timing] step_name: Xs` for steps exceeding 1 second, enabling
+  performance profiling at scale without code changes.
+
+### Benchmark results
+
+Healthcare 360-day v2 benchmark (Qwen3-14B, consumer hardware):
+- nmem vs baseline: **+0.50** mean score improvement, **77% win rate**
+- Full report: `docs/benchmarks/healthcare-360d-v2.md`
+
+---
+
 ## [0.3.0] — 2026-04-12
 
 **Theme: Belief & Importance Refactor** — addressing community feedback on

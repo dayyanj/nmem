@@ -134,7 +134,7 @@ Your Agent (LangChain / CrewAI / Plain Python)
 
 ## Companion packages
 
-- **[nmem-sym](https://github.com/dayyanj/nmem-sym)** — Symbolic cognition layer (Layer 3). Extracts a typed knowledge graph from nmem memory entries, then uses spreading activation to surface multi-hop connections the LLM cannot find from unstructured context. Features neural gating, graph plasticity (LTP/LTD), autonomous dreamstate exploration, and a crash-safe bridge to nmem's consolidation lifecycle. Improves cross-agent synthesis by +7% on the healthcare benchmark.
+- **[nmem-sym](https://github.com/dayyanj/nmem-sym)** — Symbolic cognition layer (Layer 3). Extracts a typed knowledge graph from nmem memory entries, then uses spreading activation to surface multi-hop connections the LLM cannot find from unstructured context. Features neural gating, graph plasticity (LTP/LTD), autonomous dreamstate exploration, and a crash-safe bridge to nmem's consolidation lifecycle. Improves cross-agent synthesis by +7% on the healthcare benchmark. **NOTICE** nmem-sym advancements are no longer public, the existing beta version is still available but due to current capabilities we are not releasing any more updates to the public repo.
 
 ## Benchmarked
 

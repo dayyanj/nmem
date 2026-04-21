@@ -620,7 +620,7 @@ async def cross_tier_search(
     if "ltm" in tiers:
         if all_agents:
             tasks.append(_search_ltm_all_agents(
-                query, ltm,
+                query, ltm, observer_agent_id=agent_id,
                 recognition_config=recog_config, bump_access=bump_access,
                 **scope_kwarg, **recency_kwarg,
             ))
@@ -996,7 +996,8 @@ async def _search_journal_all_agents(
 
 async def _search_ltm_all_agents(
     query: str, tier: LTMTier,
-    *, project_scope: str | None = ...,
+    *, observer_agent_id: str = "",
+    project_scope: str | None = ...,
     recognition_config: RecognitionConfig | None = None,
     bump_access: bool = True,
     recency_weight: float = 0.0,
@@ -1005,6 +1006,11 @@ async def _search_ltm_all_agents(
     """Search LTM across ALL agents by removing the agent_id filter.
 
     Uses hybrid_memory_search directly with a relaxed WHERE clause.
+
+    When bump_access is True and observer_agent_id is provided, each
+    matched entry's access_count is incremented and the observer is
+    recorded in accessed_by_agents. This is the signal that drives
+    LTM → shared knowledge promotion.
     """
     if project_scope is ...:
         project_scope = tier._config.project_scope
@@ -1045,6 +1051,19 @@ async def _search_ltm_all_agents(
             sa_select(LTMModel).where(LTMModel.id.in_(ranked_ids))
         )
         entries_by_id = {e.id: e for e in result.scalars().all()}
+
+        # Bump access counters so cross-agent reads are tracked for
+        # shared-knowledge promotion. Only recorded when bump_access is
+        # True and we know which agent did the reading.
+        if bump_access and observer_agent_id:
+            from datetime import datetime
+            now = datetime.utcnow()
+            for e in entries_by_id.values():
+                e.access_count += 1
+                e.last_accessed_at = now
+                agents = set(e.accessed_by_agents or [])
+                agents.add(observer_agent_id)
+                e.accessed_by_agents = sorted(agents)
 
     results: list[SearchResult] = []
     for eid in ranked_ids:
