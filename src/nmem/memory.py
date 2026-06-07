@@ -313,6 +313,94 @@ class MemorySystem:
         })
         return results
 
+    # ── Tier lookup (where did this entry end up?) ──────────────────────
+
+    async def get_entry_tier(
+        self, *, agent_id: str, entry_id: int,
+    ) -> tuple[str, Any]:
+        """Look up the current consolidation tier of a journal entry.
+
+        Used by downstream consumers that wrote a journal entry and now
+        want to know where it ended up — has it been promoted to LTM,
+        further to shared, or decayed entirely? This is the readback
+        API that nmem-sym 0.6.0's journal-mediated hypothesis lifespan
+        depends on: a hypothesis whose journal entry decayed to
+        archived is a "the substrate didn't think this was important"
+        signal worth acting on (soft refutation), while one that
+        consolidated to LTM is "keep paying attention to this."
+
+        Cheap — one indexed lookup when the entry is still in journal,
+        two when promoted (journal stub + LTM target via pointers).
+
+        Returns:
+            ('journal', JournalEntry) — entry is still in the journal
+                table and hasn't been promoted yet
+            ('ltm', LTMEntry)         — promoted to LTM, not further
+            ('shared', LTMEntry)      — promoted to LTM and then to
+                shared (cross-agent visible)
+            ('archived', None)        — entry was deleted (low-importance
+                decay, manual delete, or never existed)
+
+        Args:
+            agent_id: Agent identifier the entry was written under.
+                Required — entries are agent-scoped and the same
+                entry_id could exist under multiple agents.
+            entry_id: The journal entry id returned by journal.add().
+
+        Notes:
+            - The function never raises on a missing entry; it returns
+              ('archived', None) consistently. Callers that need a
+              distinct "agent_id mismatch" signal should track the
+              agent themselves.
+            - The 'archived' return is also used when an entry exists
+              but the agent_id doesn't match — same semantics from the
+              caller's perspective: not visible to me.
+            - For an entry that was promoted to LTM but the LTM row
+              has since been deleted (race with manual cleanup), the
+              function returns ('archived', None). The journal stub
+              survives but its pointer is dangling; surfacing the stub
+              as 'journal' would be misleading.
+        """
+        from sqlalchemy import select
+        from nmem.db.models import JournalEntryModel, LTMModel
+        from nmem.tiers.journal import JournalTier
+        from nmem.tiers.ltm import LTMTier
+
+        async with self._db.session() as session:
+            j_row = (await session.execute(
+                select(JournalEntryModel).where(
+                    JournalEntryModel.id == entry_id,
+                    JournalEntryModel.agent_id == agent_id,
+                )
+            )).scalar_one_or_none()
+
+            if j_row is None:
+                return ("archived", None)
+
+            if not j_row.promoted_to_ltm:
+                return ("journal", JournalTier._row_to_entry(j_row))
+
+            # Promoted — follow the pointer to LTM.
+            ltm_id: int | None = None
+            for ptr in (j_row.pointers or []):
+                if isinstance(ptr, dict) and ptr.get("type") == "ltm":
+                    ltm_id = ptr.get("id")
+                    break
+            if ltm_id is None:
+                # Promoted flag set but no LTM pointer — defensive,
+                # shouldn't happen, treat as archived.
+                return ("archived", None)
+
+            ltm_row = (await session.execute(
+                select(LTMModel).where(LTMModel.id == ltm_id)
+            )).scalar_one_or_none()
+            if ltm_row is None:
+                # Dangling pointer — LTM row was deleted post-promotion.
+                return ("archived", None)
+
+            tier_name = "shared" if ltm_row.promoted_to_shared else "ltm"
+            return (tier_name, LTMTier._row_to_entry(ltm_row))
+
     # ── Priorities (importance-ranked, for planning not retrieval) ──────
 
     async def priorities(
