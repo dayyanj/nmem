@@ -3,6 +3,33 @@
 All notable changes to nmem are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.1] — 2026-07-12
+
+### Added
+
+- **`nmem.migrate`**: lightweight forward-only migration runner shared
+  across nmem, nmem-sym, and future projects. Plain SQL files in numbered
+  `migrations/` directories, tracked per-project in a `schema_migrations`
+  table. Works with both asyncpg pools and SQLAlchemy async engines;
+  idempotent, checksum drift detection, `mark_applied()` bootstrap path.
+  No new dependencies.
+- **`MemorySystem.get_entry_tier()`**: readback API returning the current
+  tier of a journal entry as `('journal' | 'ltm' | 'shared' | 'archived',
+  entry | None)`. Prerequisite for consumers (e.g. nmem-sym) that need to
+  ask "where did this end up?" to make importance-aware decisions about
+  their own derived state. Cheap (one or two indexed lookups) and
+  defensive against inconsistent consolidator state.
+
+### Fixes
+
+- **Embedding provider double-init crash**: `SentenceTransformersProvider`
+  now guards `torch.set_num_threads` / `set_num_interop_threads` with
+  `try/except RuntimeError`. Constructing a second provider in a process
+  that had already done parallel encoding previously raised and broke
+  downstream callers. Safe because the caps are process-wide.
+
+---
+
 ## [0.7.0] — 2026-04-21
 
 **Theme: Scale & Correctness** — fixes discovered during the 360-day healthcare
