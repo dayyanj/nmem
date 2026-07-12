@@ -60,8 +60,29 @@ class SentenceTransformersProvider:
         # asyncio.to_thread worker inherits them — at 36 workers × 24 threads
         # = 860+ threads, causing severe GIL contention and ~25× slowdown on
         # sequential embedding calls.
-        torch.set_num_threads(1)
-        torch.set_num_interop_threads(1)
+        #
+        # NOTE: `set_num_interop_threads` is process-global and can only be
+        # called BEFORE any parallel work has started. If a second
+        # SentenceTransformersProvider instance is constructed later in the
+        # same process (e.g. after the first instance has already done
+        # parallel encoding), this call raises RuntimeError. We swallow the
+        # RuntimeError because:
+        #   (a) the thread cap is process-wide — if it was set by the first
+        #       instance, the second instance benefits from the same cap;
+        #   (b) failing here previously caused subsequent memory_store calls
+        #       to silently return error responses (nmem-mcp bug surfaced
+        #       2026-06-01).
+        try:
+            torch.set_num_threads(1)
+        except RuntimeError as exc:
+            logger.debug("torch.set_num_threads(1) raised (already set?): %s", exc)
+        try:
+            torch.set_num_interop_threads(1)
+        except RuntimeError as exc:
+            logger.debug(
+                "torch.set_num_interop_threads(1) raised (parallel work "
+                "already started in this process; already set elsewhere): %s", exc,
+            )
 
         logger.info("Loading embedding model: %s (device=%s)", self._model_name, self._device)
         try:
