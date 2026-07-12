@@ -307,7 +307,7 @@ class TestConsolidation:
         # Verify it exists in shared knowledge
         results = await mem.shared.search("deploy migrations checklist")
         assert len(results) > 0
-        assert any("deploy_checklist" in r.key for r in results)
+        assert any("deploy_checklist" in entry.key for entry, _score in results)
 
     async def test_ltm_not_promoted_without_cross_agent_access(self, mem: MemorySystem):
         """LTM entries accessed by only one agent should NOT promote."""

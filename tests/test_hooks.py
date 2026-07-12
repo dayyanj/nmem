@@ -217,7 +217,7 @@ class TestHookEntryPoint:
         result = subprocess.run(
             [sys.executable, "-m", "nmem.hooks", "nonexistent"],
             capture_output=True, text=True,
-            cwd="/mnt/nas_projects/apps/nmem",
+            cwd=Path(__file__).resolve().parent.parent,
         )
         assert result.returncode == 1
         assert "Unknown hook" in result.stderr
@@ -228,7 +228,7 @@ class TestHookEntryPoint:
         result = subprocess.run(
             [sys.executable, "-m", "nmem.hooks"],
             capture_output=True, text=True,
-            cwd="/mnt/nas_projects/apps/nmem",
+            cwd=Path(__file__).resolve().parent.parent,
         )
         assert result.returncode == 1
         assert "Usage" in result.stderr

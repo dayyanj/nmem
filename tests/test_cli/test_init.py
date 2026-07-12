@@ -30,7 +30,9 @@ def test_init_idempotent(runner, cli_env):
 
 
 def test_version(runner):
+    from nmem import __version__
+
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
     assert "nmem" in result.output
-    assert "0.5.1" in result.output
+    assert __version__ in result.output

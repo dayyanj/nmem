@@ -25,7 +25,7 @@ import time
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Callable, Awaitable
 
-from sqlalchemy import or_, select, func, text as sa_text
+from sqlalchemy import case, or_, select, func, text as sa_text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from nmem.db.models import (
@@ -805,17 +805,23 @@ class Consolidator:
                 index_elements=["agent_id", "key", "project_scope"],
                 set_={
                     "content": insert_stmt.excluded.content,
-                    "importance": func.greatest(
-                        LTMModel.importance,
-                        insert_stmt.excluded.importance,
+                    "importance": case(
+                        (
+                            LTMModel.importance > insert_stmt.excluded.importance,
+                            LTMModel.importance,
+                        ),
+                        else_=insert_stmt.excluded.importance,
                     ),
                     "auto_importance": (
                         LTMModel.auto_importance if source_auto
                         else False
                     ),
-                    "salience": func.greatest(
-                        LTMModel.salience,
-                        insert_stmt.excluded.salience,
+                    "salience": case(
+                        (
+                            LTMModel.salience > insert_stmt.excluded.salience,
+                            LTMModel.salience,
+                        ),
+                        else_=insert_stmt.excluded.salience,
                     ),
                     "embedding": insert_stmt.excluded.embedding,
                     "source": insert_stmt.excluded.source,

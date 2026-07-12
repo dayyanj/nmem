@@ -65,7 +65,7 @@ async def test_journal_add_with_explicit_expires_at(mem: MemorySystem) -> None:
 @pytest.mark.asyncio
 async def test_journal_add_without_overrides_uses_now(mem: MemorySystem) -> None:
     """Without created_at/expires_at, behavior is unchanged (uses NOW())."""
-    before = datetime.utcnow()
+    before = datetime.utcnow().replace(microsecond=0)
     entry = await mem.journal.add(
         agent_id="agent1",
         entry_type="note",
