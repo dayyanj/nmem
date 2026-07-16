@@ -73,10 +73,53 @@ async def lifespan(server: FastMCP):
                 "Failed to start consolidation loop; MCP continues without it"
             )
 
+    # v0.7.0 Stage E: optional nmem-sym wiring. When NMEM_SYMBOLIC_ENABLED
+    # is set and nmem_sym is installed, wire_into_mcp constructs
+    # SymbolGraph + SymbolBridge, starts the drive tick loop, and
+    # registers the memory_augment / memory_hypothesize / etc. tools.
+    # Failure modes:
+    #   - nmem_sym not installed        → log info, sym_state = None
+    #   - wire_into_mcp raises           → log exception, sym_state = None
+    #                                       (wire_into_mcp is meant to never
+    #                                        raise; this catch is belt-and-
+    #                                        suspenders against future edits)
+    # The MCP server continues with just nmem tools in both cases.
+    sym_state = None
+    if os.environ.get("NMEM_SYMBOLIC_ENABLED", "0") == "1":
+        try:
+            from nmem_sym.mcp_integration import wire_into_mcp
+            sym_state = await wire_into_mcp(server, mem)
+            if sym_state is not None and getattr(sym_state, "enabled", False):
+                logger.info(
+                    "nmem-sym wired into MCP: %d tools registered",
+                    len(getattr(sym_state, "tools_registered", [])),
+                )
+            elif sym_state is not None:
+                logger.info(
+                    "nmem-sym wiring disabled: %s",
+                    getattr(sym_state, "disabled_reason", "unknown"),
+                )
+        except ImportError:
+            logger.info(
+                "nmem-sym not installed; skipping symbolic wiring "
+                "(pip install nmem-sym to enable)"
+            )
+        except Exception:
+            logger.exception(
+                "nmem-sym wiring failed; MCP continues without it"
+            )
+
     try:
-        yield {"mem": mem}
+        yield {"mem": mem, "sym": sym_state}
     finally:
         _shared_mem = None
+        # v0.7.0 Stage E: teardown nmem-sym first so its background
+        # tasks stop referencing memory before mem.close() runs
+        if sym_state is not None:
+            try:
+                await sym_state.close()
+            except Exception:
+                logger.debug("nmem-sym teardown raised", exc_info=True)
         if consolidation_task is not None:
             try:
                 mem.stop_consolidation()
