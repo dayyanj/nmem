@@ -18,6 +18,7 @@ Configuration in .claude.json:
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 
@@ -396,6 +397,40 @@ async def memory_briefing(
         max_tokens=max_tokens,
         query=query,
     )
+    content = result.content
+
+    # v0.7.0 Stage F: append relevant grounded hypotheses from nmem-sym
+    # when wired. Default on (user-locked Q4); opt-out via
+    # NMEM_BRIEFING_INCLUDE_SYMBOLS=0 for consumers who want strict
+    # backwards-compat briefing shape.
+    #
+    # The section is only added when:
+    #   - nmem-sym is wired (sym_state.enabled=True)
+    #   - a query was provided (there's something to relate hypotheses to)
+    #   - the section returns a non-empty context
+    if (
+        query
+        and os.environ.get("NMEM_BRIEFING_INCLUDE_SYMBOLS", "1") == "1"
+    ):
+        try:
+            sym_state = ctx.request_context.lifespan_context.get("sym")
+        except (AttributeError, TypeError):
+            sym_state = None
+        if sym_state is not None and getattr(sym_state, "enabled", False):
+            bridge = getattr(sym_state, "bridge", None)
+            if bridge is not None:
+                try:
+                    symbol_context = await bridge.augment_search(query)
+                except Exception:
+                    logger.exception("Briefing symbol augmentation failed")
+                    symbol_context = ""
+                if symbol_context and symbol_context.strip():
+                    content = (
+                        content
+                        + "\n\n### Relevant grounded hypotheses\n"
+                        + symbol_context.strip()
+                    )
+
     # Append metadata line
     bd = result.recognition_breakdown
     meta = f"\n---\n{result.facts_included}/{result.facts_available} facts"
@@ -404,7 +439,7 @@ async def memory_briefing(
         if parts:
             meta += f" ({', '.join(parts)})"
     meta += f" | ~{result.token_estimate} tokens"
-    return result.content + meta
+    return content + meta
 
 
 @mcp.tool()
