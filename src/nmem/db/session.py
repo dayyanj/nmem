@@ -49,6 +49,21 @@ class DatabaseManager:
         return self._engine
 
     @property
+    def url(self) -> str:
+        """The database URL this manager was constructed with.
+
+        Public accessor used by downstream integrations (notably
+        nmem-sym 0.7.0's MCP wiring) that need to derive their own
+        raw asyncpg DSN from nmem's SQLAlchemy URL. Callers that need
+        a raw asyncpg DSN typically strip the `+asyncpg` driver segment:
+
+            asyncpg_dsn = mem._db.url.replace("+asyncpg", "")
+
+        Prefer this property over reading `_url` directly.
+        """
+        return self._url
+
+    @property
     def is_postgres(self) -> bool:
         return self._is_postgres
 

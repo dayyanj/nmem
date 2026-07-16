@@ -33,7 +33,18 @@ _shared_mem = None  # Module-level reference for resources
 
 @asynccontextmanager
 async def lifespan(server: FastMCP):
-    """Initialize MemorySystem on startup, close on shutdown."""
+    """Initialize MemorySystem on startup, close on shutdown.
+
+    Also starts the background consolidation loop (env-gated) so that
+    scheduled hooks — nightly synthesis, hourly full-cycle steps —
+    actually fire while the MCP process is running. Prior to nmem
+    v0.7.0 this was silently omitted; consumers registering
+    consolidation hooks (including nmem-sym's SymbolBridge) got
+    registered-but-never-called hooks.
+
+    Set NMEM_START_CONSOLIDATION=0 to opt out (e.g. for short-lived
+    dev sessions where you don't want a background task).
+    """
     global _shared_mem
     from nmem import MemorySystem
     from nmem.cli.config_loader import load_config
@@ -49,10 +60,28 @@ async def lifespan(server: FastMCP):
     _shared_mem = mem
     scope_info = f", scope={config.project_scope}" if config.project_scope else ""
     logger.info("nmem MCP server initialized%s", scope_info)
+
+    # v0.7.0 Stage A.2: start the consolidation loop so registered
+    # hooks fire. Env-gated so short-lived contexts can opt out.
+    consolidation_task = None
+    if os.environ.get("NMEM_START_CONSOLIDATION", "1") == "1":
+        try:
+            consolidation_task = mem.start_consolidation()
+            logger.info("nmem consolidation loop started")
+        except Exception:
+            logger.exception(
+                "Failed to start consolidation loop; MCP continues without it"
+            )
+
     try:
         yield {"mem": mem}
     finally:
         _shared_mem = None
+        if consolidation_task is not None:
+            try:
+                mem.stop_consolidation()
+            except Exception:
+                logger.debug("stop_consolidation raised on shutdown", exc_info=True)
         await mem.close()
         logger.info("nmem MCP server shut down")
 
