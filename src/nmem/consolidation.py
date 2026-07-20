@@ -1689,12 +1689,31 @@ class Consolidator:
         system_prompt = (
             "You are auditing an AI organization's memory against its governance "
             "policy. The policy is an approved standing decision — authoritative "
-            "and not up for debate.\n\n"
-            "A memory entry CONTRADICTS the policy when acting on its claim or "
-            "recommendation would violate the policy, or when it asserts a state "
-            "of the world the policy has superseded. Entries that merely discuss "
-            "the same topic, or describe the situation the policy responds to, "
-            "are NOT contradictions.\n\n"
+            "and not up for debate. Agents will read these memory entries as "
+            "guidance in future reasoning; your job is to catch entries that "
+            "would steer them against the policy.\n\n"
+            "A memory entry CONTRADICTS the policy when following it today would "
+            "violate the policy. That includes entries that urge, prioritize, "
+            "recommend, or frame as a problem needing action an activity the "
+            "policy pauses or blocks — even if the entry predates the policy — "
+            "and entries that assert as current a state of the world the policy "
+            "has superseded.\n\n"
+            "A memory entry does NOT contradict the policy when it records a "
+            "completed past event as pure history, restates or supports the "
+            "policy, or merely mentions the same topic without pushing against "
+            "the policy's direction.\n\n"
+            "EXAMPLES (policy: 'Outbound prospecting is PAUSED pending redesign'):\n"
+            "- 'Outreach funnel is stalled; high-value deals need attention.' "
+            "→ CONTRADICTS: frames the paused activity as a problem needing "
+            "action, steering agents against the pause.\n"
+            "- 'Boost outreach priority when content outpaces outreach.' "
+            "→ CONTRADICTS: a standing rule urging what the policy blocks.\n"
+            "- 'Apr 2: sent 3 outreach emails, 1 bounced.' → not a "
+            "contradiction: pure historical record.\n"
+            "(policy: 'Never use em dashes in communications'):\n"
+            "- 'Rejected email draft: \"Hi — quick question...\"' → not a "
+            "contradiction: a stored record that happens to contain the styled "
+            "text is history, not guidance to write that way.\n\n"
             'Respond as JSON: {"contradicts": [<entry numbers>], "rationale": "..."}'
         )
         user_prompt = (
@@ -1702,19 +1721,18 @@ class Consolidator:
             f"MEMORY ENTRIES:\n{numbered}"
         )
 
+        cfg = getattr(self._config, "policy_alignment", None)
+        max_tokens = getattr(cfg, "classification_max_tokens", 4096)
         result = await self._llm.complete_json(
             system_prompt, user_prompt,
-            max_tokens=self._config.llm.synthesis_max_tokens,
+            max_tokens=max_tokens,
             temperature=0.2,
-            timeout=20.0,
+            timeout=120.0,
         )
 
         try:
             from nmem.token_stats import record_llm_usage
-            await record_llm_usage(
-                self._db, "policy_alignment",
-                self._config.llm.synthesis_max_tokens,
-            )
+            await record_llm_usage(self._db, "policy_alignment", max_tokens)
         except Exception:
             pass
 

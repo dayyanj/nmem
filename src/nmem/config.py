@@ -371,6 +371,14 @@ class PolicyAlignmentConfig(BaseModel):
     """Maximum LLM judgments per nightly run (one call covers all of a
     policy's candidates). Bounds cost regardless of policy count."""
 
+    classification_max_tokens: int = 4096
+    """Token budget for the per-policy classification call. Reasoning
+    models (e.g. Qwen3) spend heavily on internal deliberation before
+    emitting the JSON verdict — at the generic 1024 synthesis budget a
+    16-candidate audit exhausts the budget mid-reasoning and returns
+    empty content, which reads as 'no contradictions'. Sized so the
+    verdict always fits after deliberation."""
+
 
 class RecognitionConfig(BaseModel):
     """Recognition signal thresholds and scoring weights.
