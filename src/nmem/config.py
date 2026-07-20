@@ -357,8 +357,15 @@ class PolicyAlignmentConfig(BaseModel):
     top_k: int = 8
     """Maximum candidate rows fetched per policy per table."""
 
-    min_similarity: float = 0.55
-    """Cosine similarity floor for a row to count as a candidate."""
+    min_similarity: float = 0.35
+    """Cosine similarity floor for a row to count as a candidate.
+
+    Deliberately permissive: recall lives here, precision lives in the
+    LLM judgment. Small sentence-transformer models score topically
+    related but differently-phrased texts in the 0.35-0.50 band —
+    production validation showed policy-contradicting rows at 0.40-0.47,
+    which a 0.55 floor silently excluded. `top_k` bounds the prompt size
+    regardless of how permissive this floor is."""
 
     max_llm_calls_per_run: int = 10
     """Maximum LLM judgments per nightly run (one call covers all of a

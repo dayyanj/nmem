@@ -22,7 +22,9 @@ knowledge that belief revision could never catch.
   ranking, and importance scoring — never deleted) plus a `change_log`
   entry naming the policy. Already-disputed rows are skipped, so a
   stable corpus converges to zero LLM calls. One LLM call per policy;
-  bounded by `max_policies_per_run` / `max_llm_calls_per_run`. New
+  bounded by `max_policies_per_run` / `max_llm_calls_per_run`. Candidate
+  similarity floor defaults to 0.35 — tuned against production, where
+  contradicting rows scored 0.40-0.47 with MiniLM embeddings. New
   `ConsolidationStats` fields: `policy_disputed_shared`,
   `policy_disputed_ltm`.
 - **Policy-aware nightly synthesis**: the synthesis prompt now includes
