@@ -3,6 +3,53 @@
 All notable changes to nmem are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.0] — 2026-07-20
+
+Governance-aware consolidation. Closes the echo-chamber failure mode
+where nightly synthesis re-derived conclusions that active policy had
+already superseded, re-entering them as fresh high-grounding shared
+knowledge that belief revision could never catch.
+
+### Added
+
+- **Policy alignment sweep** (`PolicyAlignmentConfig`, on by default):
+  a nightly consolidation step — also callable on demand via
+  `consolidation.run_policy_alignment()` — that semantically matches
+  validated shared/LTM rows against active policy-tier rules and asks
+  the LLM which rows *contradict* a policy (acting on the row would
+  violate it, or it asserts a state the policy superseded). Contradicting
+  rows get `grounding='disputed'` (demoted in belief revision, search
+  ranking, and importance scoring — never deleted) plus a `change_log`
+  entry naming the policy. Already-disputed rows are skipped, so a
+  stable corpus converges to zero LLM calls. One LLM call per policy;
+  bounded by `max_policies_per_run` / `max_llm_calls_per_run`. New
+  `ConsolidationStats` fields: `policy_disputed_shared`,
+  `policy_disputed_ltm`.
+- **Policy-aware nightly synthesis**: the synthesis prompt now includes
+  active policy-tier rules as an authoritative context block, with an
+  instruction that mined patterns must not contradict them (activity
+  explained by a policy — e.g. a deliberate pause — is reported as
+  expected, not as an anomaly to fix). High-importance journal entries
+  (importance ≥ 9, e.g. operator directives) now contribute a content
+  snippet to the synthesis context instead of title-only, so a single
+  authoritative instruction is not outvoted by many lower-stakes titles
+  on the same topic.
+
+### Changed
+
+- **Shared-knowledge grounding defaults are now `'inferred'`**
+  (were `'confirmed'`) across all write paths: the ORM model default,
+  `shared.save()`, the REST `SharedEntryCreate` schema, and (via the tier
+  default) the `memory_store_shared` MCP tool. `'confirmed'` outranks
+  `'inferred'` in belief revision, so a silent default let unvetted
+  writes win conflicts against honestly-labeled knowledge — and let
+  agent self-assertions enter as top-grounding facts. Writers that mean
+  `'confirmed'` must now say so explicitly. Consolidator-written
+  synthesis rows (`daily_synthesis_*`, `retrospective_*`) always set
+  `grounding='inferred'` explicitly — they are inference over the
+  journal, not observed fact. Existing rows are unaffected (no
+  migration).
+
 ## [0.7.1] — 2026-07-12
 
 ### Added

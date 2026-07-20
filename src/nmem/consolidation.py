@@ -33,6 +33,7 @@ from nmem.db.models import (
     LTMModel,
     MemoryConflictModel,
     NmemMetadata,
+    PolicyMemoryModel,
     SharedKnowledgeModel,
     CuriositySignalModel,
 )
@@ -471,6 +472,7 @@ class Consolidator:
                     JournalEntryModel.entry_type,
                     JournalEntryModel.title,
                     JournalEntryModel.importance,
+                    JournalEntryModel.content,
                 )
                 .where(JournalEntryModel.created_at >= since)
                 .where(JournalEntryModel.importance >= 6)
@@ -479,21 +481,53 @@ class Consolidator:
             )
             top_entries = result.all()
 
+            # Active governance policies, injected into the synthesis prompt
+            # so mined patterns can't contradict a standing decision (e.g. a
+            # deliberate pause being re-reported as a stall).
+            result = await session.execute(
+                select(
+                    PolicyMemoryModel.scope,
+                    PolicyMemoryModel.key,
+                    PolicyMemoryModel.content,
+                )
+                .where(PolicyMemoryModel.status == "active")
+                .order_by(PolicyMemoryModel.updated_at.desc())
+                .limit(10)
+            )
+            active_policies = result.all()
+
         if not skip_synthesis:
             # Build synthesis prompt
             summary_lines = [f"Total entries: {total_entries}"]
             for agent_id, entry_type, count in grouped:
                 summary_lines.append(f"  {agent_id}/{entry_type}: {count}")
 
-            entry_lines = [
-                f"  [{imp}] {aid}/{etype}: {title}"
-                for aid, etype, title, imp in top_entries
-            ]
+            # Titles alone for most entries; directive-grade entries
+            # (importance >= 9) get a content snippet so a single
+            # authoritative instruction isn't outvoted by a pile of
+            # lower-stakes titles on the same topic.
+            entry_lines = []
+            for aid, etype, title, imp, entry_content in top_entries:
+                line = f"  [{imp}] {aid}/{etype}: {title}"
+                if imp >= 9 and entry_content:
+                    line += f"\n      > {entry_content[:300]}"
+                entry_lines.append(line)
 
             context = (
                 "ACTIVITY SUMMARY (last 24h):\n" + "\n".join(summary_lines) +
                 "\n\nTOP ENTRIES:\n" + "\n".join(entry_lines)
             )
+
+            if active_policies:
+                policy_lines = [
+                    f"  - [{scope}/{key}] {content[:300]}"
+                    for scope, key, content in active_policies
+                ]
+                context += (
+                    "\n\nACTIVE GOVERNANCE POLICIES (authoritative — these are "
+                    "deliberate standing decisions, not observations to relitigate):\n"
+                    + "\n".join(policy_lines)
+                )
 
             system_prompt = (
                 "You are analyzing today's operational activity across a multi-agent "
@@ -502,6 +536,10 @@ class Consolidator:
                 "- What you observe (be specific, cite numbers)\n"
                 "- Why it matters\n"
                 "- What should change\n\n"
+                "Patterns must not contradict the active governance policies: if "
+                "activity looks anomalous but is explained by a policy (e.g. a "
+                "deliberate pause), report it as expected under that policy — do "
+                "not recommend reversing or working around a policy.\n\n"
                 'Respond as JSON: {"patterns": [{"observation": "...", '
                 '"significance": "...", "recommendation": "..."}]}'
             )
@@ -545,6 +583,10 @@ class Consolidator:
                                 key=key, content=content, category="daily_synthesis",
                                 created_by="consolidator", last_updated_by="consolidator",
                                 importance=7, embedding=emb,
+                                # Synthesis is inference over the journal, not
+                                # observed fact — it must not outrank the
+                                # entries it was derived from.
+                                grounding="inferred",
                             )
                             session.add(record)
                             await session.flush()
@@ -579,6 +621,16 @@ class Consolidator:
             stats.lessons_disputed = disputed
         except Exception as e:
             logger.error("Retrospective failed: %s", e)
+
+        # Policy alignment sweep — dispute shared/LTM rows that contradict
+        # active governance policy. Runs last so it also covers anything the
+        # synthesis above just wrote.
+        try:
+            shared_disputed, ltm_disputed = await self._run_policy_alignment()
+            stats.policy_disputed_shared = shared_disputed
+            stats.policy_disputed_ltm = ltm_disputed
+        except Exception as e:
+            logger.error("Policy alignment sweep failed: %s", e)
 
         self._last_synthesis_date = datetime.utcnow().date()
         return stats
@@ -1468,6 +1520,7 @@ class Consolidator:
                     last_updated_by="consolidator",
                     importance=6,
                     embedding=emb,
+                    grounding="inferred",
                 )
                 session.add(record)
                 await session.flush()
@@ -1480,6 +1533,226 @@ class Consolidator:
             # Same-key collision in one night — benign, retrospective can
             # run more than once per day in tests.
             logger.debug("Retrospective synthesis write failed: %s", e)
+
+    # ── Policy Alignment Sweep ───────────────────────────────────────────
+
+    async def run_policy_alignment(self) -> tuple[int, int]:
+        """Run the policy alignment sweep on demand.
+
+        Public entry point for consumers (`mem.consolidation
+        .run_policy_alignment()`) — e.g. right after writing a new policy,
+        instead of waiting for the nightly run. Returns
+        (shared_disputed, ltm_disputed).
+        """
+        return await self._run_policy_alignment()
+
+    async def _run_policy_alignment(self) -> tuple[int, int]:
+        """Dispute validated shared/LTM rows that contradict active policy.
+
+        Policies live outside conflict scanning (`scan_conflicts` covers
+        LTM/shared/entity only), so a policy change never triggers belief
+        revision against knowledge that predates it — stale rows keep
+        circulating as 'validated' and consolidation can re-synthesize
+        them nightly. This sweep closes that loop.
+
+        For each active policy (most recently updated first), semantically
+        similar validated rows are collected from shared knowledge and LTM,
+        and one LLM call judges which of them contradict the policy.
+        Contradicting rows get `grounding='disputed'` — demoted everywhere
+        grounding is consulted, never deleted. Already-disputed rows are
+        excluded up front, so a stable corpus costs zero LLM calls.
+
+        Returns (shared_disputed, ltm_disputed).
+        """
+        cfg = getattr(self._config, "policy_alignment", None)
+        if cfg is None or not cfg.enabled:
+            return (0, 0)
+
+        async with self._db.session() as session:
+            policies = (await session.execute(
+                select(PolicyMemoryModel)
+                .where(PolicyMemoryModel.status == "active")
+                .order_by(PolicyMemoryModel.updated_at.desc())
+                .limit(cfg.max_policies_per_run)
+            )).scalars().all()
+
+        if not policies:
+            return (0, 0)
+
+        shared_disputed = 0
+        ltm_disputed = 0
+        llm_calls = 0
+
+        for policy in policies:
+            if llm_calls >= cfg.max_llm_calls_per_run:
+                break
+
+            try:
+                embedding = await asyncio.to_thread(
+                    self._embedding.embed, policy.content[:500]
+                )
+            except Exception as e:
+                logger.debug("Policy embed failed for %s: %s", policy.key, e)
+                continue
+
+            candidates = await self._find_policy_candidates(
+                embedding, top_k=cfg.top_k, min_similarity=cfg.min_similarity,
+            )
+            if not candidates:
+                continue
+
+            try:
+                contradicting = await self._classify_policy_contradictions(
+                    policy, candidates
+                )
+            except Exception as e:
+                logger.warning(
+                    "Policy alignment classification failed for %s: %s",
+                    policy.key, e,
+                )
+                continue
+            llm_calls += 1
+
+            for cand in contradicting:
+                if not await self._dispute_row_for_policy(cand, policy):
+                    continue
+                if cand["table"] == "nmem_shared_knowledge":
+                    shared_disputed += 1
+                else:
+                    ltm_disputed += 1
+
+        if shared_disputed or ltm_disputed:
+            logger.info(
+                "Policy alignment: disputed %d shared + %d LTM rows (%d LLM calls)",
+                shared_disputed, ltm_disputed, llm_calls,
+            )
+        return (shared_disputed, ltm_disputed)
+
+    async def _find_policy_candidates(
+        self, embedding: list[float], *, top_k: int, min_similarity: float,
+    ) -> list[dict]:
+        """Find validated shared/LTM rows semantically close to a policy.
+
+        Already-disputed rows are excluded so the sweep converges instead
+        of re-judging the same rows every night.
+
+        Returns dicts with {table, id, key, content} for the LLM prompt.
+        """
+        embedding_str = f"[{','.join(str(x) for x in embedding)}]"
+        candidates: list[dict] = []
+
+        for table in ("nmem_shared_knowledge", "nmem_long_term_memory"):
+            try:
+                async with self._db.session() as session:
+                    result = await session.execute(
+                        sa_text(f"""
+                            SELECT id, key, content
+                            FROM {table}
+                            WHERE status = 'validated'
+                              AND grounding != 'disputed'
+                              AND embedding IS NOT NULL
+                              AND 1 - (embedding <=> CAST(:embedding AS vector)) > :min_similarity
+                            ORDER BY embedding <=> CAST(:embedding AS vector)
+                            LIMIT :top_k
+                        """),
+                        {
+                            "embedding": embedding_str,
+                            "min_similarity": min_similarity,
+                            "top_k": top_k,
+                        },
+                    )
+                    for row in result.all():
+                        candidates.append({
+                            "table": table,
+                            "id": row[0],
+                            "key": row[1] or "",
+                            "content": row[2] or "",
+                        })
+            except Exception as e:
+                logger.debug("Policy candidate search failed on %s: %s", table, e)
+
+        return candidates
+
+    async def _classify_policy_contradictions(
+        self, policy: PolicyMemoryModel, candidates: list[dict],
+    ) -> list[dict]:
+        """Ask the LLM which candidate rows contradict the policy.
+
+        One call per policy covering all its candidates. Isolated as a
+        method so tests can monkeypatch it without mocking the entire
+        LLM provider.
+        """
+        numbered = "\n".join(
+            f"  {i + 1}. [{c['table']}#{c['id']}] {c['key']}: {c['content'][:300]}"
+            for i, c in enumerate(candidates)
+        )
+        system_prompt = (
+            "You are auditing an AI organization's memory against its governance "
+            "policy. The policy is an approved standing decision — authoritative "
+            "and not up for debate.\n\n"
+            "A memory entry CONTRADICTS the policy when acting on its claim or "
+            "recommendation would violate the policy, or when it asserts a state "
+            "of the world the policy has superseded. Entries that merely discuss "
+            "the same topic, or describe the situation the policy responds to, "
+            "are NOT contradictions.\n\n"
+            'Respond as JSON: {"contradicts": [<entry numbers>], "rationale": "..."}'
+        )
+        user_prompt = (
+            f"POLICY [{policy.scope}/{policy.key}]:\n{policy.content[:800]}\n\n"
+            f"MEMORY ENTRIES:\n{numbered}"
+        )
+
+        result = await self._llm.complete_json(
+            system_prompt, user_prompt,
+            max_tokens=self._config.llm.synthesis_max_tokens,
+            temperature=0.2,
+            timeout=20.0,
+        )
+
+        try:
+            from nmem.token_stats import record_llm_usage
+            await record_llm_usage(
+                self._db, "policy_alignment",
+                self._config.llm.synthesis_max_tokens,
+            )
+        except Exception:
+            pass
+
+        if not result or not isinstance(result, dict):
+            return []
+
+        contradicting: list[dict] = []
+        for num in result.get("contradicts") or []:
+            try:
+                idx = int(num) - 1
+            except (TypeError, ValueError):
+                continue
+            if 0 <= idx < len(candidates):
+                contradicting.append(candidates[idx])
+        return contradicting
+
+    async def _dispute_row_for_policy(
+        self, cand: dict, policy: PolicyMemoryModel,
+    ) -> bool:
+        """Mark a row disputed by the policy sweep. Returns True if applied."""
+        model = (
+            SharedKnowledgeModel
+            if cand["table"] == "nmem_shared_knowledge"
+            else LTMModel
+        )
+        now = datetime.utcnow()
+        async with self._db.session() as session:
+            row = await session.get(model, cand["id"])
+            if row is None or row.grounding == "disputed":
+                return False
+            row.grounding = "disputed"
+            if hasattr(row, "change_log"):
+                row.change_log = (row.change_log or []) + [{
+                    "at": now.isoformat(),
+                    "action": "policy_alignment_disputed",
+                    "policy": f"{policy.scope}/{policy.key}",
+                }]
+        return True
 
     async def _update_salience_scores(self) -> int:
         """Decay salience of stale LTM entries.

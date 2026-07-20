@@ -286,7 +286,10 @@ class SharedKnowledgeModel(Base):
 
     # Record typing
     record_type: Mapped[str] = mapped_column(String(20), default="fact")
-    grounding: Mapped[str] = mapped_column(String(20), default="confirmed")
+    # 'confirmed' grounding must be earned (explicitly set by a writer with
+    # evidence), never inherited from a default — it outranks 'inferred' in
+    # belief revision, so a silent default lets unvetted writes win conflicts.
+    grounding: Mapped[str] = mapped_column(String(20), default="inferred")
     status: Mapped[str] = mapped_column(String(20), default="validated")
 
     # Change tracking

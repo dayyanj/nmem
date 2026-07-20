@@ -1342,3 +1342,213 @@ class TestRetrospective:
 
         mem.consolidation._find_lesson_outcomes = orig_find
         mem.consolidation._classify_lesson_outcome = orig_classify
+
+
+@pytest.mark.asyncio
+class TestPolicyAlignment:
+    """Policy alignment sweep — dispute memory contradicting active policy."""
+
+    async def _seed_policy(self, mem: MemorySystem, key: str, content: str):
+        return await mem.policy.save(
+            "agent:djai", "operational_constraint", key, content, "system",
+        )
+
+    async def test_disabled_is_noop(self, mem: MemorySystem):
+        mem._config.policy_alignment.enabled = False
+        await self._seed_policy(mem, "pause_x", "Activity X is paused.")
+
+        shared_d, ltm_d = await mem.consolidation._run_policy_alignment()
+        assert (shared_d, ltm_d) == (0, 0)
+        mem._config.policy_alignment.enabled = True
+
+    async def test_no_active_policies_is_noop(self, mem: MemorySystem):
+        shared_d, ltm_d = await mem.consolidation._run_policy_alignment()
+        assert (shared_d, ltm_d) == (0, 0)
+
+    async def test_disputes_contradicting_shared_row(self, mem: MemorySystem):
+        """A shared row the LLM flags as contradicting gets grounding='disputed'
+        plus a change_log entry naming the policy."""
+        from unittest.mock import AsyncMock
+        from sqlalchemy import text
+
+        await self._seed_policy(
+            mem, "outreach_paused",
+            "OUTBOUND PROSPECTING IS PAUSED pending messaging redesign.",
+        )
+        stale = await mem.shared.save(
+            "boost_outreach_pattern",
+            "When approved content outpaces outreach 500x, boost outreach priority.",
+            "pattern", "agent-a", importance=8,
+        )
+
+        candidate = {
+            "table": "nmem_shared_knowledge", "id": stale.id,
+            "key": stale.key, "content": stale.content,
+        }
+        orig_find = mem.consolidation._find_policy_candidates
+        orig_classify = mem.consolidation._classify_policy_contradictions
+        mem.consolidation._find_policy_candidates = AsyncMock(return_value=[candidate])
+        mem.consolidation._classify_policy_contradictions = AsyncMock(return_value=[candidate])
+
+        shared_d, ltm_d = await mem.consolidation._run_policy_alignment()
+        assert shared_d == 1
+        assert ltm_d == 0
+
+        async with mem._db.session() as session:
+            result = await session.execute(text(
+                "SELECT grounding, change_log FROM nmem_shared_knowledge WHERE id = :id"
+            ), {"id": stale.id})
+            grounding, change_log = result.one()
+            assert grounding == "disputed"
+            assert change_log, "Expected a change_log entry"
+            assert change_log[-1]["action"] == "policy_alignment_disputed"
+            assert "outreach_paused" in change_log[-1]["policy"]
+
+        mem.consolidation._find_policy_candidates = orig_find
+        mem.consolidation._classify_policy_contradictions = orig_classify
+
+    async def test_already_disputed_row_not_recounted(self, mem: MemorySystem):
+        """Disputing is idempotent — an already-disputed row is skipped."""
+        from unittest.mock import AsyncMock
+
+        await self._seed_policy(mem, "pause_y", "Activity Y is paused.")
+        stale = await mem.shared.save(
+            "y_urgency", "Activity Y is urgent, do more of it.",
+            "pattern", "agent-a",
+        )
+        candidate = {
+            "table": "nmem_shared_knowledge", "id": stale.id,
+            "key": stale.key, "content": stale.content,
+        }
+        orig_find = mem.consolidation._find_policy_candidates
+        orig_classify = mem.consolidation._classify_policy_contradictions
+        mem.consolidation._find_policy_candidates = AsyncMock(return_value=[candidate])
+        mem.consolidation._classify_policy_contradictions = AsyncMock(return_value=[candidate])
+
+        first = await mem.consolidation._run_policy_alignment()
+        second = await mem.consolidation._run_policy_alignment()
+        assert first == (1, 0)
+        assert second == (0, 0)
+
+        mem.consolidation._find_policy_candidates = orig_find
+        mem.consolidation._classify_policy_contradictions = orig_classify
+
+    async def test_classifier_maps_numbers_to_candidates(self, mem: MemorySystem):
+        """LLM answer numbers map back to candidates; garbage is ignored."""
+        from unittest.mock import AsyncMock
+
+        policy = await self._seed_policy(mem, "pause_z", "Activity Z is paused.")
+        candidates = [
+            {"table": "nmem_shared_knowledge", "id": 1, "key": "a", "content": "aa"},
+            {"table": "nmem_long_term_memory", "id": 2, "key": "b", "content": "bb"},
+        ]
+        orig_llm = mem.consolidation._llm
+        fake_llm = AsyncMock()
+        fake_llm.complete_json = AsyncMock(
+            return_value={"contradicts": [2, 99, "x"], "rationale": "b conflicts"}
+        )
+        mem.consolidation._llm = fake_llm
+
+        # policy.save returns a PolicyEntry; the classifier only reads
+        # scope/key/content so it works with the returned entry directly.
+        result = await mem.consolidation._classify_policy_contradictions(
+            policy, candidates,
+        )
+        assert result == [candidates[1]]
+
+        # Prompt sanity: policy content and numbered candidates present
+        user_prompt = fake_llm.complete_json.call_args.args[1]
+        assert "Activity Z is paused" in user_prompt
+        assert "1. [nmem_shared_knowledge#1]" in user_prompt
+
+        mem.consolidation._llm = orig_llm
+
+
+@pytest.mark.asyncio
+class TestGroundingDefaults:
+    """v0.8.0: 'confirmed' grounding must be earned, never defaulted."""
+
+    async def test_shared_save_defaults_to_inferred(self, mem: MemorySystem):
+        entry = await mem.shared.save(
+            "some_fact", "Something an agent asserted.", "fact", "agent-a",
+        )
+        from sqlalchemy import text
+        async with mem._db.session() as session:
+            result = await session.execute(text(
+                "SELECT grounding FROM nmem_shared_knowledge WHERE id = :id"
+            ), {"id": entry.id})
+            assert result.scalar_one() == "inferred"
+
+    async def test_shared_save_explicit_confirmed_respected(self, mem: MemorySystem):
+        entry = await mem.shared.save(
+            "verified_fact", "Something verified against source.", "fact",
+            "agent-a", grounding="confirmed",
+        )
+        from sqlalchemy import text
+        async with mem._db.session() as session:
+            result = await session.execute(text(
+                "SELECT grounding FROM nmem_shared_knowledge WHERE id = :id"
+            ), {"id": entry.id})
+            assert result.scalar_one() == "confirmed"
+
+
+@pytest.mark.asyncio
+class TestPolicyAwareSynthesis:
+    """v0.8.0: nightly synthesis sees active policies and writes 'inferred'."""
+
+    async def test_synthesis_prompt_includes_policies_and_directive_content(
+        self, mem: MemorySystem,
+    ):
+        from unittest.mock import AsyncMock
+        from sqlalchemy import text
+
+        await mem.policy.save(
+            "agent:djai", "operational_constraint", "outreach_paused",
+            "OUTBOUND PROSPECTING IS PAUSED pending messaging redesign.",
+            "system",
+        )
+        # Directive-grade entry (importance 10) whose content must appear
+        # in the prompt, not just its title.
+        await mem.journal.add(
+            "djai", "founder_input_directive", "Founder directive: pause outreach",
+            "We paused outreach deliberately while pivoting to AGPL messaging.",
+            importance=10,
+        )
+        # Filler to clear the min-entries gate
+        for i in range(mem._config.consolidation.nightly_synthesis_min_entries):
+            await mem.journal.add(
+                "agent-a", "observation", f"Routine event {i}",
+                f"Routine content {i}", importance=6,
+            )
+
+        orig_llm = mem.consolidation._llm
+        fake_llm = AsyncMock()
+        fake_llm.complete_json = AsyncMock(return_value={"patterns": [{
+            "observation": "Outreach volume is zero",
+            "significance": "Expected under outreach_paused policy",
+            "recommendation": "No action; policy explains it",
+        }]})
+        mem.consolidation._llm = fake_llm
+
+        await mem.consolidation.run_nightly_synthesis()
+
+        # First complete_json call is the synthesis call
+        call = fake_llm.complete_json.call_args_list[0]
+        system_prompt, user_prompt = call.args[0], call.args[1]
+        assert "ACTIVE GOVERNANCE POLICIES" in user_prompt
+        assert "OUTBOUND PROSPECTING IS PAUSED" in user_prompt
+        assert "We paused outreach deliberately" in user_prompt
+        assert "must not contradict" in system_prompt
+
+        # The synthesized pattern lands as grounding='inferred'
+        async with mem._db.session() as session:
+            result = await session.execute(text(
+                "SELECT grounding FROM nmem_shared_knowledge "
+                "WHERE category = 'daily_synthesis' "
+                "ORDER BY created_at DESC LIMIT 1"
+            ))
+            row = result.one_or_none()
+            assert row is not None, "Expected a daily_synthesis entry"
+            assert row[0] == "inferred"
+
+        mem.consolidation._llm = orig_llm

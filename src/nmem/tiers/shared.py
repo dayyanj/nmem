@@ -45,7 +45,7 @@ class SharedTier:
         importance: int = 5,
         *,
         record_type: str = "fact",
-        grounding: str = "confirmed",
+        grounding: str = "inferred",
         project_scope: str | None = ...,
     ) -> SharedEntry:
         """Save or update a shared knowledge entry.
@@ -57,7 +57,10 @@ class SharedTier:
             agent_id: Agent making the change.
             importance: Importance 1-10.
             record_type: "fact", "policy", "procedure", etc.
-            grounding: "confirmed", "inferred", etc.
+            grounding: "confirmed", "inferred", etc. Defaults to "inferred" —
+                'confirmed' outranks 'inferred' in belief revision, so it must
+                be claimed explicitly (ideally with evidence), never inherited
+                from a default.
             project_scope: Scope filter.
 
         Returns:

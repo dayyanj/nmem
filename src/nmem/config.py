@@ -325,6 +325,46 @@ class RetrospectiveConfig(BaseModel):
     """Which LTM `record_type` values the retrospective considers lessons."""
 
 
+class PolicyAlignmentConfig(BaseModel):
+    """Nightly policy alignment sweep — demotes memory that contradicts
+    active governance policy.
+
+    Policies are approved standing decisions (highest authority in the
+    hierarchy), but they live outside conflict scanning: a policy write
+    never triggers belief revision against shared/LTM rows, so stale
+    knowledge that predates a policy change keeps circulating as
+    'validated' — and consolidation can even re-synthesize it nightly
+    (the echo-chamber failure mode).
+
+    This sweep closes the loop: for each active policy, semantically
+    similar validated shared/LTM rows are collected and an LLM judges
+    which of them *contradict* the policy (acting on the row would
+    violate it, or it asserts a state the policy superseded). Contradicting
+    rows get `grounding='disputed'` — demoted in belief revision, search
+    ranking, and importance scoring, but never deleted.
+
+    Rows already disputed are skipped, so a stable corpus converges to
+    zero LLM calls. One LLM call per policy with candidates.
+    """
+
+    enabled: bool = True
+    """Enable/disable the policy alignment sweep."""
+
+    max_policies_per_run: int = 10
+    """Maximum active policies swept per night (most recently updated
+    first, so fresh policy changes are checked before old stable ones)."""
+
+    top_k: int = 8
+    """Maximum candidate rows fetched per policy per table."""
+
+    min_similarity: float = 0.55
+    """Cosine similarity floor for a row to count as a candidate."""
+
+    max_llm_calls_per_run: int = 10
+    """Maximum LLM judgments per nightly run (one call covers all of a
+    policy's candidates). Bounds cost regardless of policy count."""
+
+
 class RecognitionConfig(BaseModel):
     """Recognition signal thresholds and scoring weights.
 
@@ -498,6 +538,9 @@ class NmemConfig(BaseSettings):
 
     retrospective: RetrospectiveConfig = RetrospectiveConfig()
     """Nightly retrospective (lesson validation against new evidence)."""
+
+    policy_alignment: PolicyAlignmentConfig = PolicyAlignmentConfig()
+    """Nightly policy alignment sweep (dispute memory contradicting policy)."""
 
     recognition: RecognitionConfig = RecognitionConfig()
     """Recognition signal computation (KNOWN/FAMILIAR/UNCERTAIN)."""

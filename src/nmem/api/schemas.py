@@ -136,7 +136,7 @@ class SharedEntryCreate(BaseModel):
     agent_id: str
     importance: int = Field(default=5, ge=1, le=10)
     record_type: str = "fact"
-    grounding: str = "confirmed"
+    grounding: str = "inferred"
     project_scope: str | None = None
 
 

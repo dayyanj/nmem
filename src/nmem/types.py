@@ -263,6 +263,8 @@ class ConsolidationStats:
     conflicts_needs_review: int = 0
     lessons_validated: int = 0
     lessons_disputed: int = 0
+    policy_disputed_shared: int = 0
+    policy_disputed_ltm: int = 0
     salience_decayed: int = 0
     curiosity_decayed: int = 0
     patterns_synthesized: int = 0
