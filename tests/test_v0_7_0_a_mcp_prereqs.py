@@ -40,6 +40,10 @@ class TestDatabaseManagerUrl:
         """The public accessor must return exactly what the internal
         engine was constructed with — no post-processing that would
         break DSN derivation."""
+        # Constructing a +asyncpg engine imports the asyncpg dialect, which the
+        # SQLite-only CI job doesn't install. This test is about asyncpg DSN
+        # handling, so skip it when asyncpg is absent rather than error.
+        pytest.importorskip("asyncpg")
         from nmem.db.session import DatabaseManager
         dm = DatabaseManager("postgresql+asyncpg://user:pass@host/db")
         assert dm.url == dm._url
@@ -47,6 +51,7 @@ class TestDatabaseManagerUrl:
     def test_url_strippable_to_asyncpg_dsn(self):
         """The nmem-sym MCP wiring pattern (strip +asyncpg to get a
         raw asyncpg DSN) works against the public url."""
+        pytest.importorskip("asyncpg")  # +asyncpg engine needs the dialect
         from nmem.db.session import DatabaseManager
         dm = DatabaseManager("postgresql+asyncpg://user:pass@host/db")
         asyncpg_dsn = dm.url.replace("+asyncpg", "")
