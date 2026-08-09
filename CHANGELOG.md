@@ -3,6 +3,30 @@
 All notable changes to nmem are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.1] — 2026-08-09
+
+**Curiosity signals become an accumulating, consumable queue.** Supports
+nmem-sym 0.8.0's per-problem "Concerns", which mirror these signals and report
+resolutions back.
+
+### Added
+
+- **`CognitiveEngine.list_pending_curiosity(min_composite=, limit=)`** and
+  **`resolve_curiosity(signal_id, outcome=, resolved_by=)`** — the read/resolve
+  surface a consumer needs to act on the curiosity queue and close the loop
+  (nmem-sym mirrors pending signals into concerns and calls `resolve_curiosity`
+  once a drive has spent a targeted action on one).
+
+### Fixed
+
+- **Curiosity `recurrence_score` was dead and `composite_score` could only
+  decay.** `emit_curiosity` now dedups pending signals by `(trigger_type,
+  entity)` (or summary when no entity) and *reinforces* on a repeat: it bumps
+  the previously-unwritten `recurrence_score`, takes the stronger of each
+  component score, recomputes `composite_score` (which can now climb toward its
+  ceiling), and refreshes staleness. Re-encountering the same problem sharpens a
+  single signal instead of spawning duplicate rows that each only ever decayed.
+
 ## [0.8.0] — 2026-07-20
 
 Governance-aware consolidation. Closes the echo-chamber failure mode

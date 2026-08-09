@@ -34,23 +34,28 @@ Any subsystem detects something interesting
     v
 cognitive.emit_curiosity(
     source_agent,
-    trigger_type,      # "graph_hypothesis", "anomaly", "pattern"
+    trigger_type,      # "contradiction", "missing_information", "unusual_pattern", ...
     summary,
     novelty_score,     # How new is this?
     uncertainty_score,  # How unsure are we?
     conflict_score,     # Does it contradict existing knowledge?
-    recurrence_score,   # How often does this come up?
     business_impact,    # How important is this?
+    entity_type, entity_id,   # optional provenance (used for dedup)
 )
     |
-    ├── composite_score = weighted combination
-    ├── Status: "active"
+    ├── Dedup: a pending signal for the same problem is *reinforced* — bumps
+    │   recurrence_score, takes the stronger components, recomputes composite
+    │   (which now climbs toward 1.0), refreshes staleness — instead of
+    │   inserting a duplicate row. (0.8.1)
+    ├── composite_score = weighted combination + recurrence
+    ├── Status: "pending"
     └── Stored in nmem_curiosity_signals
 
 Curiosity signals:
     → Feed nmem-sym hypothesis generation
     → Decay over time during consolidation
-    → Can be queried by agents for exploration targets
+    → Queried via list_pending_curiosity(); marked done via resolve_curiosity()
+      — nmem-sym mirrors them into per-problem concerns and reports back (0.8.1)
 ```
 
 ## Counterfactual Reasoning
