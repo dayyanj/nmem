@@ -3,6 +3,20 @@
 All notable changes to nmem are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.2] — 2026-08-09
+
+Test-only release: identical package behavior to 0.8.1, cut so the release CI
+is green.
+
+### Fixed
+
+- **SQLite CI job.** The two `+asyncpg` `DatabaseManager` tests in
+  `test_v0_7_0_a_mcp_prereqs.py` errored with `ModuleNotFoundError: asyncpg`
+  because the SQLite job doesn't install the postgres driver, and constructing a
+  `postgresql+asyncpg` engine eagerly imports the dialect. Guarded with
+  `pytest.importorskip("asyncpg")` — they're specifically about asyncpg DSN
+  handling. (Pre-existing since v0.7.0; first surfaced by the 0.8.1 push.)
+
 ## [0.8.1] — 2026-08-09
 
 **Curiosity signals become an accumulating, consumable queue.** Supports
