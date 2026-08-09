@@ -21,6 +21,36 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# Weight of accumulated recurrence in a curiosity signal's composite score.
+# A problem re-encountered many times becomes maximally salient even if any
+# single observation was mild — this is nmem's per-topic pressure buildup.
+_CURIOSITY_RECURRENCE_WEIGHT = 0.4
+# Recurrence added each time the same signal is re-emitted (saturates at 1.0).
+_CURIOSITY_RECURRENCE_STEP = 0.25
+
+
+def _curiosity_composite(
+    novelty: float,
+    uncertainty: float,
+    conflict: float,
+    business_impact: float,
+    recurrence: float = 0.0,
+) -> float:
+    """Composite salience of a curiosity signal, including recurrence.
+
+    With recurrence=0 this is byte-for-byte the original formula, so freshly
+    emitted signals are unchanged. Repeated observations of the same problem
+    raise recurrence, which lifts the composite toward its 1.0 ceiling.
+    """
+    base = (
+        novelty * 0.3
+        + uncertainty * 0.2
+        + conflict * 0.2
+        + business_impact * 0.3
+    )
+    return min(1.0, base + recurrence * _CURIOSITY_RECURRENCE_WEIGHT)
+
+
 class CognitiveEngine:
     """Cognitive capabilities for agent memory."""
 
@@ -228,16 +258,81 @@ class CognitiveEngine:
         Returns:
             CuriositySignalInfo with computed composite score.
         """
+        from datetime import datetime
+
+        from sqlalchemy import select
         from nmem.db.models import CuriositySignalModel
 
-        composite = (
-            novelty_score * 0.3
-            + uncertainty_score * 0.2
-            + conflict_score * 0.2
-            + business_impact * 0.3
-        )
-
         async with self._db.session() as session:
+            # Dedup: does a live (pending) signal for the same problem already
+            # exist? Keyed by (trigger_type, entity) when an entity is given,
+            # else by (trigger_type, summary). Re-emitting the same problem
+            # should sharpen one signal — accumulating recurrence — rather than
+            # spawn duplicates that each only ever decay.
+            if entity_type and entity_id:
+                match = (
+                    CuriositySignalModel.entity_type == entity_type,
+                    CuriositySignalModel.entity_id == entity_id,
+                )
+            else:
+                match = (CuriositySignalModel.summary == summary,)
+
+            existing = (
+                await session.execute(
+                    select(CuriositySignalModel)
+                    .where(
+                        CuriositySignalModel.status == "pending",
+                        CuriositySignalModel.trigger_type == trigger_type,
+                        *match,
+                    )
+                    .order_by(CuriositySignalModel.composite_score.desc())
+                    .limit(1)
+                )
+            ).scalars().first()
+
+            if existing is not None:
+                # Reinforce: bump recurrence, take the stronger of each component
+                # (a repeat is at least as salient), recompute composite.
+                existing.recurrence_score = min(
+                    1.0, existing.recurrence_score + _CURIOSITY_RECURRENCE_STEP
+                )
+                existing.novelty_score = max(existing.novelty_score, novelty_score)
+                existing.uncertainty_score = max(existing.uncertainty_score, uncertainty_score)
+                existing.conflict_score = max(existing.conflict_score, conflict_score)
+                existing.business_impact = max(existing.business_impact, business_impact)
+                existing.composite_score = _curiosity_composite(
+                    existing.novelty_score,
+                    existing.uncertainty_score,
+                    existing.conflict_score,
+                    existing.business_impact,
+                    existing.recurrence_score,
+                )
+                # Re-observation refreshes staleness so an actively-recurring
+                # problem is not decayed away by _decay_curiosity_signals, which
+                # keys off created_at (naive UTC, matching that method).
+                existing.created_at = datetime.utcnow()
+                await session.flush()
+
+                return CuriositySignalInfo(
+                    id=existing.id,
+                    source_agent=existing.source_agent,
+                    trigger_type=existing.trigger_type,
+                    summary=existing.summary,
+                    composite_score=existing.composite_score,
+                    novelty_score=existing.novelty_score,
+                    uncertainty_score=existing.uncertainty_score,
+                    conflict_score=existing.conflict_score,
+                    recurrence_score=existing.recurrence_score,
+                    business_impact=existing.business_impact,
+                    status=existing.status,
+                    entity_type=existing.entity_type,
+                    entity_id=existing.entity_id,
+                    created_at=existing.created_at,
+                )
+
+            composite = _curiosity_composite(
+                novelty_score, uncertainty_score, conflict_score, business_impact,
+            )
             record = CuriositySignalModel(
                 source_agent=source_agent,
                 trigger_type=trigger_type,
@@ -262,8 +357,93 @@ class CognitiveEngine:
                 novelty_score=novelty_score,
                 uncertainty_score=uncertainty_score,
                 conflict_score=conflict_score,
+                recurrence_score=0.0,
                 business_impact=business_impact,
+                status="pending",
                 entity_type=entity_type,
                 entity_id=entity_id,
                 created_at=record.created_at,
             )
+
+    async def list_pending_curiosity(
+        self,
+        *,
+        min_composite: float = 0.0,
+        limit: int = 20,
+    ) -> list[CuriositySignalInfo]:
+        """List pending curiosity signals, strongest first.
+
+        Read surface for consumers that act on the exploration queue (e.g.
+        nmem-sym mirrors these into per-problem "concerns"). Only 'pending'
+        signals are returned; those above `min_composite` are the ones worth
+        spending attention on.
+        """
+        from sqlalchemy import select
+        from nmem.db.models import CuriositySignalModel
+
+        async with self._db.session() as session:
+            rows = (
+                await session.execute(
+                    select(CuriositySignalModel)
+                    .where(
+                        CuriositySignalModel.status == "pending",
+                        CuriositySignalModel.composite_score >= min_composite,
+                    )
+                    .order_by(CuriositySignalModel.composite_score.desc())
+                    .limit(limit)
+                )
+            ).scalars().all()
+
+            return [
+                CuriositySignalInfo(
+                    id=r.id,
+                    source_agent=r.source_agent,
+                    trigger_type=r.trigger_type,
+                    summary=r.summary,
+                    composite_score=r.composite_score,
+                    novelty_score=r.novelty_score,
+                    uncertainty_score=r.uncertainty_score,
+                    conflict_score=r.conflict_score,
+                    recurrence_score=r.recurrence_score,
+                    business_impact=r.business_impact,
+                    status=r.status,
+                    entity_type=r.entity_type,
+                    entity_id=r.entity_id,
+                    created_at=r.created_at,
+                )
+                for r in rows
+            ]
+
+    async def resolve_curiosity(
+        self,
+        signal_id: int,
+        *,
+        outcome: str = "addressed",
+        resolved_by: str = "nmem",
+    ) -> bool:
+        """Mark a curiosity signal resolved. Returns True if a pending row was updated.
+
+        Called when a consumer has acted on the signal (e.g. nmem-sym's drive
+        system spent a targeted action on the concern mirroring it), closing
+        the exploration loop so the signal is no longer re-served.
+        """
+        from datetime import datetime
+
+        from sqlalchemy import select
+        from nmem.db.models import CuriositySignalModel
+
+        async with self._db.session() as session:
+            record = (
+                await session.execute(
+                    select(CuriositySignalModel).where(
+                        CuriositySignalModel.id == signal_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if record is None or record.status != "pending":
+                return False
+            record.status = "resolved"
+            record.resolution_outcome = outcome
+            record.resolved_by = resolved_by
+            record.resolved_at = datetime.utcnow()
+            return True
