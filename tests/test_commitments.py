@@ -78,6 +78,19 @@ async def test_standalone_records_without_backend(mem):
 
 
 @pytest.mark.asyncio
+async def test_impose_inherits_instance_scope_and_list_is_isolated(mem):
+    """A scoped instance records host-imposed commitments under its own scope
+    (no explicit project_scope needed), and list() only shows that scope."""
+    mem._config.project_scope = "proj-A"
+    a = await mem.commitments.impose("founder", "scoped work")   # no scope arg
+    assert a.project_scope == "proj-A"
+    # A commitment belonging to another project isn't visible here.
+    await mem.commitments.impose("founder", "other work", project_scope="proj-B")
+    scoped = await mem.commitments.list("open")
+    assert [c.description for c in scoped] == ["scoped work"]
+
+
+@pytest.mark.asyncio
 async def test_flush_pending_mirrors_on_backend_attach(mem):
     # imposed before any backend was attached
     await mem.commitments.impose("founder", "prior commitment")

@@ -44,9 +44,10 @@ _TERMINAL = {"fulfilled": "fulfilled", "breached": "breached", "abandoned": "aba
 class CommitmentManager:
     """Conscious commitments + forwarding to a registered cognitive backend."""
 
-    def __init__(self, db, emit):
+    def __init__(self, db, emit, config=None):
         self._db = db
         self._emit = emit                    # async mem._emit — host-facing events
+        self._config = config                # NmemConfig — for project_scope default
         self._backend: Any = None            # registered subconscious backend
         self._requester_ids: dict[str, int] = {}   # name → backend requester id (cache)
         import asyncio
@@ -83,6 +84,10 @@ class CommitmentManager:
     def has_backend(self) -> bool:
         return self._backend is not None
 
+    def _scope(self) -> str | None:
+        """The instance's project scope — read live so it tracks config."""
+        return getattr(self._config, "project_scope", None)
+
     # ── impose / lifecycle ────────────────────────────────────
 
     async def impose(
@@ -99,6 +104,8 @@ class CommitmentManager:
         """Record a commitment and forward it to the subconscious backend."""
         from nmem.db.models import CommitmentModel
 
+        if project_scope is None:
+            project_scope = self._scope()   # inherit the instance's scope
         async with self._db.session() as session:
             row = CommitmentModel(
                 requester=requester, authority=authority, description=description,
@@ -158,10 +165,13 @@ class CommitmentManager:
     async def list(self, status: str = "open") -> list[CommitmentInfo]:
         from sqlalchemy import select
         from nmem.db.models import CommitmentModel
+        scope = self._scope()   # only this instance's scope — no cross-project leak
+        scope_filter = (CommitmentModel.project_scope.is_(None) if scope is None
+                        else CommitmentModel.project_scope == scope)
         async with self._db.session() as session:
             rows = (await session.execute(
                 select(CommitmentModel)
-                .where(CommitmentModel.status == status)
+                .where(CommitmentModel.status == status, scope_filter)
                 .order_by(CommitmentModel.created_at.desc()))).scalars().all()
             return [self._to_info(r) for r in rows]
 
@@ -216,14 +226,19 @@ class CommitmentManager:
         from nmem.db.models import CommitmentModel
         async with self._mirror_lock:
             # Re-check under the lock: a concurrent impose()/flush may already
-            # have mirrored this commitment (both match "open + null sym").
+            # have mirrored this commitment (both match "open + null sym"), or it
+            # may have been confirmed/abandoned between selection and here — in
+            # which case mirroring would impose an obligation for a closed record.
             async with self._db.session() as session:
-                current = await session.scalar(
-                    select(CommitmentModel.sym_obligation_id)
-                    .where(CommitmentModel.id == info.id))
-            if current is not None:
-                info.sym_obligation_id = current
+                row = (await session.execute(
+                    select(CommitmentModel.sym_obligation_id, CommitmentModel.status)
+                    .where(CommitmentModel.id == info.id))).first()
+            if row is None or row[0] is not None:
+                if row is not None:
+                    info.sym_obligation_id = row[0]
                 return
+            if row[1] != "open":
+                return   # resolved before we could mirror — nothing to forward
             try:
                 req_id = self._requester_ids.get(info.requester)
                 if req_id is None:

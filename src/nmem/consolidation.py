@@ -1620,12 +1620,17 @@ class Consolidator:
         # Dedup vs ALL commitments created within the window (any status) — a
         # commitment already resolved (fulfilled/breached) mustn't be re-imposed
         # just because its journal entry is still in the lookback window.
+        # Scope the dedup to the exact scope we'd impose into (impose uses
+        # `scope`), so a same-named commitment in another project can't suppress
+        # detection here — and a global instance isn't affected by scoped rows.
         from nmem.db.models import CommitmentModel
+        dedup_scope = (CommitmentModel.project_scope.is_(None) if scope is None
+                       else CommitmentModel.project_scope == scope)
         async with self._db.session() as session:
             existing = {
                 (r[0], r[1]) for r in (await session.execute(
                     select(CommitmentModel.requester, CommitmentModel.description)
-                    .where(CommitmentModel.created_at >= since))).all()}
+                    .where(CommitmentModel.created_at >= since, dedup_scope))).all()}
         imposed = 0
         for d in detected:
             if not isinstance(d, dict):

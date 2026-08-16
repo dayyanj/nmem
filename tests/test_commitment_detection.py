@@ -90,6 +90,22 @@ async def test_detect_respects_project_scope(mem):
 
 
 @pytest.mark.asyncio
+async def test_detect_not_suppressed_by_other_scope(mem):
+    """A same-named commitment in another project must NOT suppress detection
+    here — dedup is scoped to the scope we'd impose into."""
+    mem._config.commitment_detection.enabled = True
+    # An identical commitment already exists in project B.
+    await mem.commitments.impose("founder", "ship", project_scope="proj-B")
+    mem._config.project_scope = "proj-A"
+    await _add_note(mem, "belongs to A", project_scope="proj-A")
+    _llm_returns(mem, [{"requester": "founder", "description": "ship",
+                        "deadline": "2026-08-20T00:00:00Z", "confidence": 0.9}])
+    assert await mem.consolidation.detect_commitments() == 1   # not suppressed by B
+    (c,) = await mem.commitments.list("open")
+    assert c.project_scope == "proj-A"
+
+
+@pytest.mark.asyncio
 async def test_detect_disabled_is_noop(mem):
     await _add_note(mem, "I'll definitely do the thing by Monday.")
     # enabled defaults to False; LLM must not even be consulted
