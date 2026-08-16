@@ -34,7 +34,10 @@ class DatabaseManager:
     """Manages the async SQLAlchemy engine and session factory."""
 
     def __init__(self, database_url: str, echo: bool = False):
-        if "postgres" not in database_url:
+        # Guard on the dialect scheme, not a substring — else e.g.
+        # "sqlite:///postgres.db" would slip through.
+        scheme = database_url.split("://", 1)[0].lower()
+        if not scheme.startswith("postgresql"):
             raise ValueError(
                 "nmem requires PostgreSQL + pgvector. SQLite was dropped in 0.9.2 "
                 f"(see the DatabaseManager docstring). Got: {database_url!r}. "
