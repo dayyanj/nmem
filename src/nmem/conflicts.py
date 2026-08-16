@@ -344,8 +344,10 @@ async def list_conflicts(
     # ... sentinel = no scope filter (backwards-compat default)
 
     if since_days is not None and since_days >= 0:
-        from datetime import timedelta, timezone as tz
-        cutoff = datetime.now(tz.utc) - timedelta(days=since_days)
+        from datetime import timedelta
+        # created_at is a naive TIMESTAMP (stored via datetime.utcnow()); the
+        # cutoff must be naive too, else asyncpg rejects the aware/naive compare.
+        cutoff = datetime.utcnow() - timedelta(days=since_days)
         filters.append(MemoryConflictModel.created_at >= cutoff)
 
     async with db.session() as session:

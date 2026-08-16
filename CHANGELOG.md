@@ -3,6 +3,44 @@
 All notable changes to nmem are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.2] — 2026-08-16
+
+**Theme: PostgreSQL + pgvector is now the only supported backend — SQLite is
+dropped.** nmem is a concurrent multi-writer system (background consolidation,
+the cognitive-backend commitment flush, the obligation reverse channel, drive
+ticks) and its core feature is vector search. SQLite fit neither: on an in-memory
+shared connection, a background write could silently clobber a committed
+transaction, and vector search was only ever a degraded in-Python numpy fallback
+(no pgvector, no HNSW). Every recent release also paid a SQLite-only portability
+tax (GREATEST shims, `ALTER TABLE` limits, asyncpg-skip guards, aiosqlite/JSON
+greenlet workarounds). Removing it deletes that whole class of complexity and
+false CI failures.
+
+### Removed
+
+- **SQLite backend.** `DatabaseManager` now raises `ValueError` on a non-postgres
+  URL. Removed the JSON-text vector fallback, the in-Python cosine
+  `_sqlite_fallback_search`, and every `is_postgres`/`is_sqlite` branch across the
+  DB layer, search, links, policy, MCP, CLI, and API. The `nmem[sqlite]` extra is
+  gone; `nmem init --sqlite` is removed.
+- The CI SQLite unit-test matrix. The full suite now runs against PostgreSQL +
+  pgvector across Python 3.11–3.13.
+
+### Changed
+
+- `asyncpg` and `pgvector` moved from the `postgres` extra into core
+  dependencies (they are required). `nmem[postgres]` is kept as a no-op alias so
+  existing install commands still resolve.
+- Tests run against a shared Postgres DB with per-test truncation for isolation
+  (previously each test got a fresh SQLite `:memory:`).
+
+### Fixed
+
+- **`memory_check_conflicts(since_days=…)` crashed on PostgreSQL.** The cutoff was
+  built with a tz-aware `datetime.now(utc)` and compared against the naive
+  `TIMESTAMP` `created_at` column, which asyncpg rejects. Now uses a naive
+  cutoff. (Latent bug masked by SQLite; surfaced by the Postgres-only test run.)
+
 ## [0.9.0] — 2026-08-16
 
 **Theme: nmem is the conscious interface to the cognitive system.** Until now a

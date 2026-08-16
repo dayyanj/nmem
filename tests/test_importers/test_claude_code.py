@@ -9,6 +9,8 @@ from nmem.cli.importers.claude_code import (
     import_claude_code,
 )
 
+from tests.conftest import TEST_DB_URL, reset_db
+
 
 @pytest.fixture
 def claude_dir(tmp_path):
@@ -73,12 +75,13 @@ def test_import_maps_types(claude_dir):
 
     async def _test():
         config = NmemConfig(
-            database_url="sqlite+aiosqlite:///:memory:",
+            database_url=TEST_DB_URL,
             embedding={"provider": "noop"},
             llm={"provider": "noop"},
         )
         mem = MemorySystem(config)
         await mem.initialize()
+        await reset_db(mem)
 
         result = await import_claude_code(mem, claude_dir, agent_id="test")
         assert result.imported >= 3  # 2 memories + 1 CLAUDE.md

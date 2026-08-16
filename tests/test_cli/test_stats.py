@@ -7,7 +7,7 @@ from nmem.cli.main import app
 
 
 def test_stats_empty(runner, cli_env):
-    runner.invoke(app, ["init", "--sqlite"])
+    runner.invoke(app, ["init"])
     result = runner.invoke(app, ["stats"])
     assert result.exit_code == 0
     assert "Memory Tier Statistics" in result.output
@@ -18,7 +18,7 @@ def test_stats_with_data(runner, cli_env):
     """Counts reflect actual data."""
     from nmem import MemorySystem, NmemConfig
 
-    runner.invoke(app, ["init", "--sqlite"])
+    runner.invoke(app, ["init"])
 
     async def _populate():
         config = NmemConfig(
@@ -44,7 +44,7 @@ def test_stats_per_agent_breakdown(runner, cli_env):
     """Per-agent table appears when data exists."""
     from nmem import MemorySystem, NmemConfig
 
-    runner.invoke(app, ["init", "--sqlite"])
+    runner.invoke(app, ["init"])
 
     async def _populate():
         config = NmemConfig(

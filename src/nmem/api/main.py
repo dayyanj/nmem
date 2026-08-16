@@ -11,7 +11,7 @@ Usage:
 
     # Or with explicit config:
     from nmem import NmemConfig
-    config = NmemConfig(database_url="sqlite+aiosqlite:///test.db")
+    config = NmemConfig(database_url="postgresql+asyncpg://localhost/nmem")
     app = create_app(config=config)
 """
 

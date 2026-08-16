@@ -1,9 +1,8 @@
 """
 nmem SQLAlchemy models — all memory tier tables.
 
-These models are designed to work with both PostgreSQL (pgvector) and SQLite
-(numpy fallback). The Vector column is conditionally defined based on
-pgvector availability.
+Targets PostgreSQL + pgvector only (SQLite was dropped in 0.9.2). The Vector
+column maps to pgvector's native `vector` type.
 """
 
 from __future__ import annotations
@@ -23,38 +22,21 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-# PostgreSQL-specific types with fallbacks for portability
+# pgvector is required — nmem is PostgreSQL + pgvector only.
 try:
     from pgvector.sqlalchemy import Vector as PgVector
+except ImportError as e:  # pragma: no cover
+    raise ImportError(
+        "nmem requires pgvector (PostgreSQL + pgvector only since 0.9.2). "
+        "Install the postgres extra: pip install 'nmem[postgres]'."
+    ) from e
 
-    def VectorColumn(dim: int):  # noqa: N802
-        return mapped_column(PgVector(dim), nullable=True)
 
-    HAS_PGVECTOR = True
-except ImportError:
+def VectorColumn(dim: int):  # noqa: N802
+    return mapped_column(PgVector(dim), nullable=True)
 
-    class _VectorAsJSON(types.TypeDecorator):
-        """Store embedding vectors as JSON text in SQLite (no pgvector)."""
 
-        impl = Text
-        cache_ok = True
-
-        def process_bind_param(self, value, dialect):
-            if value is None:
-                return None
-            import json as _json
-            return _json.dumps(value)
-
-        def process_result_value(self, value, dialect):
-            if value is None:
-                return None
-            import json as _json
-            return _json.loads(value)
-
-    def VectorColumn(dim: int):  # noqa: N802
-        return mapped_column(_VectorAsJSON(), nullable=True)
-
-    HAS_PGVECTOR = False
+HAS_PGVECTOR = True
 
 
 class JSONType(types.TypeDecorator):

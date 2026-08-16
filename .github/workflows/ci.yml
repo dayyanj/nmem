@@ -7,32 +7,12 @@ on:
     branches: [main]
 
 jobs:
-  test-unit:
-    name: Unit Tests (SQLite)
+  test:
+    name: Tests (PostgreSQL + pgvector)
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        run: |
-          pip install -e ".[cli,sqlite,mcp-server,api]"
-          pip install "pytest>=8.0" "pytest-asyncio>=0.23" "pytest-cov>=5.0" "pytest-timeout>=2.0" "asgi-lifespan>=2.1"
-
-      - name: Run unit tests
-        run: pytest tests/ --ignore=tests/integration -v --timeout=60
-
-  test-integration:
-    name: Integration Tests (PostgreSQL + pgvector)
-    runs-on: ubuntu-latest
 
     services:
       postgres:
@@ -52,17 +32,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
         run: |
-          pip install -e ".[cli,postgres]"
-          pip install "pytest>=8.0" "pytest-asyncio>=0.23" "pytest-cov>=5.0" "pytest-timeout>=2.0"
+          pip install -e ".[cli,mcp-server,api]"
+          pip install "pytest>=8.0" "pytest-asyncio>=0.23" "pytest-cov>=5.0" "pytest-timeout>=2.0" "pytest-randomly>=3.15" "asgi-lifespan>=2.1"
 
-      - name: Verify database and create pgvector extension
+      - name: Create pgvector extension
         run: |
           python -c "
           import asyncio, asyncpg
@@ -74,10 +54,10 @@ jobs:
           asyncio.run(setup())
           "
 
-      - name: Run integration tests (mock embeddings)
+      - name: Run tests
         env:
           NMEM_TEST_DSN: postgresql+asyncpg://nmem:nmem@localhost:5433/nmem
-        run: pytest tests/integration/test_postgres.py -v --timeout=30
+        run: pytest tests/ -v --timeout=120
 
   lint:
     name: Lint
@@ -91,7 +71,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -e ".[cli,sqlite]"
+        run: pip install -e ".[cli]"
 
       - name: Check imports
         run: python -c "import nmem; print(f'nmem {nmem.__version__} imported successfully')"

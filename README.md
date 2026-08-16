@@ -101,7 +101,7 @@ Your Agent (LangChain / CrewAI / Plain Python)
    ┌─────────┐  ┌──────────┐  ┌─────────┐
    │ Database│  │ Embedding│  │  LLM    │
    │ pg+vec  │  │ MiniLM   │  │ vLLM    │
-   │ SQLite  │  │ OpenAI   │  │ Ollama  │
+   │         │  │ OpenAI   │  │ Ollama  │
    └─────────┘  └──────────┘  └─────────┘
 ```
 
@@ -130,7 +130,7 @@ Your Agent (LangChain / CrewAI / Plain Python)
 - **Configuration profiles**: `NmemConfig.from_profile("refinery")` for pre-tuned multi-agent defaults, or `"neutral"` for generic. Custom profiles via `register_profile()`
 - **Governance**: policy memory with writer/proposer permissions, entity memory with grounding levels (`source_material` / `confirmed` / `inferred` / `disputed`)
 - **Framework adapters**: LangChain (`BaseMemory` compatible), CrewAI, or plain Python — `pip install nmem[langchain]`
-- **Pluggable providers**: bring your own LLM (OpenAI-compatible, Anthropic), embedding model (sentence-transformers, OpenAI), and database (PostgreSQL + pgvector, SQLite)
+- **Pluggable providers**: bring your own LLM (OpenAI-compatible, Anthropic) and embedding model (sentence-transformers, OpenAI). Storage is PostgreSQL + pgvector.
 
 ## Companion packages
 
@@ -273,7 +273,7 @@ mem.start_consolidation()
 
 | Component | Options |
 |-----------|---------|
-| **Database** | PostgreSQL + pgvector (production), SQLite (dev) |
+| **Database** | PostgreSQL + pgvector |
 | **Embedding** | sentence-transformers (local), OpenAI (cloud), no-op |
 | **LLM** | OpenAI-compatible (vLLM, Ollama), Anthropic, no-op |
 
@@ -323,7 +323,7 @@ We want this project to have honest numbers, even when they're unflattering. If 
 ## CLI
 
 ```bash
-nmem init [--sqlite]              # Initialize database
+nmem init                         # Initialize database (creates tables + indexes)
 nmem demo                         # Run interactive demo
 nmem search <query>               # Search across all tiers
 nmem stats                        # Show tier counts + per-agent breakdown

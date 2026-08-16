@@ -679,8 +679,7 @@ async def memory_stats(ctx: Context) -> str:
         total += count
         lines.append(f"  {label}: {count}")
 
-    db_type = "PostgreSQL" if mem._db.is_postgres else "SQLite"
-    lines.append(f"\nDatabase: {db_type}")
+    lines.append("\nDatabase: PostgreSQL")
     lines.append(f"Embedding: {mem._config.embedding.provider}")
     lines.append(f"Total entries: {total}")
 

@@ -93,7 +93,7 @@ def stats():
                 console.print(agent_table)
 
             # ── System Info ───────────────────────────────────────
-            db_type = "PostgreSQL" if mem._db.is_postgres else "SQLite"
+            db_type = "PostgreSQL"
             db_size = ""
             if mem._db.is_postgres:
                 try:

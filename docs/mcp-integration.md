@@ -205,4 +205,4 @@ The net effect: Claude genuinely gets smarter about your codebase with each conv
 
 **Slow responses:**
 - The embedding model loads on first use (~2-3s). Subsequent calls are fast.
-- For large datasets (1000+ entries), ensure PostgreSQL is used (not SQLite)
+- For large datasets (1000+ entries), ensure the pgvector HNSW indexes exist (created by `nmem init`)

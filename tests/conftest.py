@@ -1,7 +1,8 @@
 """
 Test fixtures for nmem.
 
-Uses PostgreSQL if available (docker compose on port 5433), falls back to SQLite.
+Requires PostgreSQL + pgvector (docker compose on port 5433). SQLite was dropped
+in 0.9.2. Override the DSN with NMEM_TEST_DSN.
 """
 
 from __future__ import annotations
@@ -14,37 +15,40 @@ from sqlalchemy import text
 
 from nmem import MemorySystem, NmemConfig
 
-# Use PostgreSQL if available, otherwise SQLite
 _PG_URL = "postgresql+asyncpg://nmem:nmem@localhost:5433/nmem"
-_SQLITE_URL = "sqlite+aiosqlite:///:memory:"
 
 
-def _detect_db_url() -> str:
-    """Detect which database to use for tests."""
-    # Explicit override
-    env_url = os.environ.get("NMEM_TEST_DSN")
-    if env_url:
-        return env_url
+TEST_DB_URL = os.environ.get("NMEM_TEST_DSN", _PG_URL)
 
-    # Try PostgreSQL
-    try:
-        import asyncpg
-
-        async def _check():
-            conn = await asyncpg.connect("postgresql://nmem:nmem@localhost:5433/nmem")
-            await conn.close()
-            return True
-
-        import asyncio
-        if asyncio.run(_check()):
-            return _PG_URL
-    except Exception:
-        pass
-
-    return _SQLITE_URL
+# All nmem tables, cleared between tests. Postgres is a single shared DB (unlike
+# the old per-test SQLite :memory:), so every fixture that creates its own
+# MemorySystem must reset_db() to stay isolated.
+CLEANUP_TABLES = [
+    "nmem_working_memory",
+    "nmem_journal_entries",
+    "nmem_long_term_memory",
+    "nmem_shared_knowledge",
+    "nmem_entity_memory",
+    "nmem_policy_memory",
+    "nmem_memory_conflicts",
+    "nmem_curiosity_signals",
+    "nmem_commitments",
+    "nmem_delegations",
+    "nmem_performance_scores",
+    "nmem_scheduled_followups",
+    "nmem_knowledge_links",
+]
 
 
-TEST_DB_URL = _detect_db_url()
+async def reset_db(system: MemorySystem) -> None:
+    """Truncate all nmem tables — call before yielding a fresh MemorySystem so
+    tests are isolated on the shared Postgres DB."""
+    async with system._db.session() as session:
+        for table in CLEANUP_TABLES:
+            try:
+                await session.execute(text(f"DELETE FROM {table}"))
+            except Exception:
+                pass  # table may not exist yet
 
 
 @pytest_asyncio.fixture
@@ -59,38 +63,9 @@ async def mem() -> MemorySystem:
     system = MemorySystem(config)
     await system.initialize()
 
-    # Clean BEFORE test to handle stale data from crashed runs
-    tables = [
-        "nmem_working_memory",
-        "nmem_journal_entries",
-        "nmem_long_term_memory",
-        "nmem_shared_knowledge",
-        "nmem_entity_memory",
-        "nmem_policy_memory",
-        "nmem_memory_conflicts",
-        "nmem_curiosity_signals",
-        "nmem_commitments",
-        "nmem_delegations",
-        "nmem_performance_scores",
-        "nmem_scheduled_followups",
-    ]
-    async with system._db.session() as session:
-        for table in tables:
-            try:
-                await session.execute(text(f"DELETE FROM {table}"))
-            except Exception:
-                pass  # Table may not exist in SQLite
-
+    await reset_db(system)   # clean BEFORE test (stale data from crashed runs)
     yield system  # type: ignore[misc]
-
-    # Clean AFTER test too
-    async with system._db.session() as session:
-        for table in tables:
-            try:
-                await session.execute(text(f"DELETE FROM {table}"))
-            except Exception:
-                pass
-
+    await reset_db(system)   # clean AFTER test too
     await system.close()
 
 

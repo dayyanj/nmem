@@ -425,7 +425,7 @@ async def bench_consolidation_speed(mem: MemorySystem, sizes: list[int]) -> list
 
 
 async def run_benchmarks(
-    database_url: str = "sqlite+aiosqlite:///nmem_benchmark.db",
+    database_url: str = "postgresql+asyncpg://nmem:nmem@localhost:5433/nmem",
     embedding_provider: str = "noop",
     sizes: list[int] | None = None,
     output_path: Path | None = None,
@@ -454,7 +454,7 @@ async def run_benchmarks(
     report = BenchmarkReport(
         version=__version__,
         timestamp=datetime.utcnow().isoformat(),
-        database="PostgreSQL" if mem._db.is_postgres else "SQLite",
+        database="PostgreSQL",
         embedding_provider=embedding_provider,
     )
 

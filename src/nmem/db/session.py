@@ -1,7 +1,10 @@
 """
 Database engine and session management.
 
-Handles both PostgreSQL (asyncpg) and SQLite (aiosqlite) backends.
+PostgreSQL (asyncpg) + pgvector only. SQLite was dropped in 0.9.2: nmem is a
+concurrent multi-writer system (background consolidation, the cognitive-backend
+flush, the obligation reverse channel, drive ticks) and its core feature is
+vector search — neither fits SQLite's single-writer, no-pgvector model.
 Creates tables, indexes, and manages connection pooling.
 """
 
@@ -31,15 +34,21 @@ class DatabaseManager:
     """Manages the async SQLAlchemy engine and session factory."""
 
     def __init__(self, database_url: str, echo: bool = False):
+        # Guard on the dialect scheme, not a substring — else e.g.
+        # "sqlite:///postgres.db" would slip through.
+        scheme = database_url.split("://", 1)[0].lower()
+        if not scheme.startswith("postgresql"):
+            raise ValueError(
+                "nmem requires PostgreSQL + pgvector. SQLite was dropped in 0.9.2 "
+                f"(see the DatabaseManager docstring). Got: {database_url!r}. "
+                "Use a 'postgresql+asyncpg://…' URL."
+            )
         self._url = database_url
-        self._is_postgres = "postgresql" in database_url or "postgres" in database_url
-        self._is_sqlite = "sqlite" in database_url
+        self._is_postgres = True
 
-        engine_kwargs: dict = {"echo": echo}
-        if self._is_postgres:
-            engine_kwargs.update(pool_size=5, max_overflow=10)
-
-        self._engine: AsyncEngine = create_async_engine(database_url, **engine_kwargs)
+        self._engine: AsyncEngine = create_async_engine(
+            database_url, echo=echo, pool_size=5, max_overflow=10
+        )
         self._session_factory = async_sessionmaker(
             self._engine, class_=AsyncSession, expire_on_commit=False
         )
@@ -81,18 +90,16 @@ class DatabaseManager:
     async def initialize(self, embedding_dimensions: int = 384) -> None:
         """Create all tables and indexes. Idempotent."""
         # Ensure pgvector extension exists BEFORE creating tables (vector type needed)
-        if self._is_postgres:
-            async with self._engine.begin() as conn:
-                try:
-                    await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-                except Exception as e:
-                    logger.warning("Could not create pgvector extension: %s", e)
+        async with self._engine.begin() as conn:
+            try:
+                await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            except Exception as e:
+                logger.warning("Could not create pgvector extension: %s", e)
 
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
-        if self._is_postgres:
-            await self._create_postgres_indexes(embedding_dimensions)
+        await self._create_postgres_indexes(embedding_dimensions)
 
         # Store metadata (fresh installs get the current schema version directly
         # so the migration only runs when upgrading an existing deployment)
@@ -175,25 +182,24 @@ class DatabaseManager:
                     f"v2: add project_scope to {table}",
                 )
 
-            if self._is_postgres:
-                await _run(
-                    "DROP INDEX IF EXISTS ix_nmem_ltm_agent_key",
-                    "v2: drop old LTM unique index",
-                )
-                await _run(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_nmem_ltm_agent_key_scope "
-                    "ON nmem_long_term_memory (agent_id, key, project_scope)",
-                    "v2: create LTM (agent_id, key, project_scope) index",
-                )
-                await _run(
-                    "DROP INDEX IF EXISTS ix_nmem_shared_key",
-                    "v2: drop old shared unique index",
-                )
-                await _run(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_nmem_shared_key_scope "
-                    "ON nmem_shared_knowledge (key, project_scope)",
-                    "v2: create shared (key, project_scope) index",
-                )
+            await _run(
+                "DROP INDEX IF EXISTS ix_nmem_ltm_agent_key",
+                "v2: drop old LTM unique index",
+            )
+            await _run(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_nmem_ltm_agent_key_scope "
+                "ON nmem_long_term_memory (agent_id, key, project_scope)",
+                "v2: create LTM (agent_id, key, project_scope) index",
+            )
+            await _run(
+                "DROP INDEX IF EXISTS ix_nmem_shared_key",
+                "v2: drop old shared unique index",
+            )
+            await _run(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_nmem_shared_key_scope "
+                "ON nmem_shared_knowledge (key, project_scope)",
+                "v2: create shared (key, project_scope) index",
+            )
 
         if version < 3:
             # Rename `confidence` → `salience` on LTM. Entity memory's

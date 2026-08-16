@@ -6,18 +6,21 @@ import pytest
 
 from nmem import MemorySystem, NmemConfig
 
+from tests.conftest import TEST_DB_URL, reset_db
+
 
 @pytest.mark.asyncio
 async def test_close_releases_embedding_model() -> None:
     """After close(), the embedding provider's model is set to None."""
     config = NmemConfig(
-        database_url="sqlite+aiosqlite:///:memory:",
+        database_url=TEST_DB_URL,
         embedding={"provider": "noop", "dimensions": 384},
         llm={"provider": "noop"},
         consolidation={"enabled": False},
     )
     mem = MemorySystem(config)
     await mem.initialize()
+    await reset_db(mem)
 
     # The noop provider doesn't have _model, but the close() method
     # should handle that gracefully (hasattr check).
@@ -33,7 +36,7 @@ async def test_sequential_memory_systems() -> None:
     another in the same process doesn't cause meta-tensor errors.
     """
     config = NmemConfig(
-        database_url="sqlite+aiosqlite:///:memory:",
+        database_url=TEST_DB_URL,
         embedding={"provider": "noop", "dimensions": 384},
         llm={"provider": "noop"},
         consolidation={"enabled": False},
@@ -42,6 +45,7 @@ async def test_sequential_memory_systems() -> None:
     # First instance
     mem1 = MemorySystem(config)
     await mem1.initialize()
+    await reset_db(mem1)
     entry = await mem1.journal.add(
         agent_id="test", entry_type="note",
         title="First system", content="Entry from first system",

@@ -51,7 +51,7 @@ def load_config(**overrides: Any) -> NmemConfig:
     """Load NmemConfig from TOML + env vars + explicit overrides.
 
     Args:
-        **overrides: Explicit overrides (e.g., database_url="sqlite+aiosqlite:///nmem.db").
+        **overrides: Explicit overrides (e.g., database_url="postgresql+asyncpg://localhost/nmem").
             None values are filtered out.
 
     Returns:

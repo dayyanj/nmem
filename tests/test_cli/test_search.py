@@ -8,7 +8,7 @@ from nmem.cli.main import app
 
 def test_search_empty_db(runner, cli_env):
     # Init first, then search
-    runner.invoke(app, ["init", "--sqlite"])
+    runner.invoke(app, ["init"])
     result = runner.invoke(app, ["search", "anything"])
     assert result.exit_code == 0
     assert "no results" in result.output.lower()
@@ -20,7 +20,7 @@ def test_search_finds_results(runner, cli_env):
     import os
 
     # Init DB
-    runner.invoke(app, ["init", "--sqlite"])
+    runner.invoke(app, ["init"])
 
     # Insert data via Python API
     async def _populate():
@@ -47,7 +47,7 @@ def test_search_finds_results(runner, cli_env):
 
 def test_search_json_output(runner, cli_env):
     """--json flag outputs valid JSON."""
-    runner.invoke(app, ["init", "--sqlite"])
+    runner.invoke(app, ["init"])
     result = runner.invoke(app, ["search", "anything", "--json"])
     assert result.exit_code == 0
     parsed = json.loads(result.output)

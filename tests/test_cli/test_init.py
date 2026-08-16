@@ -3,14 +3,14 @@
 from nmem.cli.main import app
 
 
-def test_init_sqlite(runner, cli_env):
-    result = runner.invoke(app, ["init", "--sqlite"])
+def test_init(runner, cli_env):
+    result = runner.invoke(app, ["init"])
     assert result.exit_code == 0
     assert "initialized" in result.output.lower()
 
 
 def test_init_shows_tier_counts(runner, cli_env):
-    result = runner.invoke(app, ["init", "--sqlite"])
+    result = runner.invoke(app, ["init"])
     assert "Working" in result.output
     assert "Journal" in result.output
     assert "LTM" in result.output
@@ -18,14 +18,14 @@ def test_init_shows_tier_counts(runner, cli_env):
 
 
 def test_init_shows_next_steps(runner, cli_env):
-    result = runner.invoke(app, ["init", "--sqlite"])
+    result = runner.invoke(app, ["init"])
     assert "nmem demo" in result.output
 
 
 def test_init_idempotent(runner, cli_env):
-    result1 = runner.invoke(app, ["init", "--sqlite"])
+    result1 = runner.invoke(app, ["init"])
     assert result1.exit_code == 0
-    result2 = runner.invoke(app, ["init", "--sqlite"])
+    result2 = runner.invoke(app, ["init"])
     assert result2.exit_code == 0
 
 

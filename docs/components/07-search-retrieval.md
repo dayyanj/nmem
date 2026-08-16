@@ -17,8 +17,7 @@ query text
     ├── 1. EMBED query → 384-dim vector
     |
     ├── 2. VECTOR SEARCH (primary signal)
-    |       PostgreSQL: pgvector <=> cosine distance
-    |       SQLite: fetch candidates by importance, rank in Python
+    |       pgvector <=> cosine distance
     |       Weight: 0.6 (configurable)
     |
     ├── 3. FTS BOOST (additive)

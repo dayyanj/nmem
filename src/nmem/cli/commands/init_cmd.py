@@ -12,14 +12,9 @@ from nmem.cli.output import console, run_async, get_mem
 def init(
     database_url: Annotated[str | None, typer.Option("--database-url", "-d",
         help="Database URL (overrides config/env)")] = None,
-    sqlite: Annotated[bool, typer.Option("--sqlite",
-        help="Use SQLite in current directory (zero-config)")] = False,
 ):
     """Initialize the nmem database — create tables and indexes."""
     overrides = {}
-    if sqlite:
-        overrides["database_url"] = "sqlite+aiosqlite:///nmem.db"
-        overrides["embedding"] = {"provider": "noop"}
     if database_url:
         overrides["database_url"] = database_url
 

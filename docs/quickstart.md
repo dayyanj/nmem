@@ -7,20 +7,29 @@
 
 Get nmem running with real data in under 5 minutes.
 
-## Option A: Zero-config demo (30 seconds)
+> nmem requires **PostgreSQL + pgvector** — start it with the bundled
+> `docker compose` (exposes `localhost:5433`), then point nmem at it via
+> `NMEM_DATABASE_URL`. The examples below assume:
+>
+> ```bash
+> docker compose up -d   # PostgreSQL + pgvector on localhost:5433
+> export NMEM_DATABASE_URL="postgresql+asyncpg://nmem:nmem@localhost:5433/nmem"
+> ```
+
+## Option A: Demo (2 minutes)
 
 ```bash
 pip install nmem[cli]
 nmem demo
 ```
 
-This uses SQLite (no Docker needed) and loads a built-in dataset showing 3 agents collaborating. You'll see cross-tier search, consolidation, and prompt injection working immediately.
+Loads a built-in dataset showing 3 agents collaborating. You'll see cross-tier search, consolidation, and prompt injection working immediately.
 
 ## Option B: Import your Claude Code memories (2 minutes)
 
 ```bash
-pip install nmem[cli,sqlite]
-nmem init --sqlite
+pip install nmem[cli]
+nmem init
 nmem import claude-code
 nmem search "your topic"
 nmem stats
@@ -33,7 +42,7 @@ This imports your existing `~/.claude/` memory files into nmem. Each memory file
 ### 1. Start PostgreSQL + pgvector
 
 ```bash
-pip install nmem[cli,postgres,st]
+pip install nmem[cli,st]
 docker compose up -d
 ```
 

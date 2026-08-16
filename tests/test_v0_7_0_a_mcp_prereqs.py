@@ -33,17 +33,13 @@ class TestDatabaseManagerUrl:
 
     def test_url_property_returns_constructor_arg(self):
         from nmem.db.session import DatabaseManager
-        dm = DatabaseManager("sqlite+aiosqlite:///:memory:")
-        assert dm.url == "sqlite+aiosqlite:///:memory:"
+        dm = DatabaseManager("postgresql+asyncpg://user:pass@host/db")
+        assert dm.url == "postgresql+asyncpg://user:pass@host/db"
 
     def test_url_property_matches_private_url(self):
         """The public accessor must return exactly what the internal
         engine was constructed with — no post-processing that would
         break DSN derivation."""
-        # Constructing a +asyncpg engine imports the asyncpg dialect, which the
-        # SQLite-only CI job doesn't install. This test is about asyncpg DSN
-        # handling, so skip it when asyncpg is absent rather than error.
-        pytest.importorskip("asyncpg")
         from nmem.db.session import DatabaseManager
         dm = DatabaseManager("postgresql+asyncpg://user:pass@host/db")
         assert dm.url == dm._url
@@ -51,19 +47,16 @@ class TestDatabaseManagerUrl:
     def test_url_strippable_to_asyncpg_dsn(self):
         """The nmem-sym MCP wiring pattern (strip +asyncpg to get a
         raw asyncpg DSN) works against the public url."""
-        pytest.importorskip("asyncpg")  # +asyncpg engine needs the dialect
         from nmem.db.session import DatabaseManager
         dm = DatabaseManager("postgresql+asyncpg://user:pass@host/db")
         asyncpg_dsn = dm.url.replace("+asyncpg", "")
         assert asyncpg_dsn == "postgresql://user:pass@host/db"
 
-    def test_url_unchanged_for_sqlite(self):
-        """SQLite URLs don't have +asyncpg; replace should be a no-op."""
+    def test_non_postgres_url_rejected(self):
+        """SQLite was dropped in 0.9.2 — a non-postgres URL must fail fast."""
         from nmem.db.session import DatabaseManager
-        dm = DatabaseManager("sqlite+aiosqlite:///:memory:")
-        # nmem-sym's translation is a no-op on non-asyncpg URLs
-        asyncpg_dsn = dm.url.replace("+asyncpg", "")
-        assert asyncpg_dsn == "sqlite+aiosqlite:///:memory:"
+        with pytest.raises(ValueError, match="PostgreSQL"):
+            DatabaseManager("sqlite+aiosqlite:///:memory:")
 
 
 # ──────────────────────────────────────────────────────────────

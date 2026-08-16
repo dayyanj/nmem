@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import typer
+
 from nmem.cli.output import (
     console, run_async, get_mem, print_results, print_consolidation_stats,
 )
@@ -20,16 +22,16 @@ def demo():
         console.print("[dim]3 agents: support, engineering, sales[/dim]")
         console.print()
 
-        # Use PostgreSQL if configured, otherwise SQLite with noop embeddings
+        # nmem requires PostgreSQL + pgvector.
         import os
         db_url = os.environ.get("NMEM_DATABASE_URL")
         overrides = {}
         if not db_url:
-            overrides["database_url"] = "sqlite+aiosqlite:///nmem_demo.db"
-            overrides["embedding"] = {"provider": "noop"}
-            console.print("[dim]No NMEM_DATABASE_URL set — using SQLite + noop embeddings[/dim]")
-            console.print("[dim]Set NMEM_DATABASE_URL for full pgvector hybrid search[/dim]")
-            console.print()
+            console.print("[red]NMEM_DATABASE_URL is not set.[/red] nmem requires "
+                          "PostgreSQL + pgvector.")
+            console.print('[dim]e.g. export NMEM_DATABASE_URL='
+                          '"postgresql+asyncpg://nmem:nmem@localhost:5433/nmem"[/dim]')
+            raise typer.Exit(1)
 
         async with get_mem(**overrides) as mem:
             # ── Clean previous demo data ─────────────────────────
