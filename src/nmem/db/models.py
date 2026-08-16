@@ -484,6 +484,41 @@ class CuriositySignalModel(Base):
     )
 
 
+# ── Commitments (conscious record of external obligations) ──────────────────
+
+
+class CommitmentModel(Base):
+    """A commitment to an external requestor — the conscious/durable record.
+
+    nmem owns this narrative record; when a cognitive backend (nmem-sym) is
+    attached it also holds the live obligation (pressure, deadline curve,
+    temperament) keyed by `sym_obligation_id`. The row stores everything the
+    backend would need to (re-)impose, so nmem could become the source of truth
+    later. Successor to the deprecated `nmem_scheduled_followups`.
+    """
+
+    __tablename__ = "nmem_commitments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    requester: Mapped[str] = mapped_column(String(200))
+    authority: Mapped[float] = mapped_column(Float, default=0.5)
+    description: Mapped[str] = mapped_column(Text)
+    # tz-aware: deadlines come from the host / cross into nmem-sym (TIMESTAMPTZ).
+    deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    importance: Mapped[float] = mapped_column(Float, default=1.0)
+    status: Mapped[str] = mapped_column(String(20), default="open")  # open|fulfilled|breached|abandoned
+    source: Mapped[str] = mapped_column(String(20), default="external")  # external|detected
+    sym_obligation_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    resolution_outcome: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("ix_nmem_commitments_status", "status"),
+        Index("ix_nmem_commitments_sym", "sym_obligation_id"),
+    )
+
+
 # ── Delegation History (for deja vu) ────────────────────────────────────────
 
 
