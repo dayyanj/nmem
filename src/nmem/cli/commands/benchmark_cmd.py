@@ -16,13 +16,15 @@ def benchmark(
     output: Annotated[Path | None, typer.Option("--output", "-o",
         help="Save JSON report to file")] = None,
     database_url: Annotated[str | None, typer.Option("--database-url", "-d",
-        help="Database URL (default: SQLite)")] = None,
+        help="Database URL (default: $NMEM_DATABASE_URL)")] = None,
     embedding: Annotated[str, typer.Option("--embedding",
         help="Embedding provider to benchmark")] = "noop",
 ):
     """Run performance benchmarks and print results."""
+    import os
     size_list = [int(s.strip()) for s in sizes.split(",")]
-    db_url = database_url or "sqlite+aiosqlite:///nmem_benchmark.db"
+    db_url = (database_url or os.environ.get("NMEM_DATABASE_URL")
+              or "postgresql+asyncpg://nmem:nmem@localhost:5433/nmem")
 
     async def _bench():
         from nmem.benchmark.runner import run_benchmarks

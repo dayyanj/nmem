@@ -81,8 +81,7 @@ class PolicyTier:
             existing = result.scalar_one_or_none()
 
             if existing:
-                # Refresh to ensure all attributes are loaded (avoids
-                # greenlet_spawn errors with aiosqlite on JSON columns).
+                # Refresh to ensure all attributes are loaded before mutation.
                 await session.refresh(existing)
                 change = {
                     "agent": agent_id,
@@ -173,9 +172,8 @@ class PolicyTier:
     ) -> list[tuple[PolicyEntry, float]]:
         """Search active policies by text relevance.
 
-        Policy memory has no embedding column, so this uses FTS on
-        PostgreSQL (``to_tsvector``/``ts_rank_cd``) and falls back
-        to case-insensitive LIKE matching on SQLite.
+        Policy memory has no embedding column, so this uses PostgreSQL FTS
+        (``to_tsvector``/``ts_rank_cd``).
 
         Args:
             query: Search query text.
@@ -201,29 +199,19 @@ class PolicyTier:
         params["query"] = query
         params["top_k"] = top_k
 
-        if self._db.is_postgres:
-            sql = sa_text(f"""
-                SELECT id,
-                       ts_rank_cd(
-                           to_tsvector('english', key || ' ' || content),
-                           plainto_tsquery('english', :query)
-                       ) AS score
-                FROM nmem_policy_memory
-                WHERE {where_clause}
-                  AND to_tsvector('english', key || ' ' || content)
-                      @@ plainto_tsquery('english', :query)
-                ORDER BY score DESC
-                LIMIT :top_k
-            """)
-        else:
-            # SQLite: simple LIKE matching with constant score
-            sql = sa_text(f"""
-                SELECT id, 0.5 AS score
-                FROM nmem_policy_memory
-                WHERE {where_clause}
-                  AND (LOWER(key || ' ' || content) LIKE LOWER('%' || :query || '%'))
-                LIMIT :top_k
-            """)
+        sql = sa_text(f"""
+            SELECT id,
+                   ts_rank_cd(
+                       to_tsvector('english', key || ' ' || content),
+                       plainto_tsquery('english', :query)
+                   ) AS score
+            FROM nmem_policy_memory
+            WHERE {where_clause}
+              AND to_tsvector('english', key || ' ' || content)
+                  @@ plainto_tsquery('english', :query)
+            ORDER BY score DESC
+            LIMIT :top_k
+        """)
 
         async with self._db.session() as session:
             result = await session.execute(sql, params)

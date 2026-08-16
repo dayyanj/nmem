@@ -13,8 +13,8 @@ The 'shared' case requires the consolidation pipeline to promote LTM
 → shared which is a multi-step async process; verified via direct
 DB update to flip the flag, which exercises the same code path.
 
-These run against either Postgres or SQLite per conftest; the readback
-is plain SQL so either works.
+These run against the shared Postgres test DB per conftest; the readback
+is plain SQL.
 """
 from __future__ import annotations
 

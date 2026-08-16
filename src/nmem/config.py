@@ -523,10 +523,7 @@ class NmemConfig(BaseSettings):
     """
 
     database_url: str = "postgresql+asyncpg://localhost/nmem"
-    """SQLAlchemy async database URL."""
-
-    storage_provider: str = "auto"
-    """Storage backend: "postgres", "sqlite", or "auto" (detect from URL)."""
+    """SQLAlchemy async database URL (PostgreSQL + pgvector only)."""
 
     embedding: EmbeddingConfig = EmbeddingConfig()
     """Embedding provider settings."""

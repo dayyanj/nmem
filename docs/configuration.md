@@ -46,10 +46,12 @@ database_url = "postgresql+asyncpg://nmem:nmem@localhost:5433/nmem"
 
 | Value | Use case |
 |-------|----------|
-| `postgresql+asyncpg://user:pass@host:port/db` | Production. Full hybrid search (pgvector + FTS). |
-| `sqlite+aiosqlite:///nmem.db` | Development/testing. No Docker needed. Fallback search (slower for large datasets). |
+| `postgresql+asyncpg://user:pass@host:port/db` | The only supported backend. Full hybrid search (pgvector + FTS). |
 
-**Tradeoff:** SQLite works for demos and small datasets (<1000 entries) but lacks pgvector's HNSW indexes. PostgreSQL is 2-3x faster for search at scale.
+nmem is PostgreSQL + pgvector only. SQLite was dropped in 0.9.2 — nmem is a
+concurrent multi-writer system and its core feature is vector search, neither of
+which fits SQLite's single-writer, no-pgvector model. A non-postgres URL raises
+at startup.
 
 ## Embedding provider
 

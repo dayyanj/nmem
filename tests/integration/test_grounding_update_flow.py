@@ -18,6 +18,8 @@ from unittest.mock import MagicMock
 
 from nmem import MemorySystem, NmemConfig
 
+from tests.conftest import TEST_DB_URL, reset_db
+
 pytestmark = [
     pytest.mark.skipif(not HAS_MCP, reason="mcp package not installed"),
 ]
@@ -26,12 +28,13 @@ pytestmark = [
 @pytest_asyncio.fixture
 async def mem():
     config = NmemConfig(
-        database_url="sqlite+aiosqlite:///:memory:",
+        database_url=TEST_DB_URL,
         embedding={"provider": "noop", "dimensions": 384},
         llm={"provider": "noop"},
     )
     system = MemorySystem(config)
     await system.initialize()
+    await reset_db(system)
     yield system
     await system.close()
 

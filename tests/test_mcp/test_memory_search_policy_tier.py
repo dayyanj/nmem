@@ -1,9 +1,8 @@
 """Tests for memory_search with the "policy" tier extension.
 
-Policy tier uses FTS (postgres) / LIKE (sqlite) instead of hybrid
-vector+FTS search because nmem_policy_memory has no embedding column.
-SQLite tests use LIKE matching, which requires the query to appear as a
-substring in the key or content fields.
+Policy tier uses Postgres FTS instead of hybrid vector+FTS search
+because nmem_policy_memory has no embedding column. FTS matches the
+query against the key and content fields.
 """
 
 from unittest.mock import MagicMock
@@ -19,18 +18,21 @@ except ImportError:
 
 from nmem import MemorySystem, NmemConfig
 
+from tests.conftest import TEST_DB_URL, reset_db
+
 pytestmark = pytest.mark.skipif(not HAS_MCP, reason="mcp package not installed")
 
 
 @pytest_asyncio.fixture
 async def mem():
     config = NmemConfig(
-        database_url="sqlite+aiosqlite:///:memory:",
+        database_url=TEST_DB_URL,
         embedding={"provider": "noop", "dimensions": 384},
         llm={"provider": "noop"},
     )
     system = MemorySystem(config)
     await system.initialize()
+    await reset_db(system)
     yield system
     await system.close()
 
@@ -91,9 +93,10 @@ async def test_search_policy_combined_with_ltm(mcp_ctx, mem):
     result = await memory_search(
         mcp_ctx, query="refund", agent_id="test", tiers="policy,ltm",
     )
-    # Should contain results from both tiers
-    assert isinstance(result, str)
-    assert "Found" in result or "No results" in result
+    # Postgres FTS matches "refund" in both tiers
+    assert "Found" in result
+    assert "[policy]" in result
+    assert "[ltm]" in result
 
 
 async def test_default_search_excludes_policy(mcp_ctx, mem):
@@ -105,10 +108,8 @@ async def test_default_search_excludes_policy(mcp_ctx, mem):
     result = await memory_search(
         mcp_ctx, query="refund", agent_id="test",
     )
-    # With noop embeddings on SQLite, results may be "No results"
-    # but if any results come back, they should NOT be from the policy tier
-    if "Found" in result:
-        assert "[policy]" not in result
+    # Policy rows must never surface under the default tier set
+    assert "[policy]" not in result
 
 
 async def test_search_policy_metadata_fields(mcp_ctx, mem):
@@ -119,6 +120,6 @@ async def test_search_policy_metadata_fields(mcp_ctx, mem):
     result = await memory_search(
         mcp_ctx, query="discount", agent_id="test", tiers="policy",
     )
-    # The result should contain the policy content
-    if "Found" in result:
-        assert "discount" in result.lower()
+    # Postgres FTS matches "discount" against the policy key/content
+    assert "Found" in result
+    assert "discount" in result.lower()

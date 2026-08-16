@@ -24,7 +24,7 @@ policy.save(scope, category, key, content, agent_id)
     ├── UPSERT by (scope, key)
     |       Existing: increment version, append change_log
     |
-    └── FTS INDEX (PostgreSQL) or LIKE fallback (SQLite)
+    └── FTS INDEX (PostgreSQL to_tsvector / ts_rank_cd)
 
 Proposed policies require approval:
     policy.approve(policy_id, agent_id)

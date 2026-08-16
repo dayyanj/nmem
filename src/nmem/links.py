@@ -343,9 +343,6 @@ class KnowledgeLinkEngine:
 
     async def cleanup_orphans(self) -> int:
         """Delete links referencing deleted entries."""
-        if not self._db.is_postgres:
-            return 0  # SQLite doesn't support the subquery pattern well
-
         deleted = 0
         try:
             async with self._db.session() as session:

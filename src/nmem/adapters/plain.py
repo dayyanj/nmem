@@ -6,7 +6,7 @@ Wraps the async API using asyncio.run() for users who don't need async.
 Usage:
     from nmem.adapters.plain import SyncMemorySystem
 
-    mem = SyncMemorySystem(NmemConfig(database_url="sqlite+aiosqlite:///memory.db"))
+    mem = SyncMemorySystem(NmemConfig(database_url="postgresql+asyncpg://localhost/nmem"))
     mem.initialize()
     mem.journal.add(agent_id="agent1", entry_type="note", title="Hello", content="World")
 """

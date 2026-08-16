@@ -91,7 +91,7 @@ can reproduce it. Copy this template into your write-up:
 - GPU (if used for embeddings): <model>
 
 **Configuration**:
-- Database: <PostgreSQL + pgvector / SQLite>
+- Database: PostgreSQL + pgvector
 - Embedding provider: <name>, model <name>
 - LLM provider (if used): <name>, model <name>
 - Relevant nmem config overrides:

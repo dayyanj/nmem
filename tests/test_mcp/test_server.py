@@ -14,19 +14,22 @@ except ImportError:
 
 from nmem import MemorySystem, NmemConfig
 
+from tests.conftest import TEST_DB_URL, reset_db
+
 pytestmark = pytest.mark.skipif(not HAS_MCP, reason="mcp package not installed")
 
 
 @pytest_asyncio.fixture
 async def mem():
-    """In-memory SQLite MemorySystem for MCP tests."""
+    """Postgres MemorySystem for MCP tests."""
     config = NmemConfig(
-        database_url="sqlite+aiosqlite:///:memory:",
+        database_url=TEST_DB_URL,
         embedding={"provider": "noop", "dimensions": 384},
         llm={"provider": "noop"},
     )
     system = MemorySystem(config)
     await system.initialize()
+    await reset_db(system)
     yield system
     await system.close()
 
@@ -66,8 +69,8 @@ async def test_memory_store_then_search(mcp_ctx, mem):
         agent_id="test", importance=7,
     )
     result = await memory_search(mcp_ctx, query="database migration", agent_id="test")
-    # SQLite fallback search should find it
-    assert "migration" in result.lower() or "No results" in result
+    # Postgres hybrid (vector + FTS) search should find the stored entry
+    assert "migration" in result.lower()
 
 
 async def test_memory_save_ltm(mcp_ctx, mem):

@@ -32,7 +32,7 @@ def run_async(coro):
             sys.exit(1)
         if "password authentication failed" in err or "Connection refused" in err:
             console.print(f"[red]Database connection failed:[/red] {err}")
-            console.print("[dim]Check NMEM_DATABASE_URL or use --sqlite for local testing.[/dim]")
+            console.print("[dim]Check NMEM_DATABASE_URL (PostgreSQL + pgvector required).[/dim]")
             sys.exit(1)
         raise
 

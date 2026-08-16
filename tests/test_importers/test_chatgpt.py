@@ -5,6 +5,8 @@ import json
 
 from nmem.cli.importers.chatgpt import _walk_active_branch, import_chatgpt
 
+from tests.conftest import TEST_DB_URL, reset_db
+
 
 def _make_conversation(title, messages, create_time=1700000000):
     """Build a minimal ChatGPT conversation structure."""
@@ -91,12 +93,13 @@ def test_short_conversations_skipped(tmp_path):
 
     async def _test():
         config = NmemConfig(
-            database_url="sqlite+aiosqlite:///:memory:",
+            database_url=TEST_DB_URL,
             embedding={"provider": "noop"},
             llm={"provider": "noop"},
         )
         mem = MemorySystem(config)
         await mem.initialize()
+        await reset_db(mem)
 
         result = await import_chatgpt(mem, f, min_messages=4)
         assert result.imported == 0
@@ -126,12 +129,13 @@ def test_import_creates_journal(tmp_path):
 
     async def _test():
         config = NmemConfig(
-            database_url="sqlite+aiosqlite:///:memory:",
+            database_url=TEST_DB_URL,
             embedding={"provider": "noop"},
             llm={"provider": "noop"},
         )
         mem = MemorySystem(config)
         await mem.initialize()
+        await reset_db(mem)
 
         result = await import_chatgpt(mem, f, min_messages=4)
         assert result.imported == 1

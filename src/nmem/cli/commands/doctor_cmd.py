@@ -53,13 +53,15 @@ def doctor():
         display = effective_db
         if "@" in display:
             display = "***@" + display.split("@")[-1]
-        is_pg = "postgresql" in effective_db
-        checks.append(("Database configured", True,
-                        f"{'PostgreSQL' if is_pg else 'SQLite'}: {display}"))
+        is_pg = "postgres" in effective_db
+        checks.append(("Database configured", is_pg,
+                        (f"PostgreSQL: {display}" if is_pg
+                         else f"unsupported (PostgreSQL required): {display}")))
+        if not is_pg:
+            fixes.append('export NMEM_DATABASE_URL="postgresql+asyncpg://nmem:nmem@localhost:5433/nmem"')
     else:
         checks.append(("Database configured", False, "no NMEM_DATABASE_URL or nmem.toml"))
         fixes.append('export NMEM_DATABASE_URL="postgresql+asyncpg://nmem:nmem@localhost:5433/nmem"')
-        fixes.append("# or: nmem init --sqlite")
 
     # ── 3. Database connectable ───────────────────────────────────
     if effective_db:

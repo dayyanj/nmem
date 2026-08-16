@@ -19,11 +19,11 @@ def test_default_config() -> None:
 def test_custom_config() -> None:
     """Custom values override defaults."""
     config = NmemConfig(
-        database_url="sqlite+aiosqlite:///:memory:",
+        database_url="postgresql+asyncpg://localhost/nmem",
         embedding={"provider": "sentence-transformers", "model": "all-MiniLM-L6-v2"},
         journal={"default_expiry_days": 60},
     )
-    assert config.database_url == "sqlite+aiosqlite:///:memory:"
+    assert config.database_url == "postgresql+asyncpg://localhost/nmem"
     assert config.embedding.provider == "sentence-transformers"
     assert config.journal.default_expiry_days == 60
 

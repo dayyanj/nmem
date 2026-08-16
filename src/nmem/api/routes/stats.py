@@ -43,7 +43,7 @@ async def get_stats(mem: MemorySystem = Depends(get_mem)) -> StatsResponse:
             total += count
 
     config = mem._config
-    database = "PostgreSQL" if mem._db.is_postgres else "SQLite"
+    database = "PostgreSQL"
 
     return StatsResponse(
         tiers=tiers,
@@ -59,7 +59,7 @@ async def get_stats(mem: MemorySystem = Depends(get_mem)) -> StatsResponse:
 @router.get("/health", response_model=HealthResponse)
 async def health_check(mem: MemorySystem = Depends(get_mem)) -> HealthResponse:
     """Check API and database health."""
-    database = "PostgreSQL" if mem._db.is_postgres else "SQLite"
+    database = "PostgreSQL"
     schema_version = None
     try:
         async with mem._db.session() as session:

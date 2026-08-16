@@ -38,7 +38,7 @@ Persistent memory system for AI agents. A 6-tier hierarchy where entries earn pr
 │                                                                      │
 │  INFRASTRUCTURE                                                      │
 │  ┌───────��────────────────────���───────────────────────────────────���  │
-│  │  db/session     PostgreSQL+pgvector or SQLite                   │  │
+│  │  db/session     PostgreSQL + pgvector                            │  │
 │  │  providers      embedding (ST/OpenAI) + LLM (OpenAI/Anthropic)  │  │
 │  │  prompt         token-budgeted context builder                  │  │
 │  │  token_stats    usage tracking per agent per day                │  │
@@ -86,7 +86,7 @@ Persistent memory system for AI agents. A 6-tier hierarchy where entries earn pr
 - **Recognition signals** -- search results carry KNOWN/FAMILIAR/UNCERTAIN scores so the LLM knows what to trust
 - **Token-tracked** -- automatic monitoring of prompt injection size and LLM costs per agent per day
 - **Provider-pluggable** -- swappable embedding (sentence-transformers/OpenAI) and LLM (OpenAI-compat/Anthropic) backends
-- **Multi-backend** -- PostgreSQL+pgvector for production, SQLite for development
+- **Storage** -- PostgreSQL + pgvector (the only supported backend)
 - **Project-scoped** -- optional multi-tenant isolation via project_scope parameter
 - **Framework-agnostic** -- plain Python API + LangChain/CrewAI adapters + MCP server + REST API
 

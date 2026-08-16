@@ -10,7 +10,7 @@ async def test_health_returns_ok(client):
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
-    assert body["database"] == "SQLite"
+    assert body["database"] == "PostgreSQL"
 
 
 async def test_version_has_schema(client):
@@ -31,7 +31,7 @@ async def test_stats_shows_all_tiers(client):
     assert "ltm" in tier_names
     assert "shared" in tier_names
     assert "entity" in tier_names
-    assert body["database"] == "SQLite"
+    assert body["database"] == "PostgreSQL"
     assert body["embedding_provider"] == "noop"
 
 

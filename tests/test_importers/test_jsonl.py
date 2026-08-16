@@ -5,6 +5,8 @@ import json
 
 from nmem.cli.importers.jsonl import import_jsonl
 
+from tests.conftest import TEST_DB_URL, reset_db
+
 
 def test_import_ltm_default(tmp_path):
     """Entries without tier field go to LTM."""
@@ -15,12 +17,13 @@ def test_import_ltm_default(tmp_path):
 
     async def _test():
         config = NmemConfig(
-            database_url="sqlite+aiosqlite:///:memory:",
+            database_url=TEST_DB_URL,
             embedding={"provider": "noop"},
             llm={"provider": "noop"},
         )
         mem = MemorySystem(config)
         await mem.initialize()
+        await reset_db(mem)
 
         result = await import_jsonl(mem, f)
         assert result.imported == 1
@@ -44,12 +47,13 @@ def test_import_journal(tmp_path):
 
     async def _test():
         config = NmemConfig(
-            database_url="sqlite+aiosqlite:///:memory:",
+            database_url=TEST_DB_URL,
             embedding={"provider": "noop"},
             llm={"provider": "noop"},
         )
         mem = MemorySystem(config)
         await mem.initialize()
+        await reset_db(mem)
 
         result = await import_jsonl(mem, f)
         assert result.imported == 1
@@ -77,12 +81,13 @@ def test_invalid_json_skipped(tmp_path):
 
     async def _test():
         config = NmemConfig(
-            database_url="sqlite+aiosqlite:///:memory:",
+            database_url=TEST_DB_URL,
             embedding={"provider": "noop"},
             llm={"provider": "noop"},
         )
         mem = MemorySystem(config)
         await mem.initialize()
+        await reset_db(mem)
 
         result = await import_jsonl(mem, f)
         assert result.imported == 2
