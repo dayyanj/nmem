@@ -3,6 +3,54 @@
 All notable changes to nmem are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.0] — 2026-08-16
+
+**Theme: nmem is the conscious interface to the cognitive system.** Until now a
+host could wire nmem-sym's obligation subsystem directly, bypassing nmem's own
+memory. This release makes nmem the single front door: the host imposes
+_commitments_ on nmem, nmem records them durably, and forwards them to the
+registered cognitive backend (nmem-sym) which owns the live obligation pressure.
+Lifecycle and execution events flow back up through nmem, so the host subscribes
+in one place — `mem.on('commitment.*')` — and never talks to the subconscious
+layer directly. nmem stays standalone: with no backend attached, commitments are
+still recorded and are mirrored automatically once a backend registers.
+
+### Added
+
+- **`mem.commitments` — the conscious record of external obligations.**
+  `impose(requester, description, deadline=None, *, authority, importance,
+  source, project_scope)` records a commitment (`nmem_commitments` table) and
+  forwards it to the backend; `confirm` / `abandon` / `renegotiate` / `list`
+  drive the lifecycle (each returns `False` for an unknown id rather than lying).
+  Ownership is "Option B": nmem keeps the narrative record, nmem-sym owns the
+  live ledger, linked by `sym_obligation_id`. The record stores everything the
+  backend would need to re-impose.
+- **Cognitive-backend registration (IoC).** `mem.register_cognitive_backend(backend)`
+  lets nmem-sym plug itself in without nmem ever importing it. Commitments imposed
+  before a backend attaches are queued (the DB is the queue) and mirrored on
+  attach via an idempotent `flush_pending`; mirroring is serialized under a lock
+  with a re-check so an inline impose and a concurrent flush can't double-mirror.
+- **Reverse channel.** `mem.record_obligation_event(kind, sym_obligation_id, data)`
+  lets the backend report transitions (`fulfilled` / `breached` / `missed` /
+  `acting`); terminal kinds update the record's status, and every kind re-emits as
+  a host-facing `commitment.<kind>` event. The obligation **execution hook** now
+  routes through here too: when an obligation wins nmem-sym's meta-arbiter, the
+  host runs the deliverable by subscribing on `mem.on('commitment.acting')`.
+- **Commitment detection from content (opt-in).** A nightly consolidation step
+  (`commitment_detection`, off by default) scans recent journal entries with an
+  LLM and imposes any commitments it finds (`source='detected'`), the mirror of
+  curiosity flowing the other way. Scope-isolated (a scoped instance scans only
+  its own scope plus global) and deduped against commitments created in the
+  lookback window in any status, so a resolved commitment is never re-imposed.
+  Config: `NmemConfig.commitment_detection` (`enabled`, `lookback_hours`,
+  `max_entries`, `min_confidence`, `default_authority`).
+
+### Deprecated
+
+- `nmem_scheduled_followups` (open-loop / prospective-memory triggers) is retired
+  in favour of commitments + nmem-sym obligation pressure. The table is kept for
+  schema compatibility with old data and will be dropped in a future migration.
+
 ## [0.8.2] — 2026-08-09
 
 Test-only release: identical package behavior to 0.8.1, cut so the release CI

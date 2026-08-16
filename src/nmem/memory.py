@@ -104,6 +104,13 @@ class MemorySystem:
         self._shared._on_event = self._emit
         self._consolidator._on_event = self._emit
 
+        # Commitments — the conscious record of external obligations. nmem is the
+        # front door; it forwards to a registered cognitive backend (nmem-sym).
+        from nmem.commitments import CommitmentManager
+        self._commitments = CommitmentManager(self._db, self._emit, self._config)
+        # The consolidator detects commitments in content and imposes them here.
+        self._consolidator._commitments = self._commitments
+
     # ── Properties ───────────────────────────────────────────────────────
 
     @property
@@ -155,6 +162,30 @@ class MemorySystem:
     def consolidation(self) -> Consolidator:
         """Background consolidation engine."""
         return self._consolidator
+
+    @property
+    def commitments(self):
+        """Conscious commitments to external requestors (obligations). The host
+        imposes here; nmem records them and forwards to the cognitive backend."""
+        return self._commitments
+
+    # ── Cognitive backend (subconscious, e.g. nmem-sym) ─────────────────────
+
+    def register_cognitive_backend(self, backend) -> None:
+        """Attach a subconscious cognitive backend (nmem-sym's SymbolBridge).
+
+        nmem forwards obligations to it (`impose_obligation`, …) and relays its
+        lifecycle events back via `record_obligation_event`. Duck-typed — nmem
+        never imports the backend, so it stays standalone when none is attached.
+        """
+        self._commitments.register_backend(backend)
+
+    async def record_obligation_event(self, kind: str, sym_obligation_id: int,
+                                      data: dict | None = None) -> None:
+        """Reverse channel: the cognitive backend reports an obligation lifecycle
+        transition (fulfilled / breached / …); updates the commitment + emits a
+        host event."""
+        await self._commitments.record_event(kind, sym_obligation_id, data)
 
     # ── Entity Auto-Journal ─────────────────────────────────────────────
 

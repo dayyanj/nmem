@@ -40,6 +40,31 @@ from nmem.db.models import (
 from nmem.search import cosine_similarity
 from nmem.types import ConsolidationStats
 
+
+_COMMITMENT_DETECTION_SYSTEM = (
+    "You extract COMMITMENTS from an agent's recent journal entries. A commitment "
+    "is a promise to deliver something to a specific person or party by a specific "
+    "time (e.g. \"I'll send the founder the benchmark by Friday\"). Ignore vague "
+    "intentions, already-completed work, and tasks with no external party or no "
+    "deadline. Resolve relative dates using the stated 'Today' date. "
+    "Return JSON only: {\"commitments\": [{\"requester\": str, \"description\": str, "
+    "\"deadline\": ISO-8601 datetime string or null, \"importance\": number 0..1, "
+    "\"confidence\": number 0..1}]}. Items with a null deadline or no requester "
+    "are skipped."
+)
+
+
+def _parse_deadline(value) -> "datetime | None":
+    """Parse an ISO-8601 deadline into a tz-aware datetime, or None."""
+    if not value or not isinstance(value, str):
+        return None
+    from datetime import timezone
+    try:
+        dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
 if TYPE_CHECKING:
     from nmem.db.session import DatabaseManager
     from nmem.config import NmemConfig
@@ -158,6 +183,8 @@ class Consolidator:
 
         # Knowledge link engine (set by MemorySystem)
         self._link_engine = None
+        # Injected by MemorySystem — detect_commitments() imposes through it.
+        self._commitments = None
 
         # Event emission callback (wired by MemorySystem)
         # Called as `await self._on_event(event_name, data)` when present.
@@ -621,6 +648,13 @@ class Consolidator:
             stats.lessons_disputed = disputed
         except Exception as e:
             logger.error("Retrospective failed: %s", e)
+
+        # Commitment detection — extract commitments from the day's journal and
+        # impose them (forwarded to the cognitive backend). Gated + off by default.
+        try:
+            await self.detect_commitments()
+        except Exception as e:
+            logger.error("Commitment detection failed: %s", e)
 
         # Policy alignment sweep — dispute shared/LTM rows that contradict
         # active governance policy. Runs last so it also covers anything the
@@ -1533,6 +1567,101 @@ class Consolidator:
             # Same-key collision in one night — benign, retrospective can
             # run more than once per day in tests.
             logger.debug("Retrospective synthesis write failed: %s", e)
+
+    # ── Commitment detection (nmem → nmem-sym) ───────────────────────────
+
+    async def detect_commitments(self) -> int:
+        """Scan recent journal entries for commitments and impose them.
+
+        The nmem→nmem-sym mirror of curiosity: an LLM pass over recent journal
+        content extracts commitments ("I'll have X to Y by Z"); each above
+        confidence and with a resolvable future-or-past deadline and a requester
+        is recorded via `mem.commitments` (source='detected') and forwarded to
+        the cognitive backend. Deduped against currently-open commitments.
+        Returns the number newly imposed.
+        """
+        cfg = getattr(self._config, "commitment_detection", None)
+        if cfg is None or not cfg.enabled or self._commitments is None:
+            return 0
+
+        now = datetime.utcnow()
+        since = now - timedelta(hours=cfg.lookback_hours)
+        # Respect project isolation: a scoped instance sees its own scope + global
+        # (NULL); a global instance (scope None) sees only global entries — the
+        # same rule the retrospective uses.
+        scope = getattr(self._config, "project_scope", None)
+        scope_filter = (
+            JournalEntryModel.project_scope.is_(None) if scope is None
+            else or_(JournalEntryModel.project_scope == scope,
+                     JournalEntryModel.project_scope.is_(None)))
+        async with self._db.session() as session:
+            rows = list((await session.execute(
+                select(JournalEntryModel)
+                .where(JournalEntryModel.created_at >= since, scope_filter)
+                .order_by(JournalEntryModel.created_at.desc())
+                .limit(cfg.max_entries))).scalars().all())
+        if not rows:
+            return 0
+
+        content = f"Today is {now:%Y-%m-%d}.\n\n" + "\n\n".join(
+            f"[{r.created_at:%Y-%m-%d}] {(r.title or '')}: {(r.content or '')[:500]}"
+            for r in rows)
+        try:
+            result = await self._llm.complete_json(
+                _COMMITMENT_DETECTION_SYSTEM, content,
+                max_tokens=800, temperature=0.2)
+        except Exception as e:
+            logger.debug("Commitment detection LLM failed: %s", e)
+            return 0
+        detected = result.get("commitments", []) if isinstance(result, dict) else []
+        if not detected:
+            return 0
+
+        # Dedup vs ALL commitments created within the window (any status) — a
+        # commitment already resolved (fulfilled/breached) mustn't be re-imposed
+        # just because its journal entry is still in the lookback window.
+        # Scope the dedup to the exact scope we'd impose into (impose uses
+        # `scope`), so a same-named commitment in another project can't suppress
+        # detection here — and a global instance isn't affected by scoped rows.
+        from nmem.db.models import CommitmentModel
+        dedup_scope = (CommitmentModel.project_scope.is_(None) if scope is None
+                       else CommitmentModel.project_scope == scope)
+        async with self._db.session() as session:
+            existing = {
+                (r[0], r[1]) for r in (await session.execute(
+                    select(CommitmentModel.requester, CommitmentModel.description)
+                    .where(CommitmentModel.created_at >= since, dedup_scope))).all()}
+        imposed = 0
+        for d in detected:
+            if not isinstance(d, dict):
+                continue
+            try:
+                confidence = float(d.get("confidence", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if confidence < cfg.min_confidence:
+                continue
+            requester = str(d.get("requester") or "").strip()
+            description = str(d.get("description") or "").strip()
+            deadline = _parse_deadline(d.get("deadline"))
+            if not requester or not description or deadline is None:
+                continue   # no who / no due date ⇒ not an actionable obligation
+            if (requester, description) in existing:
+                continue
+            existing.add((requester, description))
+            try:
+                importance = float(d.get("importance", 0.5))
+            except (TypeError, ValueError):
+                importance = 0.5
+            await self._commitments.impose(
+                requester, description, deadline,
+                authority=cfg.default_authority,
+                importance=importance, source="detected",
+                project_scope=scope)
+            imposed += 1
+        if imposed:
+            logger.info("Commitment detection: imposed %d new commitment(s)", imposed)
+        return imposed
 
     # ── Policy Alignment Sweep ───────────────────────────────────────────
 

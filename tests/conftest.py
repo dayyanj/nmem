@@ -69,6 +69,7 @@ async def mem() -> MemorySystem:
         "nmem_policy_memory",
         "nmem_memory_conflicts",
         "nmem_curiosity_signals",
+        "nmem_commitments",
         "nmem_delegations",
         "nmem_performance_scores",
         "nmem_scheduled_followups",

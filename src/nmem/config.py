@@ -325,6 +325,32 @@ class RetrospectiveConfig(BaseModel):
     """Which LTM `record_type` values the retrospective considers lessons."""
 
 
+class CommitmentDetectionConfig(BaseModel):
+    """Detect commitments in journal content and impose them as obligations.
+
+    A nightly LLM step scans recent journal entries for commitment language
+    ("I'll have the benchmark to the founder by Friday") and, above
+    `min_confidence` and with a resolvable deadline, records a commitment
+    (source='detected') — which nmem forwards to the cognitive backend. The
+    nmem→nmem-sym mirror of curiosity flowing the other way. Off by default.
+    """
+
+    enabled: bool = False
+    """Enable/disable content-based commitment detection."""
+
+    lookback_hours: int = 24
+    """How far back to scan journal entries for commitments."""
+
+    max_entries: int = 50
+    """Max journal entries fed to the LLM per run (bounds cost + context)."""
+
+    min_confidence: float = 0.6
+    """Minimum LLM confidence to record a detected commitment."""
+
+    default_authority: float = 0.5
+    """Authority assigned to requestors discovered from content."""
+
+
 class PolicyAlignmentConfig(BaseModel):
     """Nightly policy alignment sweep — demotes memory that contradicts
     active governance policy.
@@ -552,6 +578,7 @@ class NmemConfig(BaseSettings):
     """Conflict detection + resolution (belief revision) settings."""
 
     retrospective: RetrospectiveConfig = RetrospectiveConfig()
+    commitment_detection: CommitmentDetectionConfig = CommitmentDetectionConfig()
     """Nightly retrospective (lesson validation against new evidence)."""
 
     policy_alignment: PolicyAlignmentConfig = PolicyAlignmentConfig()
