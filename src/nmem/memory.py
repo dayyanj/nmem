@@ -108,6 +108,8 @@ class MemorySystem:
         # front door; it forwards to a registered cognitive backend (nmem-sym).
         from nmem.commitments import CommitmentManager
         self._commitments = CommitmentManager(self._db, self._emit)
+        # The consolidator detects commitments in content and imposes them here.
+        self._consolidator._commitments = self._commitments
 
     # ── Properties ───────────────────────────────────────────────────────
 

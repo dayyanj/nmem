@@ -508,6 +508,7 @@ class CommitmentModel(Base):
     importance: Mapped[float] = mapped_column(Float, default=1.0)
     status: Mapped[str] = mapped_column(String(20), default="open")  # open|fulfilled|breached|abandoned
     source: Mapped[str] = mapped_column(String(20), default="external")  # external|detected
+    project_scope: Mapped[str | None] = mapped_column(String(300), nullable=True)
     sym_obligation_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     resolution_outcome: Mapped[str | None] = mapped_column(String(30), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

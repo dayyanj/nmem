@@ -33,6 +33,7 @@ class CommitmentInfo:
     sym_obligation_id: int | None = None
     authority: float = 0.5
     importance: float = 1.0
+    project_scope: str | None = None
     created_at: datetime | None = None
 
 
@@ -93,6 +94,7 @@ class CommitmentManager:
         authority: float = 0.5,
         importance: float = 1.0,
         source: str = "external",
+        project_scope: str | None = None,
     ) -> CommitmentInfo:
         """Record a commitment and forward it to the subconscious backend."""
         from nmem.db.models import CommitmentModel
@@ -101,13 +103,15 @@ class CommitmentManager:
             row = CommitmentModel(
                 requester=requester, authority=authority, description=description,
                 deadline=deadline, importance=importance, status="open", source=source,
+                project_scope=project_scope,
             )
             session.add(row)
             await session.flush()
             info = CommitmentInfo(
                 id=row.id, requester=requester, description=description,
                 deadline=deadline, status="open", source=source,
-                authority=authority, importance=importance, created_at=row.created_at,
+                authority=authority, importance=importance,
+                project_scope=project_scope, created_at=row.created_at,
             )
 
         await self._mirror(info)
@@ -270,4 +274,5 @@ class CommitmentManager:
             id=row.id, requester=row.requester, description=row.description,
             deadline=row.deadline, status=row.status, source=row.source,
             sym_obligation_id=row.sym_obligation_id, authority=row.authority,
-            importance=row.importance, created_at=row.created_at)
+            importance=row.importance, project_scope=row.project_scope,
+            created_at=row.created_at)
