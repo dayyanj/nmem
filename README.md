@@ -285,6 +285,7 @@ mem.start_consolidation()
 | [Concepts](docs/concepts.md) | The 6-tier hierarchy, consolidation, social learning, hybrid search |
 | [Profiles](docs/profiles.md) | Pre-tuned configs for common scenarios + suggested configs by use case |
 | [Configuration](docs/configuration.md) | Every config option with tradeoffs and examples |
+| [Upgrading to 0.9.x](docs/upgrading-0.9.md) | Host-integration guide: SQLite drop + the conscious commitments/obligation interface |
 | [MCP Integration](docs/mcp-integration.md) | Connect to Claude Code / Cursor with persistent memory |
 | [API Reference](docs/api-reference.md) | Full method documentation with signatures and examples |
 | [Benchmarks](docs/benchmarks/) | Empirical evaluations — healthcare multi-agent, institutional knowledge, recognition signals |
