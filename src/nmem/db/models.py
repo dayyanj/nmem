@@ -628,10 +628,11 @@ class ScheduledFollowupModel(Base):
     open_loop (nagging for unresolved tasks).
 
     .. deprecated::
-        This model is retained for schema compatibility but is no longer
-        actively used. Prospective memory triggers have been superseded by
-        the cognitive engine's event-driven architecture. Will be removed
-        in a future release.
+        Retired. The open-loop / deadline / "nagging" concept is now handled
+        properly by :class:`CommitmentModel` (nmem's conscious record) forwarded
+        to nmem-sym's deadline-driven obligation pressure — see
+        ``mem.commitments``. This table is retained only for schema compatibility
+        with old data and will be dropped in a future migration.
     """
 
     __tablename__ = "nmem_scheduled_followups"
