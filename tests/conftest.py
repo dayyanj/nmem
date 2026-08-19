@@ -37,6 +37,7 @@ CLEANUP_TABLES = [
     "nmem_performance_scores",
     "nmem_scheduled_followups",
     "nmem_knowledge_links",
+    "nmem_skills",
 ]
 
 

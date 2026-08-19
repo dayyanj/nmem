@@ -111,6 +111,12 @@ class MemorySystem:
         # The consolidator detects commitments in content and imposes them here.
         self._consolidator._commitments = self._commitments
 
+        # Skills — the conscious record of "a process that worked / one that
+        # didn't". Durable + vectorized here; mirrors into nmem-sym's live
+        # procedure ledger when a backend attaches. Inert until config.skills.enabled.
+        from nmem.skills import SkillManager
+        self._skills = SkillManager(self._db, self._emit, self._config, self._embedding)
+
     # ── Properties ───────────────────────────────────────────────────────
 
     @property
@@ -169,6 +175,13 @@ class MemorySystem:
         imposes here; nmem records them and forwards to the cognitive backend."""
         return self._commitments
 
+    @property
+    def skills(self):
+        """Conscious skills — record/find "a process that worked / one that
+        didn't". Durable + vectorized here; mirrors into the cognitive backend's
+        live procedure ledger. Inert until config.skills.enabled."""
+        return self._skills
+
     # ── Cognitive backend (subconscious, e.g. nmem-sym) ─────────────────────
 
     def register_cognitive_backend(self, backend) -> None:
@@ -179,6 +192,7 @@ class MemorySystem:
         never imports the backend, so it stays standalone when none is attached.
         """
         self._commitments.register_backend(backend)
+        self._skills.register_backend(backend)
 
     async def record_obligation_event(self, kind: str, sym_obligation_id: int,
                                       data: dict | None = None) -> None:
@@ -186,6 +200,13 @@ class MemorySystem:
         transition (fulfilled / breached / …); updates the commitment + emits a
         host event."""
         await self._commitments.record_event(kind, sym_obligation_id, data)
+
+    async def record_skill_event(self, kind: str, sym_procedure_id: int,
+                                 data: dict | None = None) -> None:
+        """Reverse channel: the cognitive backend reports a procedure lifecycle
+        transition (myelinated / reinforced / retired / superseded); updates the
+        linked skill + emits a host event. Idempotent + monotonic."""
+        await self._skills.record_event(kind, sym_procedure_id, data)
 
     # ── Entity Auto-Journal ─────────────────────────────────────────────
 

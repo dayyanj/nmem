@@ -243,6 +243,14 @@ class SearchConfig(BaseModel):
     """Minimum vector similarity for candidates (0.0 = no filter,
     0.3 = recommended for large corpora)."""
 
+    salience_rank_weight: float = 0.0
+    """Weight for blending LTM salience into the search score. Default 0.0
+    preserves the deliberate decision that salience is a lifecycle signal, NOT
+    a retrieval signal — at 0.0 the ranking is byte-for-byte identical to not
+    blending at all (implemented as an explicit bypass branch, never
+    `relevance + 0*salience`). Set > 0 to let high-salience entries rank higher.
+    Applied identically in per-agent and all-agents LTM search."""
+
 
 class PromptConfig(BaseModel):
     """Global prompt injection budget settings."""
@@ -508,6 +516,81 @@ class BeliefRevisionConfig(BaseModel):
     a single write. Bounds the per-write cost."""
 
 
+class SkillsConfig(BaseModel):
+    """Conscious skills — "a process that worked / one that didn't".
+
+    nmem's durable, vectorized record of procedure outcomes (see SkillModel).
+    Recorded skills mirror into nmem-sym's live `symbol_procedures` ledger when
+    a cognitive backend is attached (Option-B ownership), and work standalone
+    otherwise. Everything here is OFF by default — an existing host sees no
+    behavior change until it opts in. The manager itself honors `enabled`, so
+    `mem.skills.record()/find()` are inert (no writes, empty results) when off —
+    the guard is library-wide, not just at the MCP surface.
+    """
+
+    enabled: bool = False
+    """Master switch. When False, mem.skills.* are no-ops / empty."""
+
+    similarity_threshold: float = 0.35
+    """Minimum cosine similarity for a skill to match a query in find()."""
+
+    find_limit: int = 3
+    """Default number of skills returned by find()."""
+
+    dedup_enabled: bool = False
+    """Enable the optional consolidation step that supersedes near-duplicate
+    skills into the stronger one (Slice 1C)."""
+
+    dedup_threshold: float = 0.85
+    """Cosine similarity above which two skills are considered duplicates."""
+
+    decay_enabled: bool = False
+    """Enable salience decay + retirement of stale, low-trial skills (Slice 1C)."""
+
+    include_in_briefing: bool = False
+    """Surface matching skills in mem.briefing() output (Slice 1C)."""
+
+    include_in_prompt: bool = False
+    """Surface matching skills as a PromptBuilder section (Slice 1C)."""
+
+
+class AutonomyConfig(BaseModel):
+    """Autonomous memorize/retrieve — nmem decides when to capture a skill and
+    when to proactively surface relevant memory, without the host asking.
+
+    All work runs OFF the write path (backgrounded via create_task) and only
+    ever *offers* results via the `memory.surfaced` event — nmem never forces
+    injection. OFF by default. LLM-based skill classification is deliberately
+    out of Phase 1 (heuristic capture only).
+    """
+
+    enabled: bool = False
+    """Master switch for the autonomy layer."""
+
+    auto_capture_skills: bool = False
+    """Capture skills from qualifying journal entries automatically."""
+
+    skill_entry_types: list[str] = ["decision", "outcome", "retro", "lesson"]
+    """journal record_type/entry_type values that trigger skill capture."""
+
+    proactive_retrieve: bool = False
+    """Proactively search + emit `memory.surfaced` on qualifying journal writes."""
+
+    surface_recognition_threshold: float = 0.5
+    """Minimum recognition score (compute_recognition) for a candidate to be
+    surfaced. ~0.5 corresponds to FAMILIAR."""
+
+    novelty_threshold: float = 0.6
+    """Only surface when the trigger is novel vs recent context (cosine below
+    this). Prevents re-surfacing what the agent already has loaded."""
+
+    surface_top_k: int = 5
+    """Max candidates considered per proactive retrieve."""
+
+    cooldown_seconds: int = 120
+    """Per-agent minimum interval between proactive surfaces."""
+
+
 class NmemConfig(BaseSettings):
     """Root configuration for nmem.
 
@@ -583,6 +666,12 @@ class NmemConfig(BaseSettings):
 
     recognition: RecognitionConfig = RecognitionConfig()
     """Recognition signal computation (KNOWN/FAMILIAR/UNCERTAIN)."""
+
+    skills: SkillsConfig = SkillsConfig()
+    """Conscious skills — record/find/mirror of procedure outcomes. Off by default."""
+
+    autonomy: AutonomyConfig = AutonomyConfig()
+    """Autonomous memorize/retrieve layer. Off by default."""
 
     model_config = {"env_prefix": "NMEM_", "env_nested_delimiter": "__"}
 

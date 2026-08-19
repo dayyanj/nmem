@@ -502,6 +502,71 @@ class CommitmentModel(Base):
     )
 
 
+# ── Skills (conscious record of "a process that worked / one that didn't") ──
+
+
+class SkillModel(Base):
+    """A conscious skill — nmem's durable record of a procedure outcome.
+
+    nmem owns this narrative record; when a cognitive backend (nmem-sym) is
+    attached, the live plasticity-scored procedure (LTP/LTD, myelination) lives
+    in `symbol_procedures`, keyed by `sym_procedure_id`. This is the exact
+    Option-B ownership pattern used by CommitmentModel.sym_obligation_id.
+
+    Works standalone with no backend: skills are recorded, embedded, searched,
+    decayed, and superseded entirely within nmem. `trigger_embedding` is the
+    query-side vector (the situation that should surface this skill) and is
+    embedded like every other tier, so retrieval works even under the noop
+    provider (which returns deterministic hash vectors, not None).
+    """
+
+    __tablename__ = "nmem_skills"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    what: Mapped[str] = mapped_column(Text)                       # process / trigger description
+    outcome: Mapped[str] = mapped_column(Text, default="")
+
+    # Plasticity at the conscious layer: worked vs didn't, reinforced over trials.
+    worked: Mapped[bool] = mapped_column(Boolean, default=True)
+    success_count: Mapped[int] = mapped_column(Integer, default=0)
+    trial_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Retrieval vector. 384-dim to match every other tier — cross-tier vectors
+    # must share a dimension; the whole codebase is 384-locked (config default).
+    trigger_embedding = VectorColumn(384)
+
+    # Lifecycle: salience decays like LTM; superseded_by_id is a forward pointer
+    # (set on the loser, points at the winner) — same convention as LTMModel.
+    salience: Mapped[float] = mapped_column(Float, default=1.0)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active|superseded|retired
+    superseded_by_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Option-B link to the live nmem-sym procedure (null when standalone).
+    sym_procedure_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Reverse-channel idempotency: the last sym lifecycle event applied to this
+    # row, so duplicate/out-of-order events (reinforced twice, myelinated after
+    # retired) can be made monotonic.
+    last_sym_event: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    # Scoping / attribution.
+    agent_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    project_scope: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("ix_nmem_skills_status", "status"),
+        Index("ix_nmem_skills_sym", "sym_procedure_id"),
+        Index("ix_nmem_skills_scope", "project_scope", "agent_id"),
+    )
+
+
 # ── Delegation History (for deja vu) ────────────────────────────────────────
 
 
