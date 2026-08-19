@@ -919,6 +919,96 @@ async def memory_mark_grounding(
     return f"Entity record #{record.id}: grounding already '{grounding}' (no change)"
 
 
+# ── Skills (conscious "a process that worked / one that didn't") ───────────────
+
+
+@mcp.tool()
+async def memory_skill_record(
+    ctx: Context,
+    what: str,
+    outcome: str = "",
+    worked: bool = True,
+    name: str | None = None,
+    agent_id: str = "default",
+) -> str:
+    """Record a skill outcome — a process that worked (or didn't).
+
+    Skills are durable, vectorized, and retrievable by situation. A near-duplicate
+    existing skill is reinforced rather than duplicated. Requires skills enabled
+    (config.skills.enabled).
+
+    Args:
+        what: The process / approach (also the retrieval trigger).
+        outcome: What resulted (optional).
+        worked: True if it worked, False if it didn't.
+        name: Optional short label.
+        agent_id: Agent recording the skill.
+    """
+    mem = _get_mem(ctx)
+    info = await mem.skills.record(
+        what, outcome=outcome, worked=worked, name=name, agent_id=agent_id)
+    if info is None:
+        return "Skills are disabled (set config.skills.enabled=True)."
+    verdict = "worked" if worked else "didn't work"
+    return (f"Recorded skill #{info.id}: {info.name} ({verdict}, "
+            f"{info.success_count}/{info.trial_count})")
+
+
+@mcp.tool()
+async def memory_skill_find(
+    ctx: Context,
+    query: str,
+    limit: int = 3,
+    agent_id: str = "default",
+) -> str:
+    """Find skills matching a situation, ranked by relevance + reliability."""
+    mem = _get_mem(ctx)
+    hits = await mem.skills.find(query, limit=limit, agent_id=agent_id)
+    if not hits:
+        return "No matching skills."
+    lines = ["## Relevant skills (from past experience)\n"]
+    for s in hits:
+        reliability = f"{s.success_count}/{s.trial_count}" if s.trial_count else "untested"
+        lines.append(f"- **{s.name}** (reliability: {reliability})")
+        if s.what:
+            lines.append(f"  {s.what[:300]}")
+        if s.outcome:
+            lines.append(f"  Outcome: {s.outcome[:200]}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def memory_skill_reinforce(
+    ctx: Context,
+    skill_id: int,
+    success: bool,
+) -> str:
+    """Reinforce a skill after re-using it — success applies LTP, failure LTD."""
+    mem = _get_mem(ctx)
+    ok = await mem.skills.reinforce(skill_id, success)
+    if not ok:
+        return f"Skill #{skill_id} not found or skills disabled."
+    return f"Reinforced skill #{skill_id} ({'success' if success else 'failure'})."
+
+
+@mcp.tool()
+async def memory_autonomy_surface(
+    ctx: Context,
+    query: str,
+    agent_id: str = "default",
+) -> str:
+    """Ask nmem to proactively surface relevant memory + skills for a situation.
+
+    Emits a `memory.surfaced` event that subscribers receive; returns whether
+    anything was offered. No-op when autonomy is disabled.
+    """
+    mem = _get_mem(ctx)
+    offered = await mem.request_surface(query, agent_id, reason="mcp")
+    return ("Surfaced relevant memory/skills (see memory.surfaced event)."
+            if offered else "Nothing relevant surfaced (or autonomy disabled).")
+
+
 # ── Resources ────────────────────────────────────────────────────────────────
 
 
