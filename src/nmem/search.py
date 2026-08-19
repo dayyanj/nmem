@@ -524,6 +524,13 @@ async def cross_tier_search(
     """
     tiers = tiers or DEFAULT_TIERS
     recog_config = config.recognition if config else None
+    # Opt-in salience→ranking blend for LTM (default 0.0 = OFF; when 0 the LTM
+    # score is byte-for-byte the hybrid relevance, preserving the deliberate
+    # "salience is a lifecycle signal, not a retrieval signal" decision).
+    salience_rank_weight = (
+        getattr(getattr(config, "search", None), "salience_rank_weight", 0.0)
+        if config else 0.0
+    )
     # Pass scope through as sentinel — each tier resolves its own config default
     scope_kwarg = {"project_scope": project_scope}
     recency_kwarg = {
@@ -551,12 +558,14 @@ async def cross_tier_search(
             tasks.append(_search_ltm_all_agents(
                 query, ltm, observer_agent_id=agent_id,
                 recognition_config=recog_config, bump_access=bump_access,
+                salience_rank_weight=salience_rank_weight,
                 **scope_kwarg, **recency_kwarg,
             ))
         else:
             tasks.append(_search_ltm(
                 agent_id, query, ltm,
                 recognition_config=recog_config, bump_access=bump_access,
+                salience_rank_weight=salience_rank_weight,
                 **scope_kwarg, **recency_kwarg,
             ))
     if "shared" in tiers:
@@ -698,6 +707,7 @@ async def _search_ltm(
     bump_access: bool = True,
     recency_weight: float = 0.0,
     recency_halflife_days: int = 30,
+    salience_rank_weight: float = 0.0,
 ) -> list[SearchResult]:
     ranked_entries = await tier.search(
         agent_id, query, top_k=5, project_scope=project_scope,
@@ -718,13 +728,16 @@ async def _search_ltm(
             level, r_score, reasons = compute_recognition(meta, recognition_config)
         else:
             level, r_score, reasons = "UNCERTAIN", 0.0, []
+        # Salience is a lifecycle signal, NOT a retrieval signal by default —
+        # score IS the hybrid relevance. Only an explicit opt-in weight blends
+        # it in; at 0.0 this branch is bypassed entirely (no float perturbation).
+        score = relevance
+        if salience_rank_weight > 0:
+            score = relevance + salience_rank_weight * (e.salience or 0.0)
         results.append(SearchResult(
             tier="ltm",
             id=e.id,
-            # Use relevance from hybrid search directly.
-            # Salience and importance are lifecycle signals (consolidation/expiry),
-            # NOT retrieval signals — they belong in priorities(), not search().
-            score=relevance,
+            score=score,
             content=e.content,
             key=e.key,
             agent_id=e.agent_id,
@@ -931,6 +944,7 @@ async def _search_ltm_all_agents(
     bump_access: bool = True,
     recency_weight: float = 0.0,
     recency_halflife_days: int = 30,
+    salience_rank_weight: float = 0.0,
 ) -> list[SearchResult]:
     """Search LTM across ALL agents by removing the agent_id filter.
 
@@ -1011,10 +1025,14 @@ async def _search_ltm_all_agents(
             level, r_score, reasons = compute_recognition(meta, recognition_config)
         else:
             level, r_score, reasons = "UNCERTAIN", 0.0, []
+        # Same opt-in salience blend as _search_ltm — bypassed at 0.0.
+        score = score_by_id.get(eid, 0.5)
+        if salience_rank_weight > 0:
+            score = score + salience_rank_weight * (e.salience or 0.0)
         results.append(SearchResult(
             tier="ltm",
             id=e.id,
-            score=score_by_id.get(eid, 0.5),
+            score=score,
             content=e.content,
             key=e.key,
             agent_id=e.agent_id,
