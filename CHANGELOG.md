@@ -3,6 +3,57 @@
 All notable changes to nmem are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.10.0] — 2026-08-19
+
+**Theme: nmem gains action — conscious skills, autonomous memorize/retrieve, and
+tightened decay.** Until now nmem was reactive: the host explicitly stored and
+explicitly searched. 0.10 adds a first-class **skills** layer ("a process that
+worked / one that didn't") and an **autonomy** layer that decides *when* to
+capture a skill and *when* to proactively surface relevant memory — all opt-in
+and standalone-safe. Everything defaults OFF; an existing host sees no behavior
+change until it flips a flag.
+
+### Added
+
+- **Conscious skills** (`mem.skills`, `nmem_skills` table): `record` / `find` /
+  `reinforce` / `supersede` / `list`. Durable, vectorized (pgvector + HNSW on
+  `trigger_embedding`), retrieved by situation with reliability ordering. Records
+  mirror into nmem-sym's live `symbol_procedures` ledger when a cognitive backend
+  is attached (Option-B ownership via `sym_procedure_id`, the commitments
+  pattern), and work fully standalone otherwise. Reverse channel
+  `record_skill_event` (myelinated / reinforced / retired / superseded) is
+  idempotent with fully-sticky terminal states.
+- **Autonomy layer** (`mem.autonomy`, `AutonomyManager`): on qualifying journal
+  writes it can (a) capture a skill heuristically and (b) run a bounded proactive
+  search and emit a single `memory.surfaced` event OFFERING relevant memory +
+  skills to the host. All work is backgrounded off the write path (bounded
+  semaphore + timeout), refetches the journal row by id, tags its searches
+  `source="autonomy"` so a cognitive backend ignores them (no feedback storm),
+  and is per-agent cooldown-limited. `mem.request_surface(query, agent_id)` is
+  the reverse channel a backend's recall drive uses.
+- **Skill decay + dedup** (consolidation full-cycle step, opt-in): stale
+  low-trial skills are retired; near-duplicate skills are superseded into the
+  strongest within a scope. `reinforce(success)` refreshes salience so skills in
+  active use don't fade.
+- **Skill surfacing** into `PromptBuilder` (`## Relevant Skills`) and
+  `briefing()`, opt-in via `skills.include_in_prompt` / `include_in_briefing`.
+- **MCP tools**: `memory_skill_record`, `memory_skill_find`,
+  `memory_skill_reinforce`, `memory_autonomy_surface`.
+- **Opt-in salience→ranking blend** (`search.salience_rank_weight`, default
+  0.0): lets high-salience LTM rank higher. At 0.0 the ranking is byte-for-byte
+  identical to before (explicit bypass) — salience stays a lifecycle signal by
+  default.
+- Config: `SkillsConfig`, `AutonomyConfig`, `search.salience_rank_weight`. All
+  new flags default OFF.
+
+### Notes
+
+- Pairs with **nmem-sym 0.10.0**, which adds the skill backend methods
+  (`register_skill` / `reinforce_skill` / `supersede_skill` / `abandon_skill`)
+  and an opt-in **recall drive** that asks nmem to surface via `request_surface`.
+- Fully backward-compatible: new tables auto-create; with all flags off and no
+  backend attached, behavior is identical to 0.9.2.
+
 ## [0.9.2] — 2026-08-16
 
 **Theme: PostgreSQL + pgvector is now the only supported backend — SQLite is
