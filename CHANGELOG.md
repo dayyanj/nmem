@@ -3,6 +3,50 @@
 All notable changes to nmem are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.11.0] — 2026-08-19
+
+**Theme: self-engineering — nmem distills its own context and proposes its own
+sub-agents.** Building on 0.10's skills, nmem now makes bounded, single-turn LLM
+calls during consolidation to turn proven experience into reusable artifacts. All
+opt-in (defaults OFF); with a noop LLM every step is a clean no-op.
+
+### Added
+
+- **Context recipes (2A)** — nmem distills reliable skills + their original
+  memories into compact **advisory prompt fragments** (`nmem_context_recipes`),
+  and injects the matching one into its OWN assembled context as a
+  `## Learned Guidance (advisory)` block placed last and explicitly subordinate
+  to policy/direct memory. Safety-first, because an auto-active recipe could
+  otherwise silently degrade the prompt:
+  - an **acceptance gate** (validate/shape/size + reject policy-override language)
+    before a recipe is written `active`;
+  - **near-exact match** + a **total section budget** on injection;
+  - **host veto** — `mem.self_engineering.disable(id, reason)` removes a recipe
+    AND **tombstones** its source cluster so nightly consolidation won't
+    re-distill it (a cooldown that grows on repeated disables);
+  - **staleness decay** (stale recipes demote themselves);
+  - **no recursion** — recipes are distilled only from skills + memories, never
+    from other recipes.
+- **Sub-agent proposals (2B)** — from highly-reliable skills, nmem emits rich,
+  **propose-only** sub-agent specs (`nmem_subagent_proposals`): name, system
+  prompt, trigger conditions, a **snapshot** of the distilled recipe, suggested
+  tools, source skills, and reliability evidence. nmem never runs them — the host
+  inspects proposals (`subagent.proposed` event / MCP) and instantiates the ones
+  it wants.
+- **Bounded LLM spend** — a hard `max_llm_calls_per_run` cap AND per-prompt
+  input-size caps (a call cap alone can't stop huge prompts); metered via
+  `record_llm_usage` (ops `context_recipe`, `subagent_proposal`).
+- **Events**: `recipe.distilled` / `recipe.rejected` / `recipe.disabled`,
+  `subagent.proposed` / `subagent.rejected`.
+- **MCP tools**: `memory_recipe_list`, `memory_recipe_disable`,
+  `memory_subagent_proposals`, `memory_subagent_resolve`.
+- **Config**: `SelfEngineeringConfig` (all OFF/bounded).
+
+### Notes
+
+- Fully backward-compatible: new tables auto-create; with `self_engineering.enabled`
+  off, behavior is identical to 0.10.0. No nmem-sym changes (stays 0.10.0).
+
 ## [0.10.0] — 2026-08-19
 
 **Theme: nmem gains action — conscious skills, autonomous memorize/retrieve, and
