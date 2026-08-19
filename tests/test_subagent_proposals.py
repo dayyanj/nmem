@@ -162,6 +162,28 @@ async def test_live_proposal_uniqueness_enforced(se):
 
 
 @pytest.mark.asyncio
+async def test_persist_proposal_fails_closed_on_integrity_error(se):
+    """The partial-unique index can reject a concurrent insert. _persist_proposal
+    must catch IntegrityError, roll back, and return None WITHOUT raising or
+    leaving the session unusable (verifies the in-context rollback is safe)."""
+    from nmem.db.models import SubagentProposalModel
+    sig = se.self_engineering._signature([12345])
+    async with se._db.session() as s:
+        s.add(SubagentProposalModel(name="existing", system_prompt="p",
+                                    source_signature=sig, status="proposed"))
+        await s.flush()
+
+    skill = {"id": 12345, "name": "x", "what": "w", "outcome": "o",
+             "success_count": 5, "trial_count": 5, "agent_id": None,
+             "project_scope": None}
+    result = {"name": "n", "system_prompt": "do it",
+              "trigger_conditions": "", "suggested_tools": []}
+    pid = await se.self_engineering._persist_proposal(skill, sig, result, None, "")
+    assert pid is None                       # fail closed, no exception raised
+    assert await _count(se) == 1             # DB still usable, no duplicate written
+
+
+@pytest.mark.asyncio
 async def test_dedup_no_second_proposal(se):
     await _reliable_skill(se, "a repeatable reliable behavior")
     _patch_llm(se, _SPEC)

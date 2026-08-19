@@ -262,73 +262,64 @@ class DatabaseManager:
         logger.info("Schema migrated to version %d", CURRENT_SCHEMA_VERSION)
 
     async def _create_postgres_indexes(self, dimensions: int) -> None:
-        """Create PostgreSQL-specific HNSW and GIN indexes."""
+        """Create PostgreSQL-specific HNSW and GIN indexes.
+
+        Each statement runs in its OWN transaction: a failure on one (e.g. a
+        deprecated table missing a column) must not abort the rest. Sharing one
+        transaction previously let a single UndefinedColumn error silently
+        cascade — aborting every index created after it.
+        """
         if not HAS_PGVECTOR:
             logger.warning("pgvector not installed — skipping vector indexes")
             return
 
-        async with self._engine.begin() as conn:
-            # HNSW indexes for vector similarity search
-            vector_tables = [
-                "nmem_journal_entries",
-                "nmem_long_term_memory",
-                "nmem_shared_knowledge",
-                "nmem_entity_memory",
-                "nmem_delegations",
-                "nmem_scheduled_followups",
-            ]
-            for table in vector_tables:
-                try:
-                    await conn.execute(text(f"""
-                        CREATE INDEX IF NOT EXISTS ix_{table}_embedding
-                        ON {table} USING hnsw(embedding vector_cosine_ops)
-                        WITH (m = 16, ef_construction = 64)
-                    """))
-                except Exception as e:
-                    logger.debug("HNSW index for %s: %s", table, e)
-
-            # Skills + context recipes use a differently-named vector column
-            # (`trigger_embedding`), so they get their own HNSW statements.
-            # Created here (not only in a versioned migration) so fresh installs
-            # get the index too.
-            for tbl in ("nmem_skills", "nmem_context_recipes"):
-                try:
-                    await conn.execute(text(f"""
-                        CREATE INDEX IF NOT EXISTS ix_{tbl}_trigger_embedding
-                        ON {tbl} USING hnsw(trigger_embedding vector_cosine_ops)
-                        WITH (m = 16, ef_construction = 64)
-                    """))
-                except Exception as e:
-                    logger.debug("HNSW index for %s: %s", tbl, e)
-
-            # Partial UNIQUE index: at most one live (proposed/accepted) sub-agent
-            # proposal per source cluster — backstops read-before-write dedup
-            # against concurrent runs. Created here so it lands on fresh + existing
-            # DBs (create_all won't add an index to an already-created table).
+        async def _run(sql: str, label: str) -> None:
             try:
-                await conn.execute(text("""
-                    CREATE UNIQUE INDEX IF NOT EXISTS ix_nmem_subagent_sig_live
-                    ON nmem_subagent_proposals (source_signature)
-                    WHERE status IN ('proposed', 'accepted')
-                """))
+                async with self._engine.begin() as conn:
+                    await conn.execute(text(sql))
             except Exception as e:
-                logger.debug("partial unique index for nmem_subagent_proposals: %s", e)
+                logger.debug("index %s: %s", label, e)
 
-            # GIN indexes for full-text search
-            tsv_tables = [
-                "nmem_journal_entries",
-                "nmem_long_term_memory",
-                "nmem_shared_knowledge",
-                "nmem_delegations",
-            ]
-            for table in tsv_tables:
-                try:
-                    await conn.execute(text(f"""
-                        CREATE INDEX IF NOT EXISTS ix_{table}_tsv
-                        ON {table} USING gin(content_tsv)
-                    """))
-                except Exception as e:
-                    logger.debug("GIN index for %s: %s", table, e)
+        # HNSW indexes for vector similarity search (column `embedding`).
+        for table in (
+            "nmem_journal_entries", "nmem_long_term_memory",
+            "nmem_shared_knowledge", "nmem_entity_memory", "nmem_delegations",
+        ):
+            await _run(
+                f"CREATE INDEX IF NOT EXISTS ix_{table}_embedding "
+                f"ON {table} USING hnsw(embedding vector_cosine_ops) "
+                f"WITH (m = 16, ef_construction = 64)",
+                f"hnsw {table}")
+
+        # Skills + context recipes use a differently-named vector column
+        # (`trigger_embedding`). Created here (not only in a versioned migration)
+        # so fresh installs get the index too.
+        for tbl in ("nmem_skills", "nmem_context_recipes"):
+            await _run(
+                f"CREATE INDEX IF NOT EXISTS ix_{tbl}_trigger_embedding "
+                f"ON {tbl} USING hnsw(trigger_embedding vector_cosine_ops) "
+                f"WITH (m = 16, ef_construction = 64)",
+                f"hnsw {tbl}")
+
+        # Partial UNIQUE index: at most one live (proposed/accepted) sub-agent
+        # proposal per source cluster — backstops read-before-write dedup against
+        # concurrent runs. Created here so it lands on fresh + existing DBs
+        # (create_all won't add an index to an already-created table).
+        await _run(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_nmem_subagent_sig_live "
+            "ON nmem_subagent_proposals (source_signature) "
+            "WHERE status IN ('proposed', 'accepted')",
+            "partial-unique nmem_subagent_proposals")
+
+        # GIN indexes for full-text search.
+        for table in (
+            "nmem_journal_entries", "nmem_long_term_memory",
+            "nmem_shared_knowledge", "nmem_delegations",
+        ):
+            await _run(
+                f"CREATE INDEX IF NOT EXISTS ix_{table}_tsv "
+                f"ON {table} USING gin(content_tsv)",
+                f"gin {table}")
 
     async def close(self) -> None:
         """Dispose of the engine connection pool."""
