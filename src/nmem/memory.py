@@ -117,6 +117,12 @@ class MemorySystem:
         from nmem.skills import SkillManager
         self._skills = SkillManager(self._db, self._emit, self._config, self._embedding)
 
+        # Autonomy — nmem decides when to memorize / retrieve on its own. Inert
+        # until config.autonomy.enabled; attach() only subscribes when enabled.
+        from nmem.autonomy import AutonomyManager
+        self._autonomy = AutonomyManager(self, self._config)
+        self._autonomy.attach()
+
     # ── Properties ───────────────────────────────────────────────────────
 
     @property
@@ -181,6 +187,19 @@ class MemorySystem:
         didn't". Durable + vectorized here; mirrors into the cognitive backend's
         live procedure ledger. Inert until config.skills.enabled."""
         return self._skills
+
+    @property
+    def autonomy(self):
+        """Autonomous memorize/retrieve layer. Inert until config.autonomy.enabled."""
+        return self._autonomy
+
+    async def request_surface(self, query: str, agent_id: str,
+                              reason: str = "request") -> bool:
+        """Reverse channel for a cognitive backend's recall drive: ask nmem to
+        proactively surface memory/skills for `query`. Returns True iff something
+        was offered (the backend uses this for deferred-relief). No-op when the
+        autonomy layer is disabled."""
+        return await self._autonomy.surface_now(query, agent_id, reason=reason)
 
     # ── Cognitive backend (subconscious, e.g. nmem-sym) ─────────────────────
 
@@ -255,6 +274,9 @@ class MemorySystem:
         """
         self._consolidator.stop()
 
+        # Drain any in-flight autonomy tasks before closing the DB under them.
+        await self._autonomy.aclose()
+
         # Release embedding model for GC before closing DB
         if hasattr(self._embedding, "_model") and self._embedding._model is not None:
             self._embedding._model = None
@@ -310,6 +332,7 @@ class MemorySystem:
         recency_weight: float = 0.0,
         recency_halflife_days: int = 30,
         all_agents: bool = False,
+        source: str = "host",
     ) -> list[SearchResult]:
         """Search across multiple memory tiers in parallel.
 
@@ -362,6 +385,10 @@ class MemorySystem:
             "result_ids": [
                 {"tier": r.tier, "id": r.id} for r in results[:20]
             ],
+            # "autonomy" marks a self-initiated (proactive) search so cognitive
+            # backends can ignore it and not turn it into drive pressure — a
+            # nmem-initiated retrieve must not feed back as an intrinsic signal.
+            "source": source,
         })
         return results
 
