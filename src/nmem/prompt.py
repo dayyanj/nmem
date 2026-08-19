@@ -37,6 +37,7 @@ class PromptBuilder:
         *,
         db: object | None = None,
         config: object | None = None,
+        skills: object | None = None,
     ):
         self._working = working
         self._journal = journal
@@ -46,6 +47,7 @@ class PromptBuilder:
         self._policy = policy
         self._db = db
         self._config = config
+        self._skills = skills
 
     async def build(
         self,
@@ -85,6 +87,12 @@ class PromptBuilder:
         if entity_type and entity_id:
             tasks["entity"] = self._entity.build_prompt(entity_type, entity_id)
 
+        # Skills: opt-in (config.skills.include_in_prompt). Query-relevant only.
+        if query and self._skills is not None:
+            skills_cfg = getattr(self._config, "skills", None)
+            if getattr(skills_cfg, "include_in_prompt", False):
+                tasks["skills"] = self._build_skills_prompt(agent_id, query)
+
         results = {}
         keys = list(tasks.keys())
         coros = list(tasks.values())
@@ -110,6 +118,11 @@ class PromptBuilder:
                 "policy": 0.10, "shared": 0.15, "ltm": 0.30,
                 "journal": 0.20, "working": 0.10, "entity": 0.15,
             }
+            # Only reserve budget for skills when a skills section is actually
+            # present — otherwise weight_sum stays 1.0 and existing sections are
+            # budgeted byte-for-byte as before (skills off ⇒ no change).
+            if results.get("skills"):
+                weights["skills"] = 0.15
             weight_sum = sum(weights.values())
             for section_name, text in results.items():
                 section_budget = int(total_chars * weights.get(section_name, 0.10) / weight_sum)
@@ -128,6 +141,7 @@ class PromptBuilder:
             shared=results.get("shared", ""),
             entity=results.get("entity", ""),
             policy=results.get("policy", ""),
+            skills=results.get("skills", ""),
         )
 
         # Record token stats for trend tracking (fire-and-forget, never blocks)
@@ -139,3 +153,22 @@ class PromptBuilder:
                 pass  # stats recording must never break prompt building
 
         return ctx
+
+    async def _build_skills_prompt(self, agent_id: str, query: str) -> str:
+        """Render query-relevant skills as a compact prompt section. Empty when
+        skills are disabled or none match."""
+        try:
+            hits = await self._skills.find(query, agent_id=agent_id)
+        except Exception as e:
+            logger.warning("Failed to build skills prompt: %s", e)
+            return ""
+        if not hits:
+            return ""
+        lines: list[str] = []
+        for s in hits:
+            reliability = (f"{s.success_count}/{s.trial_count}"
+                           if s.trial_count else "untested")
+            lines.append(f"- {s.name} (reliability: {reliability})")
+            if s.outcome:
+                lines.append(f"  Outcome: {s.outcome[:160]}")
+        return "\n".join(lines)

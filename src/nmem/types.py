@@ -186,6 +186,7 @@ class PromptContext:
     entity: str = ""
     policy: str = ""
     deja_vu: str = ""
+    skills: str = ""
 
     @property
     def full_injection(self) -> str:
@@ -197,6 +198,8 @@ class PromptContext:
             sections.append(f"## Shared Knowledge\n{self.shared}")
         if self.ltm:
             sections.append(f"## Your Long-Term Memory\n{self.ltm}")
+        if self.skills:
+            sections.append(f"## Relevant Skills\n{self.skills}")
         if self.journal:
             sections.append(f"## Recent Activity\n{self.journal}")
         if self.working:
@@ -219,7 +222,7 @@ class PromptContext:
         """Per-section token estimates (chars / 4)."""
         return {
             name: len(getattr(self, name, "") or "") // 4
-            for name in ("policy", "shared", "ltm", "journal",
+            for name in ("policy", "shared", "ltm", "skills", "journal",
                          "working", "entity", "deja_vu")
             if getattr(self, name, "")
         }

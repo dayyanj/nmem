@@ -75,6 +75,9 @@ class MemorySystem:
             db=self._db,
             config=self._config,
         )
+        # PromptBuilder is built before skills; wire the skills ref in after
+        # SkillManager exists (below) so the opt-in "## Relevant Skills" section
+        # can render. See self._skills assignment further down.
 
         # Initialize cognitive engine
         self._cognitive = CognitiveEngine(self._db, self._embedding, self._llm)
@@ -116,6 +119,7 @@ class MemorySystem:
         # procedure ledger when a backend attaches. Inert until config.skills.enabled.
         from nmem.skills import SkillManager
         self._skills = SkillManager(self._db, self._emit, self._config, self._embedding)
+        self._prompt._skills = self._skills   # enable the opt-in prompt section
         # Skill decay + dedup ride the consolidation full cycle. Self-gated
         # (no-op unless skills + the decay/dedup flags are on), so registering
         # unconditionally is safe.
@@ -651,6 +655,11 @@ class MemorySystem:
                 agent_id, query, top_k=10, bump_access=False,
                 project_scope=project_scope,
             )
+        # Skills: opt-in (config.skills.include_in_briefing), query-relevant only.
+        if (query and self._skills is not None
+                and getattr(self._config.skills, "include_in_briefing", False)):
+            coros["skills"] = self._skills.find(
+                query, project_scope=project_scope, agent_id=agent_id)
 
         keys = list(coros.keys())
         results_raw = await asyncio.gather(*coros.values(), return_exceptions=True)
@@ -683,6 +692,7 @@ class MemorySystem:
         budget_priorities = int(max_chars * 0.20)
         budget_recent = int(max_chars * 0.15)
         budget_working = int(max_chars * 0.10)
+        budget_skills = int(max_chars * 0.10)
 
         sections: list[str] = []
         n_known = 0
@@ -813,6 +823,21 @@ class MemorySystem:
             for s in working:
                 line = f"- [{s.slot}] {s.content[:100]}"
                 if chars + len(line) > budget_working:
+                    break
+                lines.append(line)
+                chars += len(line) + 1
+            sections.append("\n".join(lines))
+
+        # ── Relevant Skills (opt-in) ────────────────────────────────────
+        skills_hits = data.get("skills", [])
+        if skills_hits and not low_budget:
+            lines = ["### Relevant Skills"]
+            chars = 0
+            for s in skills_hits:
+                reliability = (f"{s.success_count}/{s.trial_count}"
+                               if s.trial_count else "untested")
+                line = f"- {s.name} (reliability: {reliability})"
+                if chars + len(line) > budget_skills:
                     break
                 lines.append(line)
                 chars += len(line) + 1
