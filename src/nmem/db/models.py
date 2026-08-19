@@ -567,6 +567,83 @@ class SkillModel(Base):
     )
 
 
+# ── Self-engineering: context recipes + suppression tombstones ──────────────
+
+
+class ContextRecipeModel(Base):
+    """A distilled, reusable prompt fragment for a recurring situation.
+
+    nmem synthesizes these from reliable skills + their original memories during
+    consolidation (opt-in), and injects the matching one into its OWN assembled
+    context as advisory "learned guidance" (never a policy override). Auto-active
+    on distillation, but bounded by an acceptance gate, near-exact match on
+    injection, salience decay, and host veto (`disable()` → a tombstone that
+    suppresses re-distillation). Never sourced from other recipes (no recursion).
+    """
+
+    __tablename__ = "nmem_context_recipes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    situation: Mapped[str] = mapped_column(Text)                  # trigger description
+    body: Mapped[str] = mapped_column(Text)                       # the distilled fragment
+
+    trigger_embedding = VectorColumn(384)
+
+    # Canonical hash of the sorted source_skill_ids — the dedup + suppression key.
+    source_signature: Mapped[str] = mapped_column(String(64))
+    source_skill_ids: Mapped[list | None] = mapped_column(nullable=True)
+    evidence: Mapped[dict | None] = mapped_column(nullable=True)  # sources + reliability
+
+    salience: Mapped[float] = mapped_column(Float, default=1.0)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active|disabled|superseded
+    superseded_by_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    disabled_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Staleness signals for decay.
+    last_matched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_injected_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    agent_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    project_scope: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_nmem_recipes_status", "status"),
+        Index("ix_nmem_recipes_sig", "source_signature"),
+        Index("ix_nmem_recipes_scope", "project_scope", "agent_id"),
+    )
+
+
+class RecipeTombstoneModel(Base):
+    """Suppression record: a disabled recipe's source cluster should not be
+    re-distilled. Keyed by source_signature (+ scope/agent); `suppressed_until`
+    is a cooldown that lengthens each time the same cluster is disabled again."""
+
+    __tablename__ = "nmem_recipe_tombstones"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_signature: Mapped[str] = mapped_column(String(64))
+    agent_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    project_scope: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    disable_count: Mapped[int] = mapped_column(Integer, default=1)
+    suppressed_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_nmem_recipe_tomb_sig", "source_signature",
+              "project_scope", "agent_id", unique=True),
+    )
+
+
 # ── Delegation History (for deja vu) ────────────────────────────────────────
 
 

@@ -1009,6 +1009,42 @@ async def memory_autonomy_surface(
             if offered else "Nothing relevant surfaced (or autonomy disabled).")
 
 
+# ── Context recipes (self-engineered advisory guidance) ───────────────────────
+
+
+@mcp.tool()
+async def memory_recipe_list(
+    ctx: Context,
+    status: str = "active",
+) -> str:
+    """List self-engineered context recipes (status: active | disabled | superseded)."""
+    mem = _get_mem(ctx)
+    recipes = await mem.self_engineering.list(status)
+    if not recipes:
+        return f"No {status} context recipes (or self-engineering disabled)."
+    lines = [f"## Context recipes ({status})\n"]
+    for r in recipes:
+        lines.append(f"- [#{r['id']}] **{r['name']}** — {r['situation'][:120]}")
+        if r.get("disabled_reason"):
+            lines.append(f"  disabled: {r['disabled_reason']}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def memory_recipe_disable(
+    ctx: Context,
+    recipe_id: int,
+    reason: str = "",
+) -> str:
+    """Veto a context recipe: stop injecting it AND suppress re-distillation of
+    its source cluster (a cooldown that grows on repeated disables)."""
+    mem = _get_mem(ctx)
+    ok = await mem.self_engineering.disable(recipe_id, reason)
+    if not ok:
+        return f"Recipe #{recipe_id} not found (or self-engineering disabled)."
+    return f"Disabled recipe #{recipe_id} and tombstoned its source cluster."
+
+
 # ── Resources ────────────────────────────────────────────────────────────────
 
 

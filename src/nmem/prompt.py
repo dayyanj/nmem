@@ -48,6 +48,7 @@ class PromptBuilder:
         self._db = db
         self._config = config
         self._skills = skills
+        self._self_engineer = None   # wired by MemorySystem after construction
 
     async def build(
         self,
@@ -93,6 +94,12 @@ class PromptBuilder:
             if getattr(skills_cfg, "include_in_prompt", False):
                 tasks["skills"] = self._build_skills_prompt(agent_id, query)
 
+        # Context recipes: opt-in advisory guidance (self_engineering.include_in_prompt).
+        if query and self._self_engineer is not None:
+            se_cfg = getattr(self._config, "self_engineering", None)
+            if getattr(se_cfg, "include_in_prompt", False):
+                tasks["context_recipes"] = self._build_recipes_prompt(agent_id, query)
+
         results = {}
         keys = list(tasks.keys())
         coros = list(tasks.values())
@@ -118,11 +125,13 @@ class PromptBuilder:
                 "policy": 0.10, "shared": 0.15, "ltm": 0.30,
                 "journal": 0.20, "working": 0.10, "entity": 0.15,
             }
-            # Only reserve budget for skills when a skills section is actually
-            # present — otherwise weight_sum stays 1.0 and existing sections are
-            # budgeted byte-for-byte as before (skills off ⇒ no change).
+            # Only reserve budget for a section when it is actually present —
+            # otherwise weight_sum stays 1.0 and existing sections are budgeted
+            # byte-for-byte as before (feature off ⇒ no change).
             if results.get("skills"):
                 weights["skills"] = 0.15
+            if results.get("context_recipes"):
+                weights["context_recipes"] = 0.10
             weight_sum = sum(weights.values())
             for section_name, text in results.items():
                 section_budget = int(total_chars * weights.get(section_name, 0.10) / weight_sum)
@@ -142,6 +151,7 @@ class PromptBuilder:
             entity=results.get("entity", ""),
             policy=results.get("policy", ""),
             skills=results.get("skills", ""),
+            context_recipes=results.get("context_recipes", ""),
         )
 
         # Record token stats for trend tracking (fire-and-forget, never blocks)
@@ -171,4 +181,33 @@ class PromptBuilder:
             lines.append(f"- {s.name} (reliability: {reliability})")
             if s.outcome:
                 lines.append(f"  Outcome: {s.outcome[:160]}")
+        return "\n".join(lines)
+
+    async def _build_recipes_prompt(self, agent_id: str, query: str) -> str:
+        """Render near-exact-matching context recipes as an advisory block,
+        bounded by a TOTAL section budget (not just per-recipe)."""
+        try:
+            recipes = await self._self_engineer.find_recipe(query, agent_id=agent_id)
+        except Exception as e:
+            logger.warning("Failed to build recipes prompt: %s", e)
+            return ""
+        if not recipes:
+            return ""
+        se_cfg = getattr(self._config, "self_engineering", None)
+        total_budget = getattr(se_cfg, "recipes_section_max_chars", 1200)
+        lines: list[str] = []
+        used = 0
+        injected: list[int] = []
+        for r in recipes:
+            block = f"- **{r['name']}** — {r['body']}"
+            if used + len(block) > total_budget:
+                break
+            lines.append(block)
+            used += len(block) + 1
+            injected.append(r["id"])
+        if injected:
+            try:
+                await self._self_engineer.mark_injected(injected)
+            except Exception:
+                pass
         return "\n".join(lines)

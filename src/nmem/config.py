@@ -605,6 +605,64 @@ class AutonomyConfig(BaseModel):
     """Per-agent minimum interval between proactive surfaces."""
 
 
+class SelfEngineeringConfig(BaseModel):
+    """Self-engineering — nmem distills reliable skills + memory into reusable
+    context recipes it injects into its OWN assembled context, and (2B) proposes
+    sub-agent specs. Makes bounded, single-turn LLM calls during consolidation.
+
+    OFF by default and bounded on every axis: a hard per-run LLM CALL cap AND
+    per-prompt INPUT-size caps (a call cap alone can't stop huge prompts). Recipes
+    are advisory, lowest-priority, near-exact-match-gated, decay when stale, and a
+    host `disable(reason)` both removes a recipe and TOMBSTONES its source cluster
+    so it isn't re-distilled. Recipes are never sourced from other recipes.
+    """
+
+    enabled: bool = False
+    """Master switch. When off, all self-engineering is inert."""
+
+    # ── LLM budget (count AND size) ──
+    max_llm_calls_per_run: int = 3
+    """Hard cap on complete_json calls per consolidation run."""
+    max_skills_per_cluster: int = 5
+    """Max skills fed into one recipe-distillation prompt."""
+    max_related_memories: int = 5
+    """Max related memories fed into one distillation prompt."""
+    max_input_chars: int = 600
+    """Per-source truncation of skill/memory text fed to the LLM."""
+    recipe_max_chars: int = 800
+    """Max length of a distilled recipe body (acceptance gate)."""
+
+    # ── candidate selection ──
+    min_reliability: float = 0.7
+    """Min success_count/trial_count for a skill to seed a recipe."""
+    min_trials: int = 3
+    """Min trial_count for a skill to seed a recipe."""
+    dedup_threshold: float = 0.85
+    """Cosine above which a new recipe duplicates an existing one."""
+
+    # ── injection ──
+    include_in_prompt: bool = False
+    """Inject matching recipes as advisory guidance in PromptBuilder."""
+    find_limit: int = 2
+    """Max recipes considered for injection per prompt."""
+    min_match_similarity: float = 0.6
+    """Near-exact gate — a recipe injects only when the situation truly matches."""
+    recipes_section_max_chars: int = 1200
+    """Total budget for the whole injected recipes block."""
+
+    # ── lifecycle ──
+    tombstone_base_cooldown_days: int = 14
+    """Base suppression window after a recipe is disabled (grows on repeats)."""
+    decay_stale_days: int = 60
+    """Recipes not matched/injected within this window demote and stop surfacing."""
+
+    # ── 2B (sub-agent proposals) ──
+    propose_subagents: bool = False
+    """Enable sub-agent spec proposals (2B)."""
+    subagent_min_reliability: float = 0.8
+    """Reliability bar for a skill to warrant a proposed sub-agent."""
+
+
 class NmemConfig(BaseSettings):
     """Root configuration for nmem.
 
@@ -686,6 +744,9 @@ class NmemConfig(BaseSettings):
 
     autonomy: AutonomyConfig = AutonomyConfig()
     """Autonomous memorize/retrieve layer. Off by default."""
+
+    self_engineering: SelfEngineeringConfig = SelfEngineeringConfig()
+    """Self-engineering — context recipes + sub-agent proposals. Off by default."""
 
     model_config = {"env_prefix": "NMEM_", "env_nested_delimiter": "__"}
 

@@ -187,6 +187,7 @@ class PromptContext:
     policy: str = ""
     deja_vu: str = ""
     skills: str = ""
+    context_recipes: str = ""
 
     @property
     def full_injection(self) -> str:
@@ -208,6 +209,14 @@ class PromptContext:
             sections.append(f"## Entity Dossier\n{self.entity}")
         if self.deja_vu:
             sections.append(f"## Similar Past Experience\n{self.deja_vu}")
+        # Advisory, lowest-priority: learned local heuristics. Placed last and
+        # explicitly subordinate — defer to policy and direct memory above.
+        if self.context_recipes:
+            sections.append(
+                "## Learned Guidance (advisory)\n"
+                "_Distilled from past experience; defer to policies and direct "
+                "memory above._\n"
+                f"{self.context_recipes}")
         if not sections:
             return ""
         return "# Agent Memory\n\n" + "\n\n".join(sections)
@@ -223,7 +232,7 @@ class PromptContext:
         return {
             name: len(getattr(self, name, "") or "") // 4
             for name in ("policy", "shared", "ltm", "skills", "journal",
-                         "working", "entity", "deja_vu")
+                         "working", "entity", "deja_vu", "context_recipes")
             if getattr(self, name, "")
         }
 

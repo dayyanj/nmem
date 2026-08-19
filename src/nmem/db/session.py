@@ -287,17 +287,19 @@ class DatabaseManager:
                 except Exception as e:
                     logger.debug("HNSW index for %s: %s", table, e)
 
-            # Skills use a differently-named vector column (`trigger_embedding`),
-            # so they get their own HNSW statement. Created here (not only in a
-            # versioned migration) so fresh installs get the index too.
-            try:
-                await conn.execute(text("""
-                    CREATE INDEX IF NOT EXISTS ix_nmem_skills_trigger_embedding
-                    ON nmem_skills USING hnsw(trigger_embedding vector_cosine_ops)
-                    WITH (m = 16, ef_construction = 64)
-                """))
-            except Exception as e:
-                logger.debug("HNSW index for nmem_skills: %s", e)
+            # Skills + context recipes use a differently-named vector column
+            # (`trigger_embedding`), so they get their own HNSW statements.
+            # Created here (not only in a versioned migration) so fresh installs
+            # get the index too.
+            for tbl in ("nmem_skills", "nmem_context_recipes"):
+                try:
+                    await conn.execute(text(f"""
+                        CREATE INDEX IF NOT EXISTS ix_{tbl}_trigger_embedding
+                        ON {tbl} USING hnsw(trigger_embedding vector_cosine_ops)
+                        WITH (m = 16, ef_construction = 64)
+                    """))
+                except Exception as e:
+                    logger.debug("HNSW index for %s: %s", tbl, e)
 
             # GIN indexes for full-text search
             tsv_tables = [

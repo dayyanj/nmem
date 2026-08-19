@@ -132,6 +132,15 @@ class MemorySystem:
         self._autonomy = AutonomyManager(self, self._config)
         self._autonomy.attach()
 
+        # Self-engineering — distills reliable skills into context recipes it
+        # injects into its own context, and (2B) proposes sub-agents. Inert until
+        # config.self_engineering.enabled. Rides the nightly consolidation cycle.
+        from nmem.self_engineering import SelfEngineer
+        self._self_engineer = SelfEngineer(self, self._config)
+        self._prompt._self_engineer = self._self_engineer   # enable recipe injection
+        self._consolidator.register_nightly_step(
+            "context_recipes", self._self_engineer.run_nightly)
+
     # ── Properties ───────────────────────────────────────────────────────
 
     @property
@@ -201,6 +210,12 @@ class MemorySystem:
     def autonomy(self):
         """Autonomous memorize/retrieve layer. Inert until config.autonomy.enabled."""
         return self._autonomy
+
+    @property
+    def self_engineering(self):
+        """Self-engineering — context recipes + sub-agent proposals. Inert until
+        config.self_engineering.enabled."""
+        return self._self_engineer
 
     async def request_surface(self, query: str, agent_id: str,
                               reason: str = "request") -> bool:

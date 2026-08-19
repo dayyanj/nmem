@@ -38,6 +38,8 @@ CLEANUP_TABLES = [
     "nmem_scheduled_followups",
     "nmem_knowledge_links",
     "nmem_skills",
+    "nmem_context_recipes",
+    "nmem_recipe_tombstones",
 ]
 
 
