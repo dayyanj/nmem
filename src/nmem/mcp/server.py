@@ -1045,6 +1045,50 @@ async def memory_recipe_disable(
     return f"Disabled recipe #{recipe_id} and tombstoned its source cluster."
 
 
+# ── Sub-agent proposals (nmem proposes; the host runs them) ───────────────────
+
+
+@mcp.tool()
+async def memory_subagent_proposals(
+    ctx: Context,
+    status: str = "proposed",
+) -> str:
+    """List proposed sub-agent specs distilled from reliable skills.
+
+    nmem only PROPOSES — the host instantiates and runs the ones it wants. Each
+    spec carries name, system prompt, trigger conditions, a snapshot of the
+    distilled context recipe, suggested tools, and reliability evidence.
+    """
+    mem = _get_mem(ctx)
+    proposals = await mem.self_engineering.list_proposals(status)
+    if not proposals:
+        return f"No {status} sub-agent proposals (or self-engineering disabled)."
+    import json as _json
+    lines = [f"## Sub-agent proposals ({status})\n"]
+    for p in proposals:
+        ev = p.get("reliability_evidence") or {}
+        rel = ev.get("reliability")
+        lines.append(f"### [#{p['id']}] {p['name']}"
+                     + (f"  (reliability {rel:.2f})" if isinstance(rel, (int, float)) else ""))
+        lines.append(f"```json\n{_json.dumps(p, indent=2, default=str)}\n```")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def memory_subagent_resolve(
+    ctx: Context,
+    proposal_id: int,
+    accepted: bool,
+) -> str:
+    """Record host feedback on a proposal (accept/dismiss). This is feedback
+    only — nmem never executes proposals."""
+    mem = _get_mem(ctx)
+    ok = await mem.self_engineering.resolve_proposal(proposal_id, accepted)
+    if not ok:
+        return f"Proposal #{proposal_id} not found (or self-engineering disabled)."
+    return f"Proposal #{proposal_id} marked {'accepted' if accepted else 'dismissed'}."
+
+
 # ── Resources ────────────────────────────────────────────────────────────────
 
 

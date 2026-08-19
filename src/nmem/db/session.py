@@ -301,6 +301,19 @@ class DatabaseManager:
                 except Exception as e:
                     logger.debug("HNSW index for %s: %s", tbl, e)
 
+            # Partial UNIQUE index: at most one live (proposed/accepted) sub-agent
+            # proposal per source cluster — backstops read-before-write dedup
+            # against concurrent runs. Created here so it lands on fresh + existing
+            # DBs (create_all won't add an index to an already-created table).
+            try:
+                await conn.execute(text("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS ix_nmem_subagent_sig_live
+                    ON nmem_subagent_proposals (source_signature)
+                    WHERE status IN ('proposed', 'accepted')
+                """))
+            except Exception as e:
+                logger.debug("partial unique index for nmem_subagent_proposals: %s", e)
+
             # GIN indexes for full-text search
             tsv_tables = [
                 "nmem_journal_entries",

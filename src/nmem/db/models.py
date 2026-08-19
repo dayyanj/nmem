@@ -644,6 +644,43 @@ class RecipeTombstoneModel(Base):
     )
 
 
+class SubagentProposalModel(Base):
+    """A PROPOSED sub-agent spec, distilled from a reliable skill (+ its recipe).
+
+    Inert data — nmem never executes it. The host inspects proposals and
+    instantiates/runs the ones it wants. The recipe body is SNAPSHOT in
+    (`context_recipe_snapshot`), not an FK, so an accepted proposal stays
+    self-contained even if the source recipe is later disabled/superseded.
+    """
+
+    __tablename__ = "nmem_subagent_proposals"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    system_prompt: Mapped[str] = mapped_column(Text)
+    trigger_conditions: Mapped[str] = mapped_column(Text, default="")
+    context_recipe_snapshot: Mapped[str] = mapped_column(Text, default="")
+    source_recipe_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # provenance only
+    suggested_tools: Mapped[list | None] = mapped_column(nullable=True)
+    source_skill_ids: Mapped[list | None] = mapped_column(nullable=True)
+    source_signature: Mapped[str] = mapped_column(String(64))
+    reliability_evidence: Mapped[dict | None] = mapped_column(nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="proposed")  # proposed|accepted|dismissed
+    project_scope: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    agent_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    # A partial UNIQUE index (at most one live proposal per source cluster) is
+    # created in _create_postgres_indexes so it lands on fresh AND existing DBs.
+    __table_args__ = (
+        Index("ix_nmem_subagent_status", "status"),
+        Index("ix_nmem_subagent_sig", "source_signature"),
+    )
+
+
 # ── Delegation History (for deja vu) ────────────────────────────────────────
 
 
