@@ -116,6 +116,11 @@ class MemorySystem:
         # procedure ledger when a backend attaches. Inert until config.skills.enabled.
         from nmem.skills import SkillManager
         self._skills = SkillManager(self._db, self._emit, self._config, self._embedding)
+        # Skill decay + dedup ride the consolidation full cycle. Self-gated
+        # (no-op unless skills + the decay/dedup flags are on), so registering
+        # unconditionally is safe.
+        self._consolidator.register_full_cycle_step(
+            "skills_maintenance", self._skills.run_maintenance)
 
         # Autonomy — nmem decides when to memorize / retrieve on its own. Inert
         # until config.autonomy.enabled; attach() only subscribes when enabled.

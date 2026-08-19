@@ -242,6 +242,73 @@ async def test_find_cross_scope_wildcard(sk):
 
 
 @pytest.mark.asyncio
+async def test_decay_reduces_salience_and_retires_unproven(sk):
+    sk._config.skills.decay_enabled = True
+    info = await sk.skills.record("an unproven approach worth trying once", worked=True)
+    await sk.skills.decay()                                   # one fade pass
+    got = await sk.skills.get(info.id)
+    assert got.salience < 1.0
+    # fade it hard, then a decay pass retires the unproven (trial_count<=1) skill
+    async with sk._db.session() as s:
+        await s.execute(text("UPDATE nmem_skills SET salience = 0.12 WHERE id = :i"),
+                        {"i": info.id})
+    await sk.skills.decay()
+    got = await sk.skills.get(info.id)
+    assert got.status == "retired"
+
+
+@pytest.mark.asyncio
+async def test_reinforce_refreshes_salience(sk):
+    info = await sk.skills.record("a skill kept in active use", worked=True)
+    async with sk._db.session() as s:
+        await s.execute(text("UPDATE nmem_skills SET salience = 0.3 WHERE id = :i"),
+                        {"i": info.id})
+    await sk.skills.reinforce(info.id, success=True)
+    got = await sk.skills.get(info.id)
+    assert got.salience >= 0.39                               # 0.3 + boost(0.1)
+
+
+@pytest.mark.asyncio
+async def test_dedup_supersedes_weaker_into_stronger(sk):
+    sk._config.skills.dedup_enabled = True
+    from nmem.db.models import SkillModel
+    emb = await asyncio.to_thread(sk._embedding.embed, "duplicate skill trigger text")
+    async with sk._db.session() as s:
+        strong = SkillModel(name="strong", what="x", trigger_embedding=emb,
+                            success_count=5, trial_count=6, status="active", salience=1.0)
+        weak = SkillModel(name="weak", what="y", trigger_embedding=emb,
+                          success_count=0, trial_count=1, status="active", salience=1.0)
+        s.add(strong); s.add(weak)
+        await s.flush()
+        strong_id, weak_id = strong.id, weak.id
+    await sk.skills.dedup()
+    gs = await sk.skills.get(strong_id)
+    gw = await sk.skills.get(weak_id)
+    assert gs.status == "active"
+    assert gw.status == "superseded" and gw.superseded_by_id == strong_id
+
+
+@pytest.mark.asyncio
+async def test_decay_dedup_direct_calls_are_gated(sk):
+    """Public decay()/dedup() self-gate — a direct call is a no-op when the
+    flags are off (sk fixture has them off)."""
+    info = await sk.skills.record("gated direct call skill", worked=True)
+    await sk.skills.decay()
+    await sk.skills.dedup()
+    got = await sk.skills.get(info.id)
+    assert got.status == "active" and got.salience == 1.0
+
+
+@pytest.mark.asyncio
+async def test_maintenance_noop_when_flags_off(sk):
+    # skills enabled but decay/dedup off → run_maintenance changes nothing
+    info = await sk.skills.record("stable skill xyzzy", worked=True)
+    await sk.skills.run_maintenance()
+    got = await sk.skills.get(info.id)
+    assert got.status == "active" and got.salience == 1.0
+
+
+@pytest.mark.asyncio
 async def test_reinforce_forwards_when_linked(sk):
     backend = MockSkillBackend()
     sk.register_cognitive_backend(backend)

@@ -299,6 +299,9 @@ class SkillManager:
             row.trial_count += 1
             if success:
                 row.success_count += 1
+                # Refresh salience so a skill in active use doesn't decay away.
+                boost = getattr(self._skills_cfg(), "reinforce_salience_boost", 0.1)
+                row.salience = min(1.0, row.salience + boost)
             row.worked = success
             sym_id = row.sym_procedure_id
         if self._backend is not None and sym_id is not None:
@@ -333,6 +336,78 @@ class SkillManager:
                 logger.warning("Skill %d: supersede forward failed: %s", old_id, e)
         await self._emit("skill.superseded", {"id": old_id, "superseded_by": new_id})
         return True
+
+    # ── maintenance (consolidation full-cycle step) ───────────
+
+    async def run_maintenance(self) -> None:
+        """Decay + dedup pass for the consolidation loop. Each half self-gates on
+        its flag (and skills.enabled), so this is a no-op unless opted in.
+        Registered once; safe to call every cycle."""
+        await self.decay()
+        await self.dedup()
+
+    async def decay(self) -> None:
+        """Fade active skills' salience each cycle; retire unproven, faded ones.
+        A separate query from LTM decay so it can't regress it. No-op unless
+        skills + decay are enabled."""
+        cfg = self._skills_cfg()
+        if not self._enabled or not getattr(cfg, "decay_enabled", False):
+            return
+        from sqlalchemy import text as sa_text
+        rate = getattr(cfg, "decay_rate", 0.02)
+        retire_at = getattr(cfg, "retire_salience", 0.15)
+        max_trials = getattr(cfg, "retire_max_trials", 1)
+        async with self._db.session() as session:
+            await session.execute(sa_text("""
+                UPDATE nmem_skills
+                SET salience = GREATEST(salience - :rate, 0.0), updated_at = NOW()
+                WHERE status = 'active'
+            """), {"rate": rate})
+            await session.execute(sa_text("""
+                UPDATE nmem_skills
+                SET status = 'retired', resolved_at = NOW()
+                WHERE status = 'active'
+                  AND salience <= :retire_at
+                  AND trial_count <= :max_trials
+            """), {"retire_at": retire_at, "max_trials": max_trials})
+
+    async def dedup(self) -> None:
+        """Supersede near-duplicate active skills into the strongest of each
+        cluster. Greedy, within a project_scope only — never merges across
+        scopes. Uses the same forward-pointer supersede as everything else.
+        No-op unless skills + dedup are enabled."""
+        cfg = self._skills_cfg()
+        if not self._enabled or not getattr(cfg, "dedup_enabled", False):
+            return
+        from sqlalchemy import select
+        from nmem.db.models import SkillModel
+        from nmem.search import cosine_similarity
+        threshold = getattr(cfg, "dedup_threshold", 0.85)
+
+        async with self._db.session() as session:
+            rows = (await session.execute(
+                select(SkillModel)
+                .where(SkillModel.status == "active",
+                       SkillModel.trigger_embedding.is_not(None))
+                # strongest first so it becomes each cluster's keeper
+                .order_by(SkillModel.success_count.desc(),
+                          SkillModel.trial_count.desc(), SkillModel.id.asc()))
+            ).scalars().all()
+
+        # group by scope; greedy keep-or-supersede
+        by_scope: dict = {}
+        for r in rows:
+            by_scope.setdefault(r.project_scope, []).append(r)
+        for group in by_scope.values():
+            kept: list[tuple[int, list[float]]] = []
+            for r in group:
+                emb = list(r.trigger_embedding)
+                match = next((kid for kid, kemb in kept
+                              if cosine_similarity(emb, kemb) >= threshold), None)
+                if match is not None:
+                    await self.supersede(r.id, match)
+                else:
+                    kept.append((r.id, emb))
 
     # ── reverse channel (backend → nmem) ──────────────────────
 

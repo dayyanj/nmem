@@ -547,6 +547,20 @@ class SkillsConfig(BaseModel):
     decay_enabled: bool = False
     """Enable salience decay + retirement of stale, low-trial skills (Slice 1C)."""
 
+    decay_rate: float = 0.02
+    """Salience lost per consolidation cycle by an un-reinforced active skill."""
+
+    retire_salience: float = 0.15
+    """A faded skill at/below this salience with few trials is retired."""
+
+    retire_max_trials: int = 1
+    """Only decay-retire skills with at most this many trials (unproven ones);
+    proven skills fade in salience but are kept."""
+
+    reinforce_salience_boost: float = 0.1
+    """Salience restored to a skill each time it is successfully reinforced, so
+    used skills don't decay away."""
+
     include_in_briefing: bool = False
     """Surface matching skills in mem.briefing() output (Slice 1C)."""
 
