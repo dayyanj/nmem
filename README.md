@@ -286,6 +286,7 @@ mem.start_consolidation()
 | [Profiles](docs/profiles.md) | Pre-tuned configs for common scenarios + suggested configs by use case |
 | [Configuration](docs/configuration.md) | Every config option with tradeoffs and examples |
 | [Upgrading to 0.9.x](docs/upgrading-0.9.md) | Host-integration guide: SQLite drop + the conscious commitments/obligation interface |
+| [Adopting 0.10–0.11](docs/upgrading-0.10-0.11.md) | Host-integration guide: turning on skills, autonomy, and self-engineering (config, API, MCP, events) |
 | [MCP Integration](docs/mcp-integration.md) | Connect to Claude Code / Cursor with persistent memory |
 | [API Reference](docs/api-reference.md) | Full method documentation with signatures and examples |
 | [Benchmarks](docs/benchmarks/) | Empirical evaluations — healthcare multi-agent, institutional knowledge, recognition signals |
