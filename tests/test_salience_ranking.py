@@ -86,3 +86,28 @@ async def test_positive_weight_promotes_high_salience():
     finally:
         await reset_db(boosted)
         await boosted.close()
+
+
+@pytest.mark.asyncio
+async def test_all_agents_path_applies_same_blend():
+    """The blend must apply identically in the all-agents LTM path
+    (_search_ltm_all_agents), not just the per-agent path."""
+    base = await _build(0.0)
+    try:
+        await _seed(base)
+        r0 = {r.key: r.score for r in await base.search(
+            "a1", "deploy rollback runbook", tiers=("ltm",), all_agents=True)}
+    finally:
+        await reset_db(base)
+        await base.close()
+
+    boosted = await _build(0.5)
+    try:
+        await _seed(boosted)
+        r1 = {r.key: r.score for r in await boosted.search(
+            "a1", "deploy rollback runbook", tiers=("ltm",), all_agents=True)}
+        assert r0 and r1
+        assert r1["low_rel"] > r0["low_rel"] + 0.4     # high-salience entry boosted
+    finally:
+        await reset_db(boosted)
+        await boosted.close()
