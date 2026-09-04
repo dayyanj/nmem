@@ -117,3 +117,97 @@ standalone `setup()` path missing the column (added `REWARD_MIGRATION_SQL`). v2
 (type inference, EWMA math). The benchmark is A2's real-DB gate and should be run in
 CI against a Postgres. Consider a `NMEM_SYM_TEST_DSN`-gated integration test for the
 reward EWMA specifically.
+
+---
+
+## Slice A3 — Surface intents / drive-state ✅
+
+**What shipped.** The drive system's fired intents were dropped by the MCP tick loop
+and its pressures weren't on any agent-facing surface. A3 adds three public bridge
+methods — `dominant_drive()`, `peek_ready()` (read-only introspection) and
+`on_drive_intent(handler)` (a clean public channel for a host executor to RECEIVE
+fired intents, replacing reaching into `bridge._drives`) — plus a read-only
+`memory_drive_state` MCP tool exposing the pressure landscape (drives + dominant +
+next-to-fire). `on_drive_intent` is precisely the Slice-C executor seam.
+
+**Divergences from the design doc:**
+1. **api.py NOT extended.** The doc said "expose via mcp_tools.py and api.py", but
+   drives are **bridge-scoped** while `api.py` is the `SymbolGraph` surface. The
+   bridge's Python methods (`drive_state`/`inject_pressure`/`dominant_drive`/
+   `peek_ready`/`on_drive_intent`) are the host API, and the MCP tool serves agents —
+   adding drive state to the graph API would be an awkward layering violation.
+
+**Codex peer review:** clean on the first pass. Tests: `tests/test_drive_surface.py`
+(bridge wrappers + MCP tool, graceful-degradation covered) + updated the MCP tool
+count test (7 → 8). 473 passed, 2 skipped.
+
+---
+
+## Slice A4 — Joint hypothesis posterior ✅
+
+**What shipped.** `symbol_hypotheses.posterior` (schema.sql + migration 014) holds a
+normalised probability over a hypothesis's competing set. A stable `_softmax` +
+`renormalize_competitor_posteriors` maintain a LIVE distribution over the still-
+`speculative` members of `{self} ∪ competes_with`, re-normalised after each
+auto-grounding transition; `posterior` is surfaced in `memory_hypothesis_list` /
+`_explain`. Gated by `NMEM_SYM_HYPOTHESIS_POSTERIOR` (off → posterior stays NULL, no
+extra queries). This is the substrate Slice C uses to pick experiments that
+discriminate between competitors.
+
+**Divergences from the design doc:** the posterior is a live distribution over
+**speculative** competitors only — resolved members (grounded/disputed/superseded/
+archived) are cleared to NULL. The doc said "softmax over the competitor set"; the
+speculative-only refinement was forced by codex (below).
+
+**Codex peer review — 1 P2, fixed:** the renormalization ran right after the
+evidence update but *before* the grounding transition, so when a hypothesis grounded
+and `supersede_competitors()` marked its rivals `superseded`, those rows kept the
+stale posterior just written — `memory_hypothesis_list/explain` would surface
+probabilities for hypotheses no longer in the race. Fix: moved the call to *after*
+the transition + supersession, softmax over speculative members only, clear resolved
+members to NULL. Re-review: **clean**. Tests: `tests/test_hypothesis_posterior.py`
+(pure softmax + DB flow incl. the resolved-clearing regression). 484 passed.
+
+---
+
+## Slice A5 — Revive drives → goals ✅  (Slice A complete)
+
+**What shipped.** Reconnected the dead drives→goals edge: revived
+`create_goal_from_intent` (now carries the targeting concern's key for dedup), added
+the missing `bridge.inject_goal()`, and wired the arbiter (`_handle_drive_intent`)
+to `_maybe_create_goal_from_intent` — a **targeted** drive intent (one carrying a
+specific festering concern) becomes a durable, decomposable `drive_intent` goal,
+deduped per concern. Gated by `DRIVES_CREATE_GOALS` **and** `GOALS_ENABLED` (off →
+byte-identical). This closes the A5→A2 loop: a drive-born goal, once achieved,
+triggers A2's utility reward on the procedures that achieved it.
+
+**Divergences from the design doc:**
+1. **"Chronic" = carries a targeted concern**, not a new N-consecutive-cycles
+   counter. A concern already *is* accumulated specific pressure, so targeting is the
+   chronic signal — no new state to track. Diffuse pressure keeps discharging inward.
+2. **Additionally gated on `GOALS_ENABLED`** (codex P2) — a drive goal is only
+   meaningful when the goals subsystem exists to pursue it.
+
+**Codex peer review — 2 P2s:**
+- **[valid] Missing goals table / orphan goals when the goals subsystem is off.**
+  Fixed by gating on `GOALS_ENABLED`. Test: `test_no_goal_when_goals_subsystem_disabled`.
+- **[FALSE POSITIVE] "drive_state `ready` is a bound method".** `Drive.ready` is a
+  `@property`, so `to_dict()['ready']` is a `bool` — verified empirically
+  (`state()['coherence']['ready'] is False`). No change made; codex agreed on
+  re-review. *Lesson for the critique: verify, don't reflexively apply — one review
+  finding across the build was wrong.*
+
+**Tests:** `tests/test_drive_goals.py` (10). 494 passed, 2 skipped.
+
+---
+
+## Slice A — summary
+
+Five brain-side rails, all opt-in / defaults-OFF / byte-identical off-state /
+codex-reviewed clean; ~13 codex P2s found-and-fixed across the slice (plus one false
+positive caught by verification), one falsifiable benchmark (A2) PASS. The rails:
+honest outcome-gated discharge (A1), a utility signal that tracks achievement rate
+(A2), the drive-state/intent surface + host intent channel (A3), a shared posterior
+over competitors (A4), and drives→goals→(A2 reward) reconnected (A5). Next: **Slice
+B/C** — the install-agnostic executor contract + reference runner that consumes
+`on_drive_intent` and closes the outward loop.
