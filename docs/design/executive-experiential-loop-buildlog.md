@@ -367,3 +367,60 @@ consequential** action, safely gated. It's a *read-only* action; a **gated mutat
 actuator** on a real scenario (behind the approval gate) is the natural next step. And
 the remaining big evidence is still the full-task/agent benchmark (critique #2's tail;
 future idea: DJ-AI + this loop vs ARC-AGI-3).
+
+## Evidence #3 — the `llm_tool_call` surface ✅  (capability model → the meta-actuator)
+
+The capability-model debate (should we build thousands of actuators?) resolved to
+**capability *surfaces*, not a per-tool catalog** (`docs/design/capability-model.md`).
+Evidence #3 ships the first and most general surface: `llm_tool_call` — let a
+tool-selector (an LLM) drive a multi-tool sequence, with the LLM as *just another
+proposer* feeding the same gated loop. This is the seam DJ-AI's Qwen tool-caller plugs
+into.
+
+- **nmem-act `tool_calling.py`** — `ToolCallingExecutor` (an `ActionExecutor`): asks a
+  `ToolSelector` for the next call → gates + executes it → repeats → returns **one
+  composite Episode** with the full step trace. `ScriptedSelector` stands in for a real
+  LLM in tests/examples; a host adapter over Qwen/OpenAI is the real thing (same seam).
+- **Recording:** a *sink-less* inner runner gates + dispatches each sub-call without
+  recording it, so the run is recorded exactly **once** (composite), not per sub-call.
+
+**Safety model (defense in depth):**
+- The selector sees only the tools permitted at the current autonomy level (the
+  **envelope**), AND every call it makes is **re-gated per-call** by the inner runner —
+  an off-envelope or under-declared call is still caught.
+- **Delegation is its own privilege.** The composite's *effective* capability is the
+  riskiest tool its envelope can actually drive (floored by any declared capability).
+  Under `read_only` autonomy the envelope is read-only → the run is read-only and
+  permitted; in `tiered` mode, exposing a mutating/high-risk tool requires the host to
+  **also allowlist `llm_tool_call`** — allowlisting a tool for direct use does not hand
+  it to an autonomous selector.
+- Composite surface is itself gated (denylist/capability/approval); approval **fails
+  closed** on hook error; selector exceptions are **encoded as ERROR** (never raised).
+
+**Outcome semantics (honest credit):**
+- The **selector is authoritative** on goal achievement via an optional `Done` verdict —
+  a multi-tool run can legitimately succeed despite an individual failed/blocked probe,
+  or conclude success/impossibility with *no* tool call at all. Absent a verdict, a
+  coarse fallback applies (any success → SUCCESS).
+- Genuine tool-execution **errors are surfaced** (ERROR) even over a success verdict;
+  hitting `max_steps` without completion is **incomplete** (FAILURE, no discharge
+  credit) — a truncated run is not an achieved one.
+
+**Verified:** runnable example — a stand-in "LLM" investigates "worker is degraded"
+under `read_only`: `fetch_status` + `search_runbook` succeed, `restart_service` is
+**refused** (mutating under read_only), the whole run is **one** success Episode
+(info_gain aggregated). 90 nmem-act tests (envelope scoping, per-call + delegation
+gating, verdict authority, error/cap surfacing, one-composite-episode).
+
+**Codex peer review:** iterated through error-masking, verdict authority, immediate-Done
+handling, delegation-as-its-own-capability, and max-steps-incompleteness (all fixed with
+regression tests); re-review **clean** (no correctness/security/perf issues). One codex
+suggestion (penalise *every* imperfect step) was **declined with rationale** — it's
+domain-wrong for agentic runs (a real run routinely has a failed probe and still
+achieves the goal); the selector's `Done` verdict resolves it correctly instead.
+
+**What this shows / doesn't.** The general meta-actuator exists and is safely gated: an
+LLM can now drive tools through the same honest, gated, learning loop. It's exercised
+with a *scripted* selector — the next step is wiring a **real LLM selector** (DJ-AI's
+Qwen tool-caller) and DJ-AI's existing tools behind this surface, plus a `computer_use`
+surface over the VM. That is the "wire this into DJ-AI" work.
