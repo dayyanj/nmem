@@ -1,8 +1,11 @@
 # Wiring nmem-act into DJ-AI — integration plan
 
-*Status: PLAN (no DJ-AI production code touched yet). Companion to
-`capability-model.md`, `executive-experiential-loop.md`, and the Evidence #3 entry in
-`executive-experiential-loop-buildlog.md`.*
+*Status: **D1a SHIPPED** in nmem-act (`OpenAIToolSelector` + pipeline docs + runnable
+example; nmem-act commit `e61f300`). The DJ-AI bridge (§8) is a **D2-ready reference** —
+no DJ-AI production code touched yet. Owner steer (locked): DJ-AI runs at **high autonomy,
+human-out-of-the-loop** — no approval hook; safety via automated rails (see §6).
+Companion to `capability-model.md`, `executive-experiential-loop.md`, and the Evidence #3
+entry in `executive-experiential-loop-buildlog.md`.*
 
 Evidence #3 shipped the `llm_tool_call` **surface** in nmem-act (a `ToolCallingExecutor`
 that lets an LLM drive a gated multi-tool loop, recorded as one composite Episode). This
@@ -181,3 +184,117 @@ for free); the ARC-AGI-3 big-swing eval.
    should wait for explicit scope sign-off.
 3. **Adapter location** — recommend DJ-AI-local `nmem_act_bridge.py` (keep public
    nmem-act pure); revisit a generic OpenAI adapter only if a second host needs it.
+   *(Resolved: nmem-act now ships `OpenAIToolSelector`, so the DJ-AI bridge is thin — see
+   §8. No custom selector class needed.)*
+
+---
+
+## 8. Reference bridge (D2-ready) — `service/nmem_act_bridge.py`
+
+Because nmem-act now ships `OpenAIToolSelector`, the DJ-AI bridge reduces to three
+adapters (chat, registry, sink) + one factory. This is drop-in reference, **not yet
+wired** — D2 installs nmem-act into the daemon venv, adds this file, and adds the handler
+(below). The one DJ-AI-specific bit — draining the streaming tool-call generator — is
+proven runnable in nmem-act's `test_streaming_drain_adapter_pattern`.
+
+```python
+# service/nmem_act_bridge.py  — D2-ready reference (NOT yet wired)
+from nmem_act import (
+    Action, ActionProposal, ActionRegistry, ActionResult, AutonomyGate, AutonomyLevel,
+    CapabilityClass, OpenAIToolSelector, ToolCallingExecutor, default_registry,
+)
+from service.local_llm_client import stream_chat_with_tools
+from service.teams_chat_tools import TEAMS_CHAT_TOOL_DEFS, TOOL_EXECUTORS
+
+# Surface B is read-only today; add entries here as mutating tools are exposed to the loop.
+_CAPABILITY: dict[str, CapabilityClass] = {}
+
+def build_tool_registry() -> ActionRegistry:
+    reg = default_registry()
+    for tdef in TEAMS_CHAT_TOOL_DEFS:
+        fn = tdef["function"]
+        name = fn["name"]
+        executor = TOOL_EXECUTORS.get(name)
+        if executor is None:
+            continue
+        reg.register(Action(
+            name, _wrap(executor),
+            _CAPABILITY.get(name, CapabilityClass.READ_ONLY),
+            fn.get("description", ""), parameters=fn.get("parameters")))
+    return reg
+
+def _wrap(executor):
+    """DJ-AI TOOL_EXECUTORS take **kwargs and return a JSON-able result (errors as
+    {"error": ...}); adapt to an nmem-act handler (params dict -> ActionResult)."""
+    async def handler(params: dict) -> ActionResult:
+        result = await executor(**(params or {}))
+        ok = not (isinstance(result, dict) and result.get("error"))
+        return ActionResult(success=ok, outcome=str(result)[:2000],
+                            task_success=1.0 if ok else 0.0, info_gain=0.3)
+    return handler
+
+async def chat_with_tools(messages, tools):
+    """Drain DJ-AI's streaming tool-call generator into OpenAIToolSelector's shape.
+    8B orchestrator for cheap selection; raise max_tokens for longer answers."""
+    content, calls = [], []
+    async for kind, data in stream_chat_with_tools(
+            messages, tools, max_tokens=1024, tool_choice="auto"):
+        if kind == "content":
+            content.append(data)
+        elif kind == "tool_calls":
+            calls = data
+    return ("".join(content), calls)
+
+def make_outcome_sink(on_log_episode, record_skill):
+    async def sink(proposal: ActionProposal, outcome) -> None:
+        on_log_episode(cycle_type="deep", entry_type="llm_tool_call_result",
+                       structured_data={"goal": proposal.rationale,
+                                        "status": outcome.status.value,
+                                        "steps": outcome.observations.get("steps", [])})
+        record_skill(what=f"tool-investigation: {proposal.rationale}",
+                     worked=outcome.succeeded, outcome=outcome.actual_outcome,
+                     name="llm_tool_call")
+    return sink
+
+def build_executor(*, autonomy: AutonomyLevel, allow: set[str],
+                   on_log_episode, record_skill) -> ToolCallingExecutor:
+    # No approval hook by design — human-out-of-the-loop. Safety via the tiered allow-list
+    # + per-call gating + max_steps + DJ-AI's outer policy gate on the llm_tool_call action.
+    return ToolCallingExecutor(
+        build_tool_registry(), OpenAIToolSelector(chat_with_tools),
+        gate=AutonomyGate(autonomy, allow=allow),
+        outcome_sink=make_outcome_sink(on_log_episode, record_skill),
+        max_steps=8)
+```
+
+**The handler (D2, in `deep_cycle.py`) — add beside `_handle_computer_use`:**
+
+```python
+# __init__: self._llm_tool_exec = build_executor(
+#     autonomy=AutonomyLevel[cfg["nmem_act"]["autonomy"].upper()],   # config knob
+#     allow=set(cfg["nmem_act"]["allow"]),                           # broad allow-list
+#     on_log_episode=self._on_log_episode, record_skill=record_skill)
+# + add "llm_tool_call" to _ACTUATOR_ACTION_TYPES; add the type to prompts/deep_cycle_system.md.
+
+async def _handle_llm_tool_call(self, action):
+    goal = (action.get("instruction") or action.get("task")
+            or action.get("reasoning") or "")
+    return await self._llm_tool_exec.execute(
+        ActionProposal(action_type="llm_tool_call", rationale=goal))
+```
+
+**Recommended config for the owner's steer** (`config/djai.yaml`): `nmem_act.autonomy:
+tiered` with `nmem_act.allow` a broad list of the tools the model may drive + the
+`llm_tool_call` surface itself — high autonomy, no human, yet deny-list + per-call rails
+stay live (prefer this to `full`, which bypasses all gating). Dial `autonomy` down without
+a code change if needed.
+
+### D2 checklist (touches the production daemon — needs the go-ahead)
+
+1. Add `nmem-act` to DJ-AI's `requirements.txt` and install it into `/opt/djai/venv`.
+2. Add `service/nmem_act_bridge.py` (above).
+3. Add a `pytest` harness (DJ-AI has none today) with a mock over `stream_chat_with_tools`
+   + stubbed tool executors, mirroring nmem-act's selector tests.
+4. Wire `_handle_llm_tool_call` into `DeepCycle` + the prompt enum + `_ACTUATOR_ACTION_TYPES`.
+5. D3 evidence: trigger a deep cycle on a multi-step read goal; verify one composite
+   episode + a reinforced skill.
