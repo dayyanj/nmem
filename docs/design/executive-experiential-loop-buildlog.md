@@ -211,3 +211,49 @@ honest outcome-gated discharge (A1), a utility signal that tracks achievement ra
 over competitors (A4), and drives→goals→(A2 reward) reconnected (A5). Next: **Slice
 B/C** — the install-agnostic executor contract + reference runner that consumes
 `on_drive_intent` and closes the outward loop.
+
+---
+
+## Slice B — `nmem-act`: install-agnostic executor package ✅  (new public repo)
+
+**What shipped.** A **new standalone repo** at `/mnt/nas_projects/apps/nmem-act`
+(0.1.0, MIT, **zero runtime dependencies**, git-initialised on `main`), built to
+public-repo standards from the start (LICENSE, README, CHANGELOG, .gitignore,
+hatchling/src layout, ruff, 32 tests). It defines the "hands" layer:
+- **Contract** (`types.py`): `ActionProposal` (propose-only), `Outcome` /
+  `OutcomeStatus`, `UtilityVector` (multi-dimensional reward + weighted `.scalar()`),
+  `Hypothesis`, `Episode`, `CapabilityClass`.
+- **`ActionExecutor`** protocol — the pluggable seam.
+- **`AutonomyGate`** — three tiers (`read_only` default / `tiered` / `full`),
+  fail-closed approval for high-risk.
+- **`ActionRegistry`** + **`ReferenceRunner`** — gate → approval → predict →
+  dispatch → outcome → sink; never raises for ordinary failures.
+- Read-only built-ins + `default_registry()`.
+
+**Divergences from the design doc:**
+1. **The contract types live in `nmem-act`, not nmem-sym** (the doc's B1 put them in
+   nmem-sym). Rationale: install-agnostic + the existing no-import-coupling bridge
+   philosophy — nmem-sym stays propose-only and emits proposals as *data*; nmem-act
+   depends on nothing in the ecosystem. The nmem-sym-side `symbol_episodes` +
+   `record_action_outcome` + `experiment.proposed` emission is **Slice C**.
+2. **Reference runner ships read-only built-ins only** (`noop`); mutating/high-risk
+   actuators are host-registered extensions (safe public default, matches the
+   `read_only` autonomy default). DJ-AI's actuators can be lifted in later.
+3. **Registered capability class is authoritative** — a proposal may escalate the
+   gate but never downgrade it (safety refinement from codex P1).
+
+**Codex peer review — 1 P1 + 2 P2s, each fixed with a regression test:**
+- **[P1] capability-downgrade bypass** — the gate checked the *proposal's* declared
+  `capability_class` (default `read_only`), so `ActionProposal(action_type="mutate")`
+  could slip a registered MUTATING handler past a `read_only` gate. Fixed: resolve
+  the action first, gate on the *most-severe* of (registered, declared).
+- **[P2] blank proposal ids never filled** → outcomes indistinguishable to the sink.
+  Fixed: fill a blank id once at the top of `execute()`.
+- **[P2] approval hook that raises escaped** `execute()` (contract says encode
+  failures, don't raise). Fixed: wrap and fail closed (BLOCKED), sink still fires.
+- Re-review: **clean** ("consistent with the documented safety model").
+
+**Remaining — Slice C:** close the loop end-to-end — nmem-sym builds an
+`ActionProposal` from a fired outward intent (via `on_drive_intent`), a thin adapter
+drives the nmem-act runner, and the `Outcome` flows back (`outcome.utility.scalar()`
+as the A1 discharge strength) into a `symbol_episodes` record + A2's utility reward.
