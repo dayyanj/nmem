@@ -294,3 +294,37 @@ system can now act to learn.
 
 See `executive-experiential-loop-critique.md` for the adversarial assessment of what
 this does and does *not* yet achieve.
+
+---
+
+## Evidence #1 — A2 on real embeddings ✅  (critique concern #1)
+
+The critique's top concern: A2's win was a *synthetic-bandit* result (identical
+per-situation vectors → similarity gave zero signal, so reward trivially decided). The
+first evidence step re-runs the claim with **real MiniLM embeddings** — candidate
+procedures carry genuine, graded, noisy similarity, and which candidate is *effective*
+is **independent of similarity** (so similarity is a real competing signal that gives
+no information about what actually works). Per-situation isolation scopes `find()` to a
+matched candidate set (no cross-situation retrieval artifacts).
+`benchmarks/utility_plasticity_bench.py --embeddings real`.
+
+**Result: PASS, margin +0.412** (utility 0.716 vs epistemic 0.303; epistemic sits at
+chance because similarity is uninformative about effectiveness). The utility arm learns
+(0.38 → 0.73) — reward-ranking overrides a misleading real similarity order, validating
+the A2 design choice (reward *before* similarity in `find()`). The margin barely
+dropped from synthetic (0.478 → 0.412), so the result is robust to real embedding
+geometry. Codex-clean.
+
+**What this does and doesn't show.** It shows utility-weighting helps when retrieval
+similarity doesn't already tell you which procedure works (the realistic, interesting
+regime) — with real embeddings, not toy vectors. It still does **not** use real
+compiled procedures, a real task, or an LLM — that's the remaining, heavier evidence
+(critique #2: a real actuator on a real scenario; and a full nmem-bench task run).
+
+## Deferred design — pressure-driven heartbeat
+
+Captured `pressure-driven-heartbeat.md` (owner decision: the loop should fire on
+accumulated drive pressure, not a fixed clock). The design: event wake +
+compute-on-read lazy decay + a self-rescheduling next-deadline timer — need-driven,
+homeostasis preserved, no polling. Opt-in (`NMEM_SYM_DRIVES_WAKE_MODE=event`), built
+as its own slice after the evidence track.
