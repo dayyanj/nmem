@@ -328,3 +328,42 @@ accumulated drive pressure, not a fixed clock). The design: event wake +
 compute-on-read lazy decay + a self-rescheduling next-deadline timer — need-driven,
 homeostasis preserved, no polling. Opt-in (`NMEM_SYM_DRIVES_WAKE_MODE=event`), built
 as its own slice after the evidence track.
+
+---
+
+## Evidence #2 — a real action through the loop ✅  (critique concern #2)
+
+The critique's #2: nmem-act shipped only a `noop`; the execution path was never proven
+with a real, consequential action. Evidence #2 ships the first real actuator and runs
+the loop end-to-end against the live internet + Postgres.
+
+- **nmem-act `actions/web.py`** — `http_get`, a real read-only HTTP actuator
+  (zero-dependency: stdlib urllib in a worker thread). NOT auto-registered; the host
+  opts in via `http_get_action()`. Because the loop's proposals may be autonomous, it
+  is hardened against untrusted params: http/https only; SSRF guard blocks all
+  non-global hosts (private/loopback/link-local/reserved/CGNAT) and re-validates every
+  redirect hop; `allow_private` is host config (baked into the action), never a
+  proposal param; hard caps on `max_bytes` + `timeout`; real non-2xx observed as a
+  failed fetch; all malformed input returned as a failed `ActionResult`.
+- **nmem-sym `benchmarks/real_action_loop.py`** — the cross-repo evidence harness.
+
+**Verified end-to-end (real HTTPS + real DB write):**
+- `https://example.com` → `200` → **success episode persisted**, discharge strength
+  **1.0**. Curiosity → gated real HTTP GET → outcome → `symbol_episodes` row. The loop
+  performs a real action and learns from it.
+- **Safety holds with real actions:** asked to hit the cloud metadata endpoint
+  `169.254.169.254`, the SSRF guard **refuses** → honest **failure**, discharge **0.0**
+  (the need survives — A1's honest discharge working with a real action), failed
+  episode still persisted.
+- A real `404` is **observed** (`-> 404`, honest failure), not lost as a transport error.
+
+**Codex peer review — thorough (security-sensitive, untrusted input):** 2 SSRF P1s
+(redirect-bypass; CGNAT/non-global via `is_global`) + `allow_private`-as-host-config P1
++ param-hardening P2s (byte cap, timeout cap, non-2xx observation, invalid url/number
+handling). All fixed with regression tests. 65 nmem-act tests; re-review **clean**.
+
+**What this shows / doesn't.** The execution path is now proven with a **real,
+consequential** action, safely gated. It's a *read-only* action; a **gated mutating
+actuator** on a real scenario (behind the approval gate) is the natural next step. And
+the remaining big evidence is still the full-task/agent benchmark (critique #2's tail;
+future idea: DJ-AI + this loop vs ARC-AGI-3).
