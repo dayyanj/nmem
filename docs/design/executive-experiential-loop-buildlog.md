@@ -257,3 +257,40 @@ hatchling/src layout, ruff, 32 tests). It defines the "hands" layer:
 `ActionProposal` from a fired outward intent (via `on_drive_intent`), a thin adapter
 drives the nmem-act runner, and the `Outcome` flows back (`outcome.utility.scalar()`
 as the A1 discharge strength) into a `symbol_episodes` record + A2's utility reward.
+
+---
+
+## Slice C — Close the loop ✅  (executive experiential loop complete)
+
+**What shipped.**
+- **C1 (nmem-act):** `make_intent_handler` + `default_proposal_from_intent` +
+  `default_strength` — a **duck-typed** adapter that maps a fired intent →
+  `ActionProposal` → any `ActionExecutor` → an `outcome_strength` in `[0, 1]` for the
+  drive's honest discharge (A1). `examples/closed_loop.py` + a smoke test. 42 tests.
+- **C2 (nmem-sym):** `symbol_episodes` (migration 015 + schema.sql) +
+  `record_action_outcome` (persists a first-class Episode and feeds achieved utility
+  into procedure plasticity A2; non-success forces utility 0.0) + `bridge.record_action_outcome`
+  (fail-open, ensures the table on a standalone graph). 10 tests.
+- **End-to-end VERIFIED against real Postgres:** a fired intent → nmem-act gate →
+  actuator → outcome → nmem-sym `record_action_outcome` → a persisted
+  `symbol_episodes` row (auto-filled id, `source=drive:novelty`, `status=success`,
+  utility vector), with the discharge strength returned to the drive.
+
+**Divergences from the design doc:**
+1. **Adapter is duck-typed + host-side** (no import coupling either way), and the
+   episode is recorded via the runner's **`outcome_sink`** (one recording path), not
+   a separate adapter callback.
+2. **Two complementary reward paths** now exist — A5 (goal achievement) and C2
+   (action outcome). The host controls which fires to avoid double-counting.
+
+**Codex peer review:** C1 clean; C2 fixed 2 P2s (non-success must not raise reward;
+bridge boundary must fail open).
+
+**The closed loop:** drive pressure (A1) → outward intent surfaced on
+`on_drive_intent` (A3) → adapter builds an `ActionProposal` → nmem-act gates +
+executes (autonomy tiers) → `Outcome` → `record_action_outcome` → `symbol_episodes`
++ A2 utility reward + **honest, outcome-proportional discharge** (A1 strength). The
+system can now act to learn.
+
+See `executive-experiential-loop-critique.md` for the adversarial assessment of what
+this does and does *not* yet achieve.
