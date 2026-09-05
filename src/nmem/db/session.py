@@ -27,7 +27,7 @@ from nmem.db.models import Base, HAS_PGVECTOR
 logger = logging.getLogger(__name__)
 
 # Current schema version. Bump when adding migrations to _migrate_schema.
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 
 class DatabaseManager:
@@ -252,6 +252,19 @@ class DatabaseManager:
                 "ALTER TABLE nmem_memory_conflicts "
                 "ADD COLUMN IF NOT EXISTS settled_at TIMESTAMP",
                 "v3: add settled_at to nmem_memory_conflicts",
+            )
+
+        if version < 4:
+            # Widen journal entry_type from VARCHAR(30). Callers that compose entry_type
+            # — e.g. DJ-AI's "{cycle}_{type}" ("deep_cycle_llm_tool_call_result" = 31) —
+            # overflowed the old limit and silently failed the journal write. VARCHAR(100)
+            # covers any compound with headroom. Non-destructive + backward-compatible:
+            # widening only relaxes the constraint, and existing String(30)-model callers
+            # still fit (SQLAlchemy doesn't enforce the length at runtime).
+            await _run(
+                "ALTER TABLE nmem_journal_entries "
+                "ALTER COLUMN entry_type TYPE VARCHAR(100)",
+                "v4: widen nmem_journal_entries.entry_type to VARCHAR(100)",
             )
 
         # Bump schema version in its own session

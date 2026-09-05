@@ -89,3 +89,16 @@ async def test_dedup_flag(mem: MemorySystem) -> None:
     assert c.id != a.id
     # Both distinct rows are now retrievable (the dedup'd b did not add a third).
     assert len({e.id for e in await mem.journal.recent("ag", limit=10)}) == 2
+
+
+@pytest.mark.asyncio
+async def test_long_compound_entry_type_persists(mem: MemorySystem) -> None:
+    """entry_type is VARCHAR(100) (was 30): composed entry_types longer than 30 chars —
+    e.g. DJ-AI's "{cycle}_{type}" like "deep_cycle_llm_tool_call_result" (31) — must persist
+    rather than overflow the column and fail the write."""
+    et = "deep_cycle_llm_tool_call_result"
+    assert len(et) > 30
+    e = await mem.journal.add(agent_id="ag", entry_type=et, title="t", content="c",
+                              compress=False, dedup=False)
+    assert e.entry_type == et
+    assert any(x.entry_type == et for x in await mem.journal.recent("ag", limit=5))

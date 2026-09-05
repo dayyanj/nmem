@@ -117,7 +117,10 @@ class JournalEntryModel(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     agent_id: Mapped[str] = mapped_column(String(100))
     session_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    entry_type: Mapped[str] = mapped_column(String(30))
+    # 100 (was 30): callers that compose entry_type — e.g. DJ-AI's "{cycle}_{type}"
+    # ("deep_cycle_llm_tool_call_result" = 31) — overflowed the old limit and silently
+    # failed the write. Migration v4 widens existing DBs (see db/session.py).
+    entry_type: Mapped[str] = mapped_column(String(100))
     title: Mapped[str] = mapped_column(String(300))
     content: Mapped[str] = mapped_column(Text)
     content_tsv = mapped_column(TSVType, nullable=True)
