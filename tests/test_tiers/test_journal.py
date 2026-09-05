@@ -62,3 +62,30 @@ async def test_agent_isolation(mem: MemorySystem) -> None:
     assert len(a1_entries) == 1
     assert len(a2_entries) == 1
     assert a1_entries[0].title == "A1"
+
+
+@pytest.mark.asyncio
+async def test_dedup_flag(mem: MemorySystem) -> None:
+    """dedup=True (default) collapses a near-identical recent entry into the existing
+    row; dedup=False force-stores it — for authoritative records that must persist
+    verbatim even when semantically similar (e.g. episode/escalation logs)."""
+    a = await mem.journal.add(
+        agent_id="ag", entry_type="decision",
+        title="deploy the release", content="ship v1 to prod now", compress=False,
+    )
+    # Identical content within 24h → cosine 1.0 (noop embed is content-deterministic) →
+    # default dedup collapses it into `a` instead of inserting.
+    b = await mem.journal.add(
+        agent_id="ag", entry_type="decision",
+        title="deploy the release", content="ship v1 to prod now", compress=False,
+    )
+    assert b.id == a.id
+    # Same content, but dedup opted out → a distinct row is stored.
+    c = await mem.journal.add(
+        agent_id="ag", entry_type="escalation",
+        title="deploy the release", content="ship v1 to prod now",
+        compress=False, dedup=False,
+    )
+    assert c.id != a.id
+    # Both distinct rows are now retrievable (the dedup'd b did not add a third).
+    assert len({e.id for e in await mem.journal.recent("ag", limit=10)}) == 2

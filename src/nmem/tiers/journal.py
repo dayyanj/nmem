@@ -63,6 +63,7 @@ class JournalTier:
         record_type: str = "evidence",
         grounding: str = "inferred",
         compress: bool = True,
+        dedup: bool = True,
         project_scope: str | None = ...,
         created_at: datetime | None = None,
         expires_at: datetime | None = None,
@@ -84,6 +85,11 @@ class JournalTier:
             record_type: "evidence", "fact", "judgment", "task", "rule", "summary".
             grounding: "source_material", "inferred", "confirmed", "disputed".
             compress: Whether to LLM-compress content (default True).
+            dedup: Whether to collapse a near-identical entry from the last 24h
+                into the existing row instead of inserting (default True). Pass
+                False for authoritative records that must be stored verbatim even
+                when semantically similar to a recent entry (e.g. audit/episode
+                logs whose exact presence a later query depends on).
             created_at: Override creation timestamp (for bulk imports). When set,
                 expiry is computed from this date, not NOW(), so historical
                 entries expire based on their original age.
@@ -109,10 +115,12 @@ class JournalTier:
             self._embedding.embed, f"{title} {content[:500]}"
         )
 
-        # Dedup check: skip near-identical entries from last 24 hours
-        dedup_result = await self._check_dedup(agent_id, emb, project_scope=project_scope)
-        if dedup_result is not None:
-            return dedup_result
+        # Dedup check: skip near-identical entries from last 24 hours (unless the
+        # caller opts out to force-store an authoritative record).
+        if dedup:
+            dedup_result = await self._check_dedup(agent_id, emb, project_scope=project_scope)
+            if dedup_result is not None:
+                return dedup_result
 
         # Compress content to distilled fact (embed first, compress second)
         if compress and len(content) > self._config.llm.compression_max_chars:
