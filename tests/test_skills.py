@@ -328,3 +328,23 @@ async def test_supersede_excludes_from_find(sk):
     assert got.status == "superseded" and got.superseded_by_id == b.id
     hits = await sk.skills.find("older technique to be replaced")
     assert all(h.id != a.id for h in hits)
+
+
+@pytest.mark.asyncio
+async def test_decay_exempts_worked_false_skills_from_retirement(sk):
+    """Decay retires faded, unproven POSITIVE skills, but never a worked=False avoidance
+    lesson — a hard-won "don't do X" must survive to be surfaced/reinforced later."""
+    sk._config.skills.decay_enabled = True
+    sk._config.skills.decay_rate = 0.0            # isolate retirement from fading
+    sk._config.skills.retire_salience = 0.5
+    sk._config.skills.retire_max_trials = 1
+
+    good = await sk.skills.record("positive technique that worked once", worked=True)
+    bad = await sk.skills.record("avoid this approach it failed badly", worked=False)
+    async with sk._db.session() as session:            # fade both below the retire threshold
+        await session.execute(text("UPDATE nmem_skills SET salience = 0.1"))
+
+    await sk.skills.decay()
+
+    assert (await sk.skills.get(good.id)).status == "retired"
+    assert (await sk.skills.get(bad.id)).status == "active"     # exempt — avoidance lesson kept

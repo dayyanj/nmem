@@ -349,7 +349,13 @@ class SkillManager:
     async def decay(self) -> None:
         """Fade active skills' salience each cycle; retire unproven, faded ones.
         A separate query from LTM decay so it can't regress it. No-op unless
-        skills + decay are enabled."""
+        skills + decay are enabled.
+
+        Avoidance lessons (``worked = false`` — "this approach failed / don't do X") are
+        exempt from retirement: a single-trial warning is exactly the kind of hard-won
+        negative lesson we must not forget before it's reinforced. Salience still fades (so
+        it can be superseded/outranked), but decay never retires it — only positive,
+        unproven, faded skills age out."""
         cfg = self._skills_cfg()
         if not self._enabled or not getattr(cfg, "decay_enabled", False):
             return
@@ -367,6 +373,7 @@ class SkillManager:
                 UPDATE nmem_skills
                 SET status = 'retired', resolved_at = NOW()
                 WHERE status = 'active'
+                  AND worked = true
                   AND salience <= :retire_at
                   AND trial_count <= :max_trials
             """), {"retire_at": retire_at, "max_trials": max_trials})
