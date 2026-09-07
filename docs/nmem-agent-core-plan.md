@@ -25,6 +25,67 @@ already works. It can proceed incrementally, validate-then-thin, with no pressur
 
 ---
 
+## 0. Post-sweep re-sequencing (2026-09-07, after Clusters A–F)
+
+The **capability-activation sweep** ([capability-activation-sweep.md](./capability-activation-sweep.md))
+ran after this plan was first drafted and **built + live-validated most of the library toggles this
+plan proposed.** Updated status per §2:
+
+| §  | Proposed | Status after sweep |
+|----|----------|--------------------|
+| 2.2 | goal LLM-enrich toggle | ✅ **BUILT** `DRIVES_GOAL_LLM_ENRICH` (nmem-sym 0b22e49); native producer live. `curiosity.py` still runs as SHADOW → **thin-out unblocked**. |
+| 2.3 | cold-start drive fix | ✅ **BUILT** `DRIVES_HONEST_DISCHARGE` + `DRIVES_WAKE_MODE=event`; michelle on event-wake so her starvation guard is **already inert** → **delete unblocked**. |
+| 2.4 | action-reflection toggle | ✅ **BUILT** `ACT_LLM_REFLECT` (nmem-act ac44822); `tool_learning.py` already thinned to `recall_lessons`. |
+| 2.5 | proactive recall | ✅ **BUILT** (Cluster D): autonomy surface + the **`seed_recall` host-seam** (nmem-sym) + `recall.py` consumer + benign-no-match fix (ebc3008). |
+| 2.6 | importance | ✅ done (pre-sweep). |
+
+Plus new library hardening the sweep landed (all default-off → DJ-AI byte-identical): skill
+canonicalization/dedup/`skill.chronic`, graph-hole bridging (#5), edge-type auto-promotion (C.a),
+**self-engineering validated** (E4 recipes distill + inject), **channel-agnostic comms** (B3
+`CommsLoop`/`ChannelSink` — built expressly for lift-and-shift, incl. a future nmem-twin voice
+channel), concern-persistence (E1).
+
+**The one big thing STILL not upstreamed — §2.1 (flagship).** nmem-act's `ReferenceRunner` only does
+`execute(proposal) → Outcome` (single action). The **goal-pursuit lifecycle** — atomic claim,
+infra-vs-actuation-failure classification, cancel/error un-claim, startup recovery, salvage-on-
+exhaust, merit outcome write — still lives entirely in michelle's `cognition.py` pursuit loop
+(~lines 300–370). That is the reference spec to lift into nmem-act.
+
+### Re-sequenced remaining work
+
+**Phase 1 — Validated thin-outs** (low risk, immediate LOC win — the toggles are already proven live):
+- **1a. Delete `curiosity.py`** after a short shadow-compare (native A5 producer vs curiosity output
+  over N cycles) confirms parity-or-better goals. It's the last consumer forcing the shadow.
+- **1b. Delete the starvation guard** in `cognition.py` (event-wake + honest-discharge validated;
+  the guard is already inert on michelle).
+- **1c.** `tool_learning.recall_lessons` is already thin app-glue — leave as reference or fold into
+  `skills.find`/autonomy when Phase 2 lands.
+
+**Phase 2 — FLAGSHIP: nmem-act goal-pursuit runner** (§2.1). Build a lifecycle-owning layer ABOVE
+`execute()`: a runner that takes a **goal source** + **executor adapter** and owns claim →
+infra-vs-failed → cancel/error un-claim → startup recovery sweep → salvage-on-exhaust
+(`ACT_LLM_SUMMARIZE_ON_EXHAUST`) → merit outcome write. michelle's pursuit loop is the spec. Validate
+beside michelle's loop, then thin michelle to *register SandboxExecutor + goal source + call runner*.
+Biggest LOC + correctness win; best nmem-act stress test; proves the whole thesis.
+
+**Phase 3 — Stand up `nmem-agent-core`** (the package does not exist yet). Extract from michelle:
+bootstrap (construct MemorySystem + SymbolGraph, register adapters, apply `capabilities.env`),
+adapters (executor / DB / embedder / nmem-LLM-client), data-schema loader (persona / objectives /
+KB), peer glue, and the now-proven standard adapters (**recall consumer**, **channel-agnostic
+CommsLoop**, viz bridge). michelle becomes consumer #1: config + persona + `SandboxExecutor` + thin
+bootstrap. Target §5 shape: a few hundred LOC, mostly not-logic.
+
+**Phase 4 — DJ-AI coordinated rollout.** Once michelle bakes, the currently-**FROZEN** coordinated
+nmem-lib-update + DJ-AI restart (NOT a bare restart). Everything is default-off, so DJ-AI stays
+byte-identical until per-flag enable.
+
+**Two open decisions (need founder call):** (a) Phase order — do the cheap validated thin-outs
+(Phase 1) first to bank the win, or lead with the Phase 2 flagship (this doc's original "first
+move")? (b) `nmem-agent-core` as a **standalone repo** vs a **package inside nmem** (lighter to
+start, no new CI/release). Recorded in §7-bis below once decided.
+
+---
+
 ## 1. Current state — michelle-ai custom code (~1848 LOC)
 
 | Module | LOC | Role | Disposition |
