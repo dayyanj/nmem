@@ -19,24 +19,34 @@ SymbolGoalStore` pulls its deps lazily, only when you touch an adapter that need
 them. Agents without `nmem_sym`/`nmem_act` installed can still `import nmem`.
 
 **Graduated so far**
-- `SymbolGoalStore` (goal_store) — maps nmem-sym `symbol_goals` to nmem-act's
-  `GoalStore`, so nmem-act's `GoalPursuit` owns the pursuit lifecycle.
-- recall consumer (recall) — subscribes to nmem autonomy's `memory.surfaced` and
-  injects the surfaced memory into the next task's context.
+- `AgentRuntime` (runtime) — the headless boot->run->shutdown lifecycle + cognition
+  wiring; a new agent is `AgentRuntime(config, persona, executor=...)` + host I/O.
+- `Persona` / `seed_persona` (persona) — the per-agent identity DATA + its loader.
+- `build_memory` / `build_symbol_graph` (memory) — the order-sensitive bootstrap.
+- `build_backend` + backends (backend) — provider-agnostic LLM (OpenAI-compat/Anthropic).
+- `CommsLoop` / `ChannelSink` / `Utterance` (comms) — channel-agnostic communication.
+- `SymbolGoalStore` (goal_store) — maps nmem-sym `symbol_goals` to nmem-act's `GoalStore`.
+- recall consumer (recall) — subscribes to autonomy's `memory.surfaced` and injects it.
 
 **Roadmap (extract validate-then-thin from michelle, michelle stays live)**
-- bootstrap: construct MemorySystem + SymbolGraph, register adapters, apply
-  `capabilities.env`.
-- adapters: LLM client (nmem's own), embedder, DB engine, actuator executor.
-- comms: the channel-agnostic `CommsLoop` / `ChannelSink` (michelle service/communication).
-- peer glue: the standard nmem-exchange handler.
-- data-schema: persona / objectives / baseline-KB loader.
+- peer glue: the standard nmem-exchange handler (michelle service/peer).
+- adapters: a DB-engine helper + a reference actuator executor scaffold.
+- an optional thin HTTP helper (health + admin) for agents that want one.
 """
 from __future__ import annotations
 
 # Lazy re-exports (PEP 562): keep `import nmem.agent_core` free of nmem_sym/nmem_act
 # unless a specific adapter is actually accessed.
 _LAZY = {
+    "AgentRuntime": ("nmem.agent_core.runtime", "AgentRuntime"),
+    "Persona": ("nmem.agent_core.persona", "Persona"),
+    "seed_persona": ("nmem.agent_core.persona", "seed_persona"),
+    "build_memory": ("nmem.agent_core.memory", "build_memory"),
+    "build_symbol_graph": ("nmem.agent_core.memory", "build_symbol_graph"),
+    "build_backend": ("nmem.agent_core.backend", "build_backend"),
+    "CommsLoop": ("nmem.agent_core.comms", "CommsLoop"),
+    "ChannelSink": ("nmem.agent_core.comms", "ChannelSink"),
+    "Utterance": ("nmem.agent_core.comms", "Utterance"),
     "SymbolGoalStore": ("nmem.agent_core.goal_store", "SymbolGoalStore"),
 }
 
