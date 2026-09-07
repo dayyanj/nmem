@@ -1,0 +1,38 @@
+# Structural config for a minimal nmem agent.
+# Capability FLAGS are NOT here — they live in capabilities.env (nmem/nmem-sym read
+# them from the environment). This file is the structural wiring only: where the DB
+# and models are, and the loop cadences.
+
+db:
+  env_key: SCOUT_DB_DSN         # if set, this env var wins (keep secrets out of yaml)
+  config_key: default
+
+databases:
+  default:
+    # postgresql+asyncpg://USER:PASS@HOST:5432/DBNAME  (nmem wants the +asyncpg prefix;
+    # build_symbol_graph strips it automatically for nmem-sym)
+    url: postgresql+asyncpg://scout:scout@127.0.0.1:5432/scout
+
+nmem:
+  embedding:
+    provider: sentence-transformers   # local, torch; dims MUST match nmem-sym vector(N)
+    model: all-MiniLM-L6-v2
+    dimensions: 384
+  llm:
+    provider: openai                  # any OpenAI-compatible endpoint (vLLM/LM Studio/…)
+    base_url: http://127.0.0.1:8000/v1
+    model: your-model
+  belief: {default_trust: 0.5}
+  policy: {writers: [system, scout], max_chars_in_prompt: 4000}
+
+symbol_graph:
+  enabled: true
+  domain: scout-cognition
+  vllm_backends: [http://127.0.0.1:8000/v1]   # LLM for extraction/hypotheses/enrichment
+  vllm_model: your-model
+
+# No `pursuit:` section and no executor passed in main.py => pure-cognition agent
+# (consolidates, dreams, forms drives/goals, grows its graph — but does not act).
+# To make it an actor, add:
+#   pursuit: {enabled: true, interval_seconds: 300, max_per_cycle: 1}
+# and pass build_executor=... + build_proposal=... to AgentRuntime.
