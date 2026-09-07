@@ -133,9 +133,15 @@ class SkillManager:
             # sanitize to a readable kebab slug: treat spaces/hyphens/underscores as
             # word breaks, drop other punctuation, rejoin with single hyphens.
             slug = slug.replace("-", " ").replace("_", " ")
-            slug = "-".join("".join(c for c in w if c.isalnum()) for w in slug.split() if w)
-            slug = slug.strip("-")[:200]
-            return slug or None
+            parts = ["".join(c for c in w if c.isalnum()) for w in slug.split()]
+            parts = [p for p in parts if p]
+            # Reject non-slug replies: a well-formed canonical lesson is 3-8 words. A
+            # long reply means the model answered a question / refused / rambled (e.g.
+            # "i need the specific lesson..."), which must NOT become a bogus key —
+            # fall back to embedding dedup (None) instead of mis-keying the row.
+            if not parts or len(parts) > 8:
+                return None
+            return "-".join(parts)[:200] or None
         except Exception as e:  # noqa: BLE001
             logger.debug("Skill canonicalize failed (→ embedding dedup): %s", e)
             return None
