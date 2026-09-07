@@ -401,7 +401,16 @@ class SkillManager:
             # or stop re-recording a well-known lesson) instead of silently re-noting.
             chronic_at = getattr(self._skills_cfg(), "chronic_trial_threshold", 0)
             new_trial = row.trial_count
-            crossed = bool(chronic_at) and (new_trial - 1) < chronic_at <= new_trial
+            # Fire at ESCALATING milestones — thr, 2·thr, 4·thr, 8·thr … (trial_count is
+            # exactly thr × a power of two). This gives an EARLY first warning (at thr),
+            # RARE re-escalation as a problem persists (not once-per-thr, which floods a
+            # skill reinforced every pursuit), AND covers skills that arrived already
+            # chronic via a bulk fold/backfill (a first-crossing-only test left the biggest
+            # recurring lessons permanently silent).
+            crossed = False
+            if chronic_at and new_trial >= chronic_at and new_trial % chronic_at == 0:
+                k = new_trial // chronic_at
+                crossed = (k & (k - 1)) == 0   # k is a power of two
             chronic_payload = {
                 "id": skill_id, "name": row.name, "what": row.what,
                 "canonical_key": getattr(row, "canonical_key", None),
