@@ -60,6 +60,41 @@ Adopt native if it **matches-or-beats** bespoke on {quality, yield, downstream a
 - Decision: native ≥ bespoke → thin curiosity. Bespoke's LLM follow-ups richer → **upstream
   `DRIVES_GOAL_LLM_ENRICH`** into nmem-sym (curiosity.py = reference), re-test.
 
+#### Test 2 — RESULT (2026-09-07): native producer CANNOT replace curiosity.py (two independent reasons)
+Determined analytically from live DB state — **deliberately did NOT flip `DRIVES_CREATE_GOALS`
+on live**, because it would spawn mis-targeted web pursuits that pollute michelle's real
+goal/episode/memory store (founder directive on live systems), and the data makes the outcome
+deterministic. Evidence:
+
+1. **Threshold-starved.** michelle has only **5 curiosity signals, all `pending`, max
+   `composite_score` = 0.43** — every one below the 0.5 `CURIOSITY_CONCERN_MIN_COMPOSITE` mirror
+   floor. With defaults, `curiosity_concerns` mirrors **nothing** → 0 concerns → 0 targeted
+   intents → **0 native goals** (`_maybe_create_goal_from_intent` returns early without a
+   `target.key`). No `symbol_concerns` table exists yet (never enabled).
+2. **Signal-TYPE mismatch (the deeper reason).** All 5 signals are `graph_hypothesis`:
+   *"[Spwig] and [research Spwig] have 0.82 semantic similarity but no graph connection."* These
+   are observations about michelle's **own graph topology**, not the world. The native goal would
+   be *"Satisfy novelty drive: [Spwig] and [research Spwig] have 0.82 similarity but no graph
+   connection"* — and her pursuit loop would fire the **web sandbox** at it. Category error: you
+   can't web-research your own memory's missing edges.
+
+Bespoke `curiosity.py` produces exactly what her web actuator needs — concrete, world-directed,
+independently-verifiable questions grounded in objectives+entities+prior findings ("What are the
+specific terms of the Spwig AGPL license?", "What product categories/pricing does CocosBotanica
+use?"). 137 goals produced this way.
+
+**Verdict: KEEP curiosity.py.** It is not surplus — it does work the native chain structurally
+cannot for a web-browsing agent. Two upstream implications instead of deletion:
+- **`DRIVES_GOAL_LLM_ENRICH` (nmem-sym):** teach the native goal path to LLM-enrich a concern into
+  a concrete, actuator-appropriate objective — `curiosity.py` is the reference implementation. Then
+  the native producer becomes useful for ANY agent and curiosity's logic moves upstream (matches
+  the "improve the nmem repos, don't fork logic into each bot" principle).
+- **graph-consolidation actuator (michelle/nmem-act):** `graph_hypothesis` signals are legitimate
+  drivers for an INTERNAL action ("should I link these two similar-but-unconnected nodes?"), not a
+  web pursuit. They want a different actuator, not the sandbox.
+- Side-finding: michelle's hypothesis machinery currently emits ONLY graph-topology hypotheses
+  (5 total) — worth a separate look at why she generates so few *world* hypotheses.
+
 ### Test 3 — Proactive recall + skill capture
 - Switch on: `NMEM_AUTONOMY__ENABLED`, `NMEM_AUTONOMY__PROACTIVE_RETRIEVE`, `NMEM_AUTONOMY__AUTO_CAPTURE_SKILLS`
 - Replaces: recall-before-pursuit + `tool_learning` capture (note the 351-skill sprawl to beat)
