@@ -40,16 +40,37 @@ shapes). NOT counted here: tuning params, and `IMPORTANCE__LLM_RESCORE` (unimple
 ## Sequence (dependency-ordered; ✅ done / ▶ active / ☐ todo / ⏸ deferred)
 
 ### Cluster A — Experiential loop (Slice D+)  [closes the act→learn loop we built]
-- ☐ **A1. `NMEM_SYM_UTILITY_PLASTICITY_ENABLED`** — procedures reinforced by achieved goal utility
-  (reward EWMA). *Validate:* after pursuits, `symbol_procedures` reward EWMA moves; ranking favors
-  procedures that worked. **First — it closes directly on the episodes/`record_action_outcome` from
-  #1/#3.**
-- ☐ **A2. `NMEM_SYM_CONSOLIDATION_ENABLED`** — experiential consolidation (episodes → patterns).
-- ☐ **A3. `NMEM_SYM_FAILURE_MEMORY_ENABLED`** — distil failing outcomes into analogically-retrievable
-  lessons (`symbol_failures`). *Pairs with* the verified=False pursuits from #1.
-- ☐ **A4. `NMEM_SYM_STRATEGY_MEMORY_ENABLED`** — induce strategies from experience.
-- ☐ **A5. `NMEM_SYM_SELF_CAPABILITY_ENABLED`** — self-capability tracking (what she's good/bad at).
-- ☐ **A6. `NMEM_SYM_WORLD_MODEL_ENABLED`** — world model.
+**Reviewed 2026-09-07.** michelle already emits the trigger: every pursuit calls
+`bridge.record_action_outcome(status=…)` (#1/#3), and she has 422 procedures + 40 episodes. Findings
+reorder A by effort+dependency into three sub-groups:
+
+**A-i — outcome/episode CONSUMERS (fire immediately from what michelle already produces; clean
+enables, do first).** Each writes its own table, so enable + validate one at a time:
+- ☐ **A-i.1 `NMEM_SYM_FAILURE_MEMORY_ENABLED`** — `record_action_outcome` (bridge.py:1867) distils a
+  `failure`/`error` outcome into `symbol_failures` + surfaces analogous prior failures. Fires on
+  michelle's verified=False pursuits (#1). *Validate:* `symbol_failures` populates after a failed pursuit.
+- ☐ **A-i.2 `NMEM_SYM_SELF_CAPABILITY_ENABLED`** — accrues per-capability success stats
+  (bridge.py:1871) keyed on `action_type` (`pursue_knowledge`). *Validate:* a self-capability row for
+  `pursue_knowledge` with success/failure counts.
+- ☐ **A-i.3 `NMEM_SYM_WORLD_MODEL_ENABLED`** — accumulates (state,action,next_state) transitions
+  (bridge.py:1875), read back as P(S'|S,A). *Validate:* transition rows appear.
+- ☐ **A-i.4 `NMEM_SYM_CONSOLIDATION_ENABLED`** — sweeps episodes→per-situation patterns
+  (consolidation.py:163/260/291). Needs the ~40 episodes. *Validate:* consolidated-pattern rows.
+
+**A-ii — procedure REWARD (needs a wiring fix, like earlier items):**
+- ☐ **A-ii.1 `NMEM_SYM_UTILITY_PLASTICITY_ENABLED`** — reward procedures by achieved utility (EWMA).
+  Two paths: goal-resolution credit (goals.py:399/417) + episode reward (episodes.py:105, needs
+  `pids`). **GAP:** michelle's `record_action_outcome` passes NO `procedure_ids`, so the episode path
+  can't fire — WIRE the procedures she recalled/used into the pursuit outcome (assess the goal path
+  too). *Validate:* procedure reward EWMA moves after a verified pursuit; ranking favors what worked.
+  *Side-issue:* 422 procedures vs 12 skills — #2's dedup didn't propagate to procedures; A-ii/A-iii
+  may need a procedure-consolidation pass too.
+
+**A-iii — STRATEGY induction (needs rewarded procedures; do after A-ii):**
+- ☐ **A-iii.1 `NMEM_SYM_STRATEGY_MEMORY_ENABLED`** — promote recurring procedure edge-type shapes into
+  portable strategies (bridge.py:2861, dreamstate). *Validate:* strategy rows promoted from recurring
+  procedure shapes.
+
 - (defer `DREAMSTATE_GAIN_BUDGET` — an ops optimization, do last of A.)
 
 ### Cluster B — Surprise → communication ("worth saying" pipeline)
