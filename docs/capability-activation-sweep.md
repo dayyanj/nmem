@@ -126,11 +126,14 @@ on. And BL-1 is quantified: world relations michelle extracted (`contains, offer
 has_price, is_licensed_under, hosts…`) sit REJECTED in `symbol_edge_type_proposals`. So Cluster C =
 **enrich the graph, then turn the shapes on.** Ordered:
 
-- ☐ **C.a — BL-1 fix (build; the root richness limiter, highest leverage).** Admit world/associative
-  relations into the graph — broaden `DEFAULT_EDGE_TYPES` with a world tier and/or auto-promote
-  frequently-proposed types from `symbol_edge_type_proposals`. Unblocks world-model (A-i.3), abductive/
-  analogical shapes, #4 concerns, #5 holes. *Validate:* previously-rejected relations become edges;
-  graph gains world structure.
+- ✅ **C.a — BL-1 fix (DONE + live-verified; nmem-sym a506b41, michelle 8657e9c).** Turned the EXISTING
+  manual promotion CLI (proposals.py) autonomous: `auto_promote_edge_types` promotes proposed relations
+  recurring across ≥`min_sources`(=3) distinct sources → replays their held triples into edges + registers
+  canonical (forward-accept via `_load_canonical_edge_types`) + marks `promoted_to`. Runs in dreamstate,
+  gated `EXTRACT_AUTOPROMOTE_EDGE_TYPES_ENABLED` (default off → DJ-AI byte-identical/frozen-safe). No
+  schema change (reused promoted_to/promoted_at + symbol_canonical_edge_types). LIVE: promoted `contains`+
+  `offers` → edges; `uses`/`property` (2 srcs) correctly held. Design: nmem-sym/docs/edge-type-autopromotion.md.
+  **BL-1 RESOLVED** (see backlog).
 - ☐ **C4 `NMEM_SYM_EXTRACT_MULTI_TURN_ENABLED`** (clean enable) — chunked extraction of large findings →
   more nodes/edges (more substrate). *Validate:* large LTM entries yield more triples.
 - ☐ **C3 `NMEM_SYM_PREDICTION_GROUNDING_LLM_ENABLED`** (clean enable, independent) — LLM judges whether a
@@ -192,7 +195,9 @@ Whole-line `#` comments (above the flag) are fine.
 ## Issues surfaced (backlog — address later)
 Found during a broad michelle log scan 2026-09-07 (no tracebacks/crashes — fail-open holding).
 
-- ☐ **BL-1 — controlled edge-type vocab drops WORLD relations (graph-richness limiter; sweep-relevant).**
+- ✅ **BL-1 — RESOLVED 2026-09-07 via sweep C.a** (autonomous edge-type promotion in dreamstate). Kept
+  the vocab controlled but data-driven-extensible: recurring proposed relations auto-promote. Original:
+  **controlled edge-type vocab drops WORLD relations (graph-richness limiter; sweep-relevant).**
   `extract.py:681` rejects any edge_type not in `config.DEFAULT_EDGE_TYPES` (heavily causal/self-model/
   goal: causes, part_of, self_*, achieves…) and parks it in `symbol_edge_type_proposals` "for later
   review/promotion" (`extract.py:1084`) — but nothing promotes them. So legit world relations michelle
