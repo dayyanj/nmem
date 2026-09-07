@@ -46,16 +46,14 @@ reorder A by effort+dependency into three sub-groups:
 
 **A-i — outcome/episode CONSUMERS (fire immediately from what michelle already produces; clean
 enables, do first).** Each writes its own table, so enable + validate one at a time:
-- ☐ **A-i.1 `NMEM_SYM_FAILURE_MEMORY_ENABLED`** — `record_action_outcome` (bridge.py:1867) distils a
-  `failure`/`error` outcome into `symbol_failures` + surfaces analogous prior failures. Fires on
-  michelle's verified=False pursuits (#1). *Validate:* `symbol_failures` populates after a failed pursuit.
-- ☐ **A-i.2 `NMEM_SYM_SELF_CAPABILITY_ENABLED`** — accrues per-capability success stats
-  (bridge.py:1871) keyed on `action_type` (`pursue_knowledge`). *Validate:* a self-capability row for
-  `pursue_knowledge` with success/failure counts.
-- ☐ **A-i.3 `NMEM_SYM_WORLD_MODEL_ENABLED`** — accumulates (state,action,next_state) transitions
-  (bridge.py:1875), read back as P(S'|S,A). *Validate:* transition rows appear.
-- ☐ **A-i.4 `NMEM_SYM_CONSOLIDATION_ENABLED`** — sweeps episodes→per-situation patterns
-  (consolidation.py:163/260/291). Needs the ~40 episodes. *Validate:* consolidated-pattern rows.
+- ▶ **A-i.1 `NMEM_SYM_FAILURE_MEMORY_ENABLED`** — ENABLED; complete code path. Fires on verified=False
+  pursuits → `symbol_failures`. *Validating:* polling for the first failed pursuit (slow — needs a fail).
+- ✅ **A-i.2 `NMEM_SYM_SELF_CAPABILITY_ENABLED`** — DONE + live-verified. `self_capability_stats` row for
+  `pursue_knowledge` (success_count=1, sample_size=1, mean_task_success=1) accrued from the first pursuit.
+- ✅ **A-i.3 `NMEM_SYM_WORLD_MODEL_ENABLED`** — DONE + live-verified. `symbol_transitions` row
+  `drive:novelty → pursue_knowledge → success (count=1)` from the first post-enable pursuit.
+- ✅ **A-i.4 `NMEM_SYM_CONSOLIDATION_ENABLED`** — DONE + live-verified. `/admin/dreamstate` ran
+  `consolidate_episodes` → **45** `symbol_consolidated_patterns` from her episodes.
 
 **A-ii — procedure REWARD (needs a wiring fix, like earlier items):**
 - ☐ **A-ii.1 `NMEM_SYM_UTILITY_PLASTICITY_ENABLED`** — reward procedures by achieved utility (EWMA).
