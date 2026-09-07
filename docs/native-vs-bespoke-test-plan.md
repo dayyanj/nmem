@@ -155,8 +155,11 @@ do what they do.
    (nmem-sym `59681c6`, michelle `ba5961c`, design `88b2f9b`). Config-gated `DRIVES_OUTWARD_ACTIONS`
    + `INTERNAL_ACTION_CREDIT` (default empty/0.0 → byte-identical for DJ-AI); host closes the loop via
    `discharge_drive`. Verified: explore retains pressure, verified pursuit discharges novelty.
-2. **semantic coalescing in `nmem.skills.record` (nmem)** — Test 3. Merge near-duplicate `what`
-   above a cosine threshold instead of inserting. THE fix for skill sprawl (396 @ 1.15 trials).
+2. **close the skill capture→surface→apply loop (nmem + michelle)** — Test 3 + founder Q. NOT just
+   dedup: measured that coalescing already exists (0.85) but fails on paraphrased LLM lessons (116/396
+   are one lesson, cosine 0.6–0.8), find() ignores reinforcement magnitude, and the actuator (sandbox
+   VLM) can't apply a preamble. Design: canonical-key dedup + native LLM canonicalization + cluster
+   consolidation + salience-ranked surfacing + repeat-escalation. Design doc: skill-canonicalization-dedup.md.
 3. **`ACT_LLM_REFLECT_ENABLED` (nmem-act)** — Test 3. LLM-reflective capture off the action trace
    as a native outcome-sink option; `tool_learning` is the reference. Reflective, STEP-keyed capture
    for any actuating agent.
