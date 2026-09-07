@@ -116,11 +116,34 @@ say them. B1/B2 fire from what michelle already produces; B3 needs a host handle
 comms→assess→learn→discharge chain is in place; its live data-validation lands on michelle's next
 surprising/failed pursuit (same gate as A-i.1). Channel-agnostic core proven by unit tests.
 
-### Cluster C — Richer hypotheses (feeds #4 concerns + #5 holes)
-- ☐ **C1. `NMEM_SYM_HYPOTHESIS_POSTERIOR_ENABLED`** — posterior hypothesis shape.
-- ☐ **C2. `NMEM_SYM_HYPOTHESIS_COUNTERFACTUAL_ENABLED`** — counterfactual shape (world-directed).
-- ☐ **C3. `NMEM_SYM_PREDICTION_GROUNDING_LLM_ENABLED`** — LLM-judged prediction grounding.
-- ☐ **C4. `NMEM_SYM_EXTRACT_MULTI_TURN_ENABLED`** — multi-turn triple extraction (richer graph).
+### Cluster C — Richer hypotheses  [REVIEWED 2026-09-07 — it's a SUBSTRATE problem]
+**Key finding:** the richer hypothesis shapes are *already dormant for lack of graph substrate*, not
+for lack of flags. abductive/mechanistic/exception/analogical/competition are **default-ON** yet
+michelle's hypotheses are all `graph_hypothesis` (similarity-gap). Her graph (397 nodes / 1679 edges /
+938 hyps) is associative+structural but **causally sparse (~22 causal edges, 1.3%:** causes 14,
+prevents 4, triggers 4). mechanistic/counterfactual/abductive NEED causal/world edges → nothing to work
+on. And BL-1 is quantified: world relations michelle extracted (`contains, offers, uses, sells,
+has_price, is_licensed_under, hosts…`) sit REJECTED in `symbol_edge_type_proposals`. So Cluster C =
+**enrich the graph, then turn the shapes on.** Ordered:
+
+- ☐ **C.a — BL-1 fix (build; the root richness limiter, highest leverage).** Admit world/associative
+  relations into the graph — broaden `DEFAULT_EDGE_TYPES` with a world tier and/or auto-promote
+  frequently-proposed types from `symbol_edge_type_proposals`. Unblocks world-model (A-i.3), abductive/
+  analogical shapes, #4 concerns, #5 holes. *Validate:* previously-rejected relations become edges;
+  graph gains world structure.
+- ☐ **C4 `NMEM_SYM_EXTRACT_MULTI_TURN_ENABLED`** (clean enable) — chunked extraction of large findings →
+  more nodes/edges (more substrate). *Validate:* large LTM entries yield more triples.
+- ☐ **C3 `NMEM_SYM_PREDICTION_GROUNDING_LLM_ENABLED`** (clean enable, independent) — LLM judges whether a
+  prediction's outcome occurred (broadens grounding candidates beyond embedding match; `_llm_judge_
+  grounding` complete). *Validate:* more predictions grounded/disputed via LLM.
+- ☐ **C1 `NMEM_SYM_HYPOTHESIS_POSTERIOR_ENABLED`** (enable) — A4: re-normalise a competing hypothesis
+  set's posterior on evidence change. Competition is on + she has 938 hyps, so may act now. *Validate:*
+  posteriors re-normalise on evidence.
+- ☐ **C2 `NMEM_SYM_HYPOTHESIS_COUNTERFACTUAL_ENABLED`** (enable, substrate-gated) — counterfactual shape;
+  self-activates as causal structure grows (like A-iii). Enable + note the gate.
+- **Honest caveat:** CAUSAL sparsity is deep — research text yields few cause/prevent/trigger relations,
+  so mechanistic/counterfactual stay thin near-term regardless; C.a+C4 enrich WORLD/associative
+  structure (the achievable near-term win), and C1/C2 are positioned for when causal density grows.
 
 ### Cluster D — Recall drive
 - ☐ **D1. `NMEM_SYM_RECALL_DRIVE_ENABLED`** — drive-initiated proactive memory surfacing before
