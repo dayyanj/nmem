@@ -151,9 +151,10 @@ advantage into the nmem libs so every agent gets it** (the founder's stated prin
 do what they do.
 
 ### Upstream backlog (ranked; all validated by this sweep + the codex review)
-1. **honest_discharge for outward-actuated drives (nmem-sym)** — codex #3 + Test 1. An outward
-   drive actuated via nmem-act must discharge on the *actuator's real outcome*, not internal
-   self-satisfaction. Highest confidence (validated twice); correctness gap; benefits michelle+DJ-AI.
+1. ~~**honest_discharge for outward-actuated drives (nmem-sym)**~~ — **DONE + live-verified 2026-09-07**
+   (nmem-sym `59681c6`, michelle `ba5961c`, design `88b2f9b`). Config-gated `DRIVES_OUTWARD_ACTIONS`
+   + `INTERNAL_ACTION_CREDIT` (default empty/0.0 → byte-identical for DJ-AI); host closes the loop via
+   `discharge_drive`. Verified: explore retains pressure, verified pursuit discharges novelty.
 2. **semantic coalescing in `nmem.skills.record` (nmem)** — Test 3. Merge near-duplicate `what`
    above a cosine threshold instead of inserting. THE fix for skill sprawl (396 @ 1.15 trials).
 3. **`ACT_LLM_REFLECT_ENABLED` (nmem-act)** — Test 3. LLM-reflective capture off the action trace
