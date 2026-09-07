@@ -101,11 +101,20 @@ say them. B1/B2 fire from what michelle already produces; B3 needs a host handle
   `_on_pending_utterance_event` to `outcome.surprising` → `pending.consider_utterance` → row in
   `symbol_pending_utterances` (complete module; optional LLM phrasing/worth-threshold). Clean enable,
   after B1. *Validate:* `symbol_pending_utterances` candidates appear after surprising outcomes.
-- ☐ **B3 `NMEM_SYM_COMMUNICATION_DRIVE_ENABLED`** — the DRIVE to communicate (drives.py:533). Adds a
-  'communication' Drive but is **inert without a host handler** for the `communicate` intent, and is
-  designed for a sensory-grounded agent ("needs sensory vocabulary" / vocal tract — michelle has none).
-  **Decision when we reach it:** either wire a michelle handler that delivers B2's pending utterances to
-  her peer-exchange channel / logs (gives the drive a real outlet), OR defer as sensory-gated (like F).
+- ✅ **B3 `NMEM_SYM_COMMUNICATION_DRIVE_ENABLED`** — BUILT + wired + enabled (Option A, channel-agnostic
+  + comms-learning; founder-directed). Design: nmem/docs/agent-comms-channel-agnostic.md. **Stage 1**
+  (michelle f1c89cc): `service/communication.py` — the channel-agnostic `CommsLoop` (intent → select
+  pending utterance → deliver via injected `ChannelSink` → LLM-assess reply → learn comms-skill via the
+  #2 skill loop → discharge). 5 unit tests green; extracts verbatim to nmem-agent-core. **Stage 2**
+  (michelle 898dc46): `PeerExchangeSink` (delivers to DJ-AI as a `challenge`, correlates the threaded
+  reply in `peer._handle`) + wired as a drive-intent handler + flag on. "B3 comms loop wired", healthy.
+  **Live round-trip data-gated** (needs a surprise→pending-utterance→drive-fire→DJ-AI-reply; verified
+  streak + DJ-AI frozen), converges with A-i.1/B2. Rich `CommsAssessment` (engagement/valence/usefulness
+  /lesson), NOT binary. nmem-twin later ships a `VoiceSink` — same core.
+
+**Cluster B COMPLETE (built/wired):** B1 verified · B2 wired · B3 built+wired. The surprise→utterance→
+comms→assess→learn→discharge chain is in place; its live data-validation lands on michelle's next
+surprising/failed pursuit (same gate as A-i.1). Channel-agnostic core proven by unit tests.
 
 ### Cluster C — Richer hypotheses (feeds #4 concerns + #5 holes)
 - ☐ **C1. `NMEM_SYM_HYPOTHESIS_POSTERIOR_ENABLED`** — posterior hypothesis shape.
