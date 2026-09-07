@@ -234,6 +234,21 @@ class SkillManager:
             agent_sql = "AND (agent_id = :agent_id OR agent_id IS NULL)"
             params["agent_id"] = agent_id
 
+        # Salience ranking (flag-gated, default off → byte-identical ordering): blend
+        # cosine distance with a reinforcement bonus so a lesson hit many times
+        # outranks a one-off at similar similarity. Only meaningful once coalescing
+        # concentrates recurrence into one row's trial_count (layers 1/3); a field of
+        # trial=1 duplicates all tie and it degrades to pure cosine. Bonus is
+        # ln(trial_count+1) (diminishing) scaled by a small weight, subtracted from
+        # the distance (lower = better).
+        if getattr(cfg, "rank_by_salience", False):
+            params["salience_w"] = getattr(cfg, "salience_rank_weight", 0.05)
+            order_sql = ("(trigger_embedding <=> CAST(:embedding_vec AS vector)) "
+                         "- :salience_w * ln(trial_count + 1)")
+        else:
+            order_sql = ("(trial_count > 0) DESC, "
+                         "trigger_embedding <=> CAST(:embedding_vec AS vector)")
+
         sql = sa_text(f"""
             SELECT id, 1 - (trigger_embedding <=> CAST(:embedding_vec AS vector)) AS similarity
             FROM nmem_skills
@@ -242,8 +257,7 @@ class SkillManager:
               {scope_sql}
               {agent_sql}
               AND 1 - (trigger_embedding <=> CAST(:embedding_vec AS vector)) >= :threshold
-            ORDER BY (trial_count > 0) DESC,
-                     trigger_embedding <=> CAST(:embedding_vec AS vector)
+            ORDER BY {order_sql}
             LIMIT :limit
         """)
         async with self._db.session() as session:
@@ -319,12 +333,28 @@ class SkillManager:
                 row.salience = min(1.0, row.salience + boost)
             row.worked = success
             sym_id = row.sym_procedure_id
+            # Layer 5 — repeat-escalation: once coalescing concentrates recurrence
+            # into this row (layers 1/3), a climbing trial_count means "hit this
+            # again". When it CROSSES the chronic threshold, flag it so the host can
+            # change strategy (hard-stop a loop, escalate to a stronger actuator,
+            # or stop re-recording a well-known lesson) instead of silently re-noting.
+            chronic_at = getattr(self._skills_cfg(), "chronic_trial_threshold", 0)
+            new_trial = row.trial_count
+            crossed = bool(chronic_at) and (new_trial - 1) < chronic_at <= new_trial
+            chronic_payload = {
+                "id": skill_id, "name": row.name, "what": row.what,
+                "canonical_key": getattr(row, "canonical_key", None),
+                "trial_count": new_trial, "success_count": row.success_count,
+                "agent_id": row.agent_id, "project_scope": row.project_scope,
+            } if crossed else None
         if self._backend is not None and sym_id is not None:
             try:
                 await self._backend.reinforce_skill(sym_id, success)
             except Exception as e:
                 logger.warning("Skill %d: reinforce forward failed: %s", skill_id, e)
         await self._emit("skill.reinforced", {"id": skill_id, "success": success})
+        if chronic_payload is not None:
+            await self._emit("skill.chronic", chronic_payload)
         return True
 
     async def supersede(self, old_id: int, new_id: int | None = None) -> bool:

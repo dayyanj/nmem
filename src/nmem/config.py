@@ -544,6 +544,21 @@ class SkillsConfig(BaseModel):
     dedup_threshold: float = 0.85
     """Cosine similarity above which two skills are considered duplicates."""
 
+    rank_by_salience: bool = False
+    """find() blends a reinforcement bonus (ln(trial_count+1)) into the ranking so a
+    lesson learned many times outranks a one-off at similar similarity. Off = pure
+    cosine ordering (byte-identical to before). Only meaningful once coalescing
+    concentrates recurrence into one row (canonical-key dedup)."""
+
+    salience_rank_weight: float = 0.05
+    """Weight of the ln(trial_count+1) reinforcement bonus subtracted from cosine
+    distance when rank_by_salience is on. Small so it nudges ties, not dominates."""
+
+    chronic_trial_threshold: int = 0
+    """When a skill's trial_count CROSSES this on reinforce, emit `skill.chronic` so
+    the host can escalate (change strategy / stop re-recording a known lesson) instead
+    of re-learning it forever. 0 = disabled (no event)."""
+
     decay_enabled: bool = False
     """Enable salience decay + retirement of stale, low-trial skills (Slice 1C)."""
 
