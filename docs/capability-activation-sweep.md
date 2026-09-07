@@ -134,16 +134,20 @@ has_price, is_licensed_under, hosts…`) sit REJECTED in `symbol_edge_type_propo
   schema change (reused promoted_to/promoted_at + symbol_canonical_edge_types). LIVE: promoted `contains`+
   `offers` → edges; `uses`/`property` (2 srcs) correctly held. Design: nmem-sym/docs/edge-type-autopromotion.md.
   **BL-1 RESOLVED** (see backlog).
-- ☐ **C4 `NMEM_SYM_EXTRACT_MULTI_TURN_ENABLED`** (clean enable) — chunked extraction of large findings →
-  more nodes/edges (more substrate). *Validate:* large LTM entries yield more triples.
-- ☐ **C3 `NMEM_SYM_PREDICTION_GROUNDING_LLM_ENABLED`** (clean enable, independent) — LLM judges whether a
-  prediction's outcome occurred (broadens grounding candidates beyond embedding match; `_llm_judge_
-  grounding` complete). *Validate:* more predictions grounded/disputed via LLM.
-- ☐ **C1 `NMEM_SYM_HYPOTHESIS_POSTERIOR_ENABLED`** (enable) — A4: re-normalise a competing hypothesis
-  set's posterior on evidence change. Competition is on + she has 938 hyps, so may act now. *Validate:*
-  posteriors re-normalise on evidence.
-- ☐ **C2 `NMEM_SYM_HYPOTHESIS_COUNTERFACTUAL_ENABLED`** (enable, substrate-gated) — counterfactual shape;
-  self-activates as causal structure grows (like A-iii). Enable + note the gate.
+- ✅ **C4 `NMEM_SYM_EXTRACT_MULTI_TURN_ENABLED`** — ENABLED (complete paragraph-chunking). Fires on
+  content >6000 chars; her research notes are short → rare, but active for large findings.
+- ✅ **C3 `NMEM_SYM_PREDICTION_GROUNDING_LLM_ENABLED`** — ENABLED (complete `_llm_judge_grounding`).
+  Active in the dreamstate/prediction cycle; broadens grounding beyond embedding match.
+- ✅ **C1 `NMEM_SYM_HYPOTHESIS_POSTERIOR_ENABLED`** — ENABLED (`renormalize_competitor_posteriors` on
+  evidence change in auto_ground_hypotheses). Active; acts as competing hypotheses gain/lose evidence.
+- ✅ **C2 `NMEM_SYM_HYPOTHESIS_COUNTERFACTUAL_ENABLED`** — ENABLED (real dreamstate shape generator).
+  Substrate-gated on causal density; self-activates (like A-iii). Cycle runs it clean.
+
+**Cluster C COMPLETE.** C.a (build) live + C1-C4 enabled; a dreamstate cycle ran CLEAN (210s, 0 errors)
+producing **47 rich, world-directed hypotheses** (e.g. AGPL-§13 → UEN corporate-liability chain), not
+bare similarity-gaps — C.a's edge enrichment + the shapes combining. The richer-hypothesis payoff is
+visibly starting; it deepens as the graph accrues causal density (C4/promotions feed it). (Ops note:
+`/admin/dreamstate` client timeout should be >210s or run async — the cycle now includes LLM grounding.)
 - **Honest caveat:** CAUSAL sparsity is deep — research text yields few cause/prevent/trigger relations,
   so mechanistic/counterfactual stay thin near-term regardless; C.a+C4 enrich WORLD/associative
   structure (the achievable near-term win), and C1/C2 are positioned for when causal density grows.
