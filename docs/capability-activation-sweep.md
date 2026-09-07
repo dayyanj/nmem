@@ -85,11 +85,23 @@ enables, do first).** Each writes its own table, so enable + validate one at a t
 - (defer `DREAMSTATE_GAIN_BUDGET` — an ops optimization, do last of A.)
 
 ### Cluster B — Surprise → communication ("worth saying" pipeline)
-- ☐ **B1. `NMEM_SYM_OUTCOME_SURPRISE_ENABLED`** — endogenous prediction-error surprise (already
-  half-wired: `record_action_outcome` appraises surprise when this is on). The generator.
-- ☐ **B2. `NMEM_SYM_PENDING_UTTERANCES_ENABLED`** — the "worth saying" consumer (needs B1).
-- ☐ **B3. `NMEM_SYM_COMMUNICATION_DRIVE_ENABLED`** — drive to actually communicate (needs a host
-  handler via `drives.on_intent` — michelle could surface to the peer channel / logs).
+**Reviewed 2026-09-07.** A 3-stage pipeline with real deps: B1 generates surprise → B2 (auto-subscribed
+to the `outcome.surprising` drive-event bus) stores candidate utterances → B3 is the drive to actually
+say them. B1/B2 fire from what michelle already produces; B3 needs a host handler (+ is sensory-oriented).
+- ☐ **B1 `NMEM_SYM_OUTCOME_SURPRISE_ENABLED`** — GENERATOR. `episodes.record_action_outcome` →
+  `surprise.appraise_outcome` (complete): appraises each outcome vs a per-`(source,action_type)` EWMA in
+  `symbol_outcome_expectations` (lazily created), emits `outcome.surprising` on a large gap. Fires on
+  michelle's pursuits. Clean enable, FIRST. *Validate:* `symbol_outcome_expectations` baselines build;
+  `outcome.surprising` events emit on deviation (early on, before baselines settle, expect some).
+- ☐ **B2 `NMEM_SYM_PENDING_UTTERANCES_ENABLED`** — CONSUMER (needs B1). `bridge` auto-subscribes
+  `_on_pending_utterance_event` to `outcome.surprising` → `pending.consider_utterance` → row in
+  `symbol_pending_utterances` (complete module; optional LLM phrasing/worth-threshold). Clean enable,
+  after B1. *Validate:* `symbol_pending_utterances` candidates appear after surprising outcomes.
+- ☐ **B3 `NMEM_SYM_COMMUNICATION_DRIVE_ENABLED`** — the DRIVE to communicate (drives.py:533). Adds a
+  'communication' Drive but is **inert without a host handler** for the `communicate` intent, and is
+  designed for a sensory-grounded agent ("needs sensory vocabulary" / vocal tract — michelle has none).
+  **Decision when we reach it:** either wire a michelle handler that delivers B2's pending utterances to
+  her peer-exchange channel / logs (gives the drive a real outlet), OR defer as sensory-gated (like F).
 
 ### Cluster C — Richer hypotheses (feeds #4 concerns + #5 holes)
 - ☐ **C1. `NMEM_SYM_HYPOTHESIS_POSTERIOR_ENABLED`** — posterior hypothesis shape.
