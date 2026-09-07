@@ -130,6 +130,26 @@ say them. B1/B2 fire from what michelle already produces; B3 needs a host handle
   peering depth, NMEM_IDENTITY (voice — needs audio), NMEM_RECOGNITION, NMEM_ENTITY, NMEM_CLUSTERING
   tuning.)
 
+## Flag dependency map (what each enabled flag REQUIRES)
+Captured as we go — prerequisites (other flags), external substrate, and any host-side wiring.
+Mirror the terse form inline in `michelle-ai/config/capabilities.env` (`FLAG=true # requires …`).
+
+| Flag | Requires (flags) | + substrate / host wiring |
+|---|---|---|
+| `SYM_CONCERNS_ENABLED` | `DRIVES_ENABLED` | — |
+| `SYM_CURIOSITY_CONCERNS_ENABLED` | `CONCERNS_ENABLED` + nmem connected | curiosity signals ≥ `CURIOSITY_CONCERN_MIN_COMPOSITE` (lowered 0.5→**0.4** for michelle) |
+| `SYM_DRIVES_CREATE_GOALS` | `GOALS_ENABLED` (+ concerns for a *targeted* intent) | — |
+| `SYM_DRIVES_GOAL_LLM_ENRICH` | `DRIVES_CREATE_GOALS` | `vllm_backends` + `bridge.set_goal_enrichment_context(...)` (michelle wires objectives/entities/findings) |
+| `SYM_DREAMSTATE_BRIDGE_HOLES` | dreamstate running | `vllm_backends` for the LLM judge (else similarity-heuristic fallback) |
+| `SYM_DRIVES_OUTWARD_ACTIONS=explore` | `DRIVES_HONEST_DISCHARGE` | host calls `bridge.discharge_drive` on real outcome (michelle sink) |
+| `SYM_FAILURE_MEMORY` / `SELF_CAPABILITY` / `WORLD_MODEL` | — (each independent) | `record_action_outcome` flowing = the nmem-act actuation loop |
+| `SYM_CONSOLIDATION_ENABLED` | — | episodes present (from the actuation loop) |
+| `SYM_UTILITY_PLASTICITY_ENABLED` | — | `record_action_outcome(procedure_ids=…)` wiring (michelle A-ii) + procedures to credit |
+| `SYM_STRATEGY_MEMORY_ENABLED` | (`UTILITY_PLASTICITY` for meaningful reward) | **multi-edge procedures** (BL-3) — dormant until they exist |
+| `SYM_OUTCOME_SURPRISE_ENABLED` (B1) | — | `record_action_outcome` with `source` set (actuation loop) |
+| `SYM_PENDING_UTTERANCES_ENABLED` (B2) | **`OUTCOME_SURPRISE` (B1)** | auto-subscribes to the `outcome.surprising` bus |
+| `SYM_COMMUNICATION_DRIVE_ENABLED` (B3) | `DRIVES_ENABLED` | host handler for the `communicate` intent + (sensory vocabulary) |
+
 ## Issues surfaced (backlog — address later)
 Found during a broad michelle log scan 2026-09-07 (no tracebacks/crashes — fail-open holding).
 
