@@ -107,6 +107,29 @@ enables, do first).** Each writes its own table, so enable + validate one at a t
   peering depth, NMEM_IDENTITY (voice — needs audio), NMEM_RECOGNITION, NMEM_ENTITY, NMEM_CLUSTERING
   tuning.)
 
+## Issues surfaced (backlog — address later)
+Found during a broad michelle log scan 2026-09-07 (no tracebacks/crashes — fail-open holding).
+
+- ☐ **BL-1 — controlled edge-type vocab drops WORLD relations (graph-richness limiter; sweep-relevant).**
+  `extract.py:681` rejects any edge_type not in `config.DEFAULT_EDGE_TYPES` (heavily causal/self-model/
+  goal: causes, part_of, self_*, achieves…) and parks it in `symbol_edge_type_proposals` "for later
+  review/promotion" (`extract.py:1084`) — but nothing promotes them. So legit world relations michelle
+  keeps extracting (`sells`, `hosts`, `contains`, `uses`, `is_licensed_under`, `confirms`) never become
+  edges → her graph stays causal/self-focused and misses world structure. This starves exactly the
+  graph richness Clusters A/C + #4/#5 depend on. *Fix options:* add a world/associative edge-type tier
+  to DEFAULT_EDGE_TYPES, and/or have schema-induction auto-promote frequently-proposed types from
+  `symbol_edge_type_proposals`. Belongs near Cluster C.
+- ☐ **BL-2 — extractor JSON parse not fence/extra-data tolerant (minor robustness).**
+  `extract.py` occasionally hits `JSON parse failed … Extra data` when the LLM wraps JSON in ```json
+  fences or emits trailing data → that entry's triples are lost. Same failure mode we already fixed in
+  `_judge_hole` (#5) and `_enrich_goal_objective` (#4): strip ``` fences before `json.loads`. Small,
+  self-contained.
+
+**Validation confirmations (not issues):** #2 Layer 5 `skill.chronic` escalation observed FIRING live
+(michelle wrote strategy lessons for recurring lessons — "wait for the loading state", "close overlay
+pop-ups"), confirming the escalation path end-to-end. (`HF_TOKEN` unauth warnings are benign; optional
+`HF_HUB_OFFLINE=1` silences them.)
+
 ## Tracker notes
 - Update the ✅/▶/☐ marks + a one-line result as each lands; mirror the headline into the topic
   memory [[second-djai-peer-diverse-priors]].
