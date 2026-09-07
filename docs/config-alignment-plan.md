@@ -43,6 +43,40 @@ values, and dicts — see §3.0, line classification. Not every line becomes a `
 - **Different access patterns** (`config.X` attr vs `config.get("x")` vs a Settings instance)
   make cross-repo code and docs harder.
 
+### 1.1 Family scope — which repos are in, and why (reviewed 2026-09-07)
+
+Not every nmem repo has flag-soup config; three more were assessed and only one needs migrating.
+
+| Repo | config idiom | disposition |
+|---|---|---|
+| **nmem** (core) | `BaseSettings` (nested) | ✅ reference target — no migration |
+| **nmem-sym** | `os.environ.get` globals | ⬜ migrate (P2) |
+| **nmem-immune** | `_bool/_float` helpers | ⬜ migrate (P1) |
+| **nmem-viz** | `os.environ.get` globals | ⬜ migrate (P1) |
+| **nmem-identity** | dict-map + TOML | ⬜ migrate (P1, TOML source) |
+| **nmem-cloud** | `BaseSettings` (`NMEM_CLOUD_`) | ◑ **already conformant** — light touch only |
+| **nmem-exchange** | host-injected `cfg: dict` (YAML) | ▵ **out of scope** — prefix-normalize only |
+| **nmem-act** | none (pure stdlib, injected) | ✖ **excluded** — no config surface by design |
+
+- **nmem-cloud** (private/commercial SaaS wrapper around nmem core) already uses
+  `BaseSettings` with `env_prefix="NMEM_CLOUD_"`, nested delimiter, `extra="ignore"`
+  ([settings.py](../../nmem-cloud/src/nmem_cloud/settings.py)). Light touch: add
+  `Field(description=...)` to every field (for the manifest) and keep the cached
+  `get_settings()` accessor (fine for a service — no change to a module singleton needed).
+  **Excluded from the §4 michelle capability manifest** — it's a separate commercial product;
+  don't leak SaaS config into the open cognitive map. (Owner decision, 2026-09-07.)
+- **nmem-exchange** config is an injected `cfg: dict` (`load_identity(cfg: dict)`); the *host*
+  loads `config/exchange.example.yaml` and interpolates the one secret. Its config is structured
+  relational data (identity / transport / keyring / **channels + rosters**), not flat flags, so it
+  is **out of scope** for the flat-`Settings` migration. Only concrete action: **canonicalize the
+  prefix `NMEX_` → `NMEM_EXCHANGE_`** (today just `NMEX_REDIS_URL` → `NMEM_EXCHANGE_REDIS_URL`),
+  touching `exchange.example.yaml` + the host's `exchange.env`. Not introspectable; that's accepted.
+  (Owner decision, 2026-09-07.)
+- **nmem-act** ("zero runtime dependencies, pure stdlib, bring your own brain") has **no config
+  surface** — autonomy tier, executor, and hooks are constructor-injected. Nothing to align;
+  adding a `BaseSettings` would configure nothing and break its zero-dependency promise. Env-driven
+  autonomy, if ever wanted, belongs in the host (michelle/DJ-AI). **Excluded.** (Owner decision.)
+
 ---
 
 ## 2. Target convention
@@ -291,6 +325,12 @@ Reading: the migration touches **260 real env fields** (not the "~364 knobs / 18
 headline — 56 sym symbols are hardcoded constants that stay module-level). **48 fields get renamed**
 to canonical form. **26 default-ON booleans** are the parity-test hotlist. nmem (core) is already
 `BaseSettings` — it's the reference target, not a migration.
+
+Three further repos assessed (see §1.1): **nmem-cloud** is already `BaseSettings`-conformant
+(light touch: add `Field` descriptions; exclude from the michelle manifest — it's commercial);
+**nmem-exchange** stays a host-injected dict contract (only the `NMEX_` → `NMEM_EXCHANGE_` prefix
+rename); **nmem-act** is excluded (no config surface by design). So the migration set is the four
+`⬜` repos; cloud/exchange/act are recorded here so nobody re-scopes them later.
 
 ## Appendix B — key file references
 - Reference impl: `nmem/src/nmem/config.py` (`model_config` L751).
