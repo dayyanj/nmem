@@ -132,7 +132,10 @@ say them. B1/B2 fire from what michelle already produces; B3 needs a host handle
 
 ## Flag dependency map (what each enabled flag REQUIRES)
 Captured as we go — prerequisites (other flags), external substrate, and any host-side wiring.
-Mirror the terse form inline in `michelle-ai/config/capabilities.env` (`FLAG=true # requires …`).
+**This map (in the doc) is the ONLY place to record deps.** ⚠️ Do NOT put inline `#` comments on
+ENABLED lines in `capabilities.env` — env-file parsing keeps everything after `=` as the value, so
+`FLAG=true # requires …` parses as a non-boolean and crashes startup (learned the hard way 2026-09-07).
+Whole-line `#` comments (above the flag) are fine.
 
 | Flag | Requires (flags) | + substrate / host wiring |
 |---|---|---|
