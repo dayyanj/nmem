@@ -51,6 +51,23 @@ infra-vs-actuation-failure classification, cancel/error un-claim, startup recove
 exhaust, merit outcome write — still lives entirely in michelle's `cognition.py` pursuit loop
 (~lines 300–370). That is the reference spec to lift into nmem-act.
 
+### EXECUTED 2026-09-07 — Phases 1–3 done; PAUSED before Phase 4 (founder)
+- ✅ **Phase 1** (michelle f0aac72): deleted `curiosity.py` (shadow-compare: native A5 producer at
+  parity+ — all recent drive_intent goals native, curiosity dormant) + the inert starvation guard.
+- ✅ **Phase 2** (nmem-act bd24acd, michelle 787fe49): built **`nmem_act.GoalPursuit`** — owns the
+  claim→execute→classify(infra/verified)→resolve/release→startup-recovery lifecycle + optional
+  salvage seam; dependency-free (injected `GoalStore` + executor + build_proposal). 9 tests, full
+  suite 136 green. michelle rewired to it (−64 LOC in cognition.py); live: goal 229 claimed→sandbox
+  →verified→achieved through GoalPursuit, 0 stranded.
+- ✅ **Phase 3** (nmem 73fbeda, michelle 7d1e1c4): stood up **`nmem.agent_core`** (subpackage; opt-in
+  lazy re-exports so `import nmem` never hits the nmem_sym cycle). Graduated **`SymbolGoalStore`** +
+  the **recall consumer** (both proven pure adapters); michelle is consumer #1 (local copies deleted),
+  validated live. Remaining graduations (bootstrap, LLM/embedder/DB/executor adapters, channel-agnostic
+  CommsLoop, peer glue, data-schema loader) are the roadmap in `agent_core/__init__` — extract
+  validate-then-thin, michelle stays live.
+- ⏸ **Phase 4** — DJ-AI coordinated rollout: PAUSED (bigger effort; DJ-AI frozen). All changes remain
+  default-off / additive, so DJ-AI is byte-identical until the coordinated lib-update + restart.
+
 ### Re-sequenced remaining work
 
 **Phase 1 — Validated thin-outs** (low risk, immediate LOC win — the toggles are already proven live):
