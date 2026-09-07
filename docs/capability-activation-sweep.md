@@ -152,7 +152,36 @@ visibly starting; it deepens as the graph accrues causal density (C4/promotions 
   so mechanistic/counterfactual stay thin near-term regardless; C.a+C4 enrich WORLD/associative
   structure (the achievable near-term win), and C1/C2 are positioned for when causal density grows.
 
-### Cluster D — Recall drive  [REVIEWED 2026-09-07 — COUPLED to E-autonomy + needs a consumer]
+### Cluster D — Recall drive  [✅ COMPLETE 2026-09-07 — full loop live-validated]
+**Shipped:** the recall drive had NO pressure source (confirmed: no `recall` entry in
+`EVENT_CONCERN_MAP`; diffuse `inject_pressure` gives it a target-less intent → `_do_recall(None)`
+raises → never discharges). Built the two seams the drive's design left for the host:
+1. **nmem-sym `SymbolBridge.seed_recall(query, *, ref, pressure)`** (bridge.py) — the "recall-routed
+   concern" injection. Uses concern `mirror` semantics (idempotent + `resolve_on_action`) so it fires
+   ONCE per seeded query then self-clears (no storm). Gated: no-op unless recall drive + concerns on.
+   Design doc: `nmem-sym/docs/recall-drive-host-seam.md`.
+2. **michelle `service/recall.py`** — the `memory.surfaced` consumer (rolling buffer +
+   `context_for(query)` token-ranked injection block). Wired in `init_cognition` (gated on
+   `recall_drive_enabled`); the pursuit loop auto-seeds `seed_recall(objective)` and injects
+   `context_for(objective)` alongside `recall_lessons`/prior. Ops hook `POST /admin/seed_recall`.
+- ✅ **Config:** `NMEM_AUTONOMY__ENABLED=true` + `PROACTIVE_RETRIEVE=true` + `RECALL_DRIVE_ENABLED=1`
+  + `RECALL_AGENT_ID=michelle` (must match her agent_id or surface searches the wrong store).
+  `AUTO_CAPTURE_SKILLS` left OFF (Test-3: fires on 0 of her entry types).
+- ✅ **VALIDATED end-to-end (real data, not gated):** `seed_recall('CocosBotanica…')` → drive fired
+  (`intent: recall, target='CocosBotanica…'`) → `request_surface` → autonomy `surface_now` found 2
+  matching LTM entries → emitted `memory.surfaced` → consumer stashed (buffer 0→1) → `context_for`
+  returned an injection block with the REAL findings (goals #194/#200) → drive discharged
+  (`resolve_on_action`, no re-fire). Honest no-op path also confirmed: a hyper-specific query that
+  matched nothing → "nothing surfaced" → deferred relief (drive correctly does NOT discharge). Recall
+  fires 1:1 with novelty — not starving intrinsic drives.
+- **Dep-map:** `RECALL_DRIVE` requires `AUTONOMY__ENABLED` (surface_now is autonomy-gated) + a host
+  seed source (`seed_recall`) + a host `memory.surfaced` consumer. All three now present.
+- **Future (library, deferred):** route `self_model.coverage_gap`/`limitation_discovered` to ALSO
+  seed a recall concern → fully autonomous recall with no host seed (needs `EVENT_CONCERN_MAP`
+  multi-routing; single-spec today). Noted in the design doc.
+
+<details><summary>Original D review (pre-build) — kept for provenance</summary>
+
 - ☐ **D1. `NMEM_SYM_RECALL_DRIVE_ENABLED`** — a `recall` drive that, on recall pressure carrying a
   TARGET, asks nmem to proactively surface memory for it (`bridge._do_recall` → `mem.request_surface`).
   **Two hard findings from review — D is NOT a clean solo enable:**
@@ -174,6 +203,8 @@ visibly starting; it deepens as the graph accrues causal density (C4/promotions 
   items → inject into the next pursuit's context, alongside `recall_lessons`); (d) confirm/route recall
   pressure; (e) validate: recall fires → `memory.surfaced` → consumer injects → pursuit uses it +
   drive discharges. Skip E3's `auto_capture_skills` (Test-3: fires on 0 of her entry types — leave off).
+
+</details>
 
 ### Cluster E — Self-improvement / meta (has caveats)
 - ☐ **E1. `NMEM_SYM_CONCERN_PERSISTENCE_ENABLED`** — persist concerns across restart (rumination);
@@ -214,8 +245,8 @@ Whole-line `#` comments (above the flag) are fine.
 | `SYM_OUTCOME_SURPRISE_ENABLED` (B1) | — | `record_action_outcome` with `source` set (actuation loop) |
 | `SYM_PENDING_UTTERANCES_ENABLED` (B2) | **`OUTCOME_SURPRISE` (B1)** | auto-subscribes to the `outcome.surprising` bus |
 | `SYM_COMMUNICATION_DRIVE_ENABLED` (B3) | `DRIVES_ENABLED` | host handler for the `communicate` intent + (sensory vocabulary) |
-| `SYM_RECALL_DRIVE_ENABLED` (D1) | `DRIVES_ENABLED` + **`AUTONOMY__ENABLED` + `AUTONOMY__PROACTIVE_RETRIEVE`** (request_surface is autonomy-gated) | a `memory.surfaced` CONSUMER (michelle has none — must build) + a recall-pressure source |
-| `AUTONOMY__ENABLED` (E3) | — | for value: a `memory.surfaced` consumer; skip `AUTO_CAPTURE_SKILLS` (Test-3: 0 michelle entry types) |
+| `SYM_RECALL_DRIVE_ENABLED` (D1) | `DRIVES_ENABLED` + `CONCERNS_ENABLED` + **`AUTONOMY__ENABLED`** (surface_now is autonomy-gated; `PROACTIVE_RETRIEVE` only needed for the passive journal path) + `RECALL_AGENT_ID`=agent | ✅ recall-pressure source = `bridge.seed_recall()` (michelle seeds per pursuit) + ✅ `memory.surfaced` consumer = `service/recall.py` |
+| `AUTONOMY__ENABLED` (E3) | — | ✅ consumer = michelle `service/recall.py`; skip `AUTO_CAPTURE_SKILLS` (Test-3: 0 michelle entry types) |
 | `SYM_EXTRACT_AUTOPROMOTE_EDGE_TYPES_ENABLED` (C.a) | — | dreamstate running; reuses proposals/canonical ledger |
 | `SYM_HYPOTHESIS_POSTERIOR/COUNTERFACTUAL`, `PREDICTION_GROUNDING_LLM`, `EXTRACT_MULTI_TURN` (C1-C4) | — (shapes benefit from graph causal density) | vllm_backends for LLM grounding/shapes |
 
