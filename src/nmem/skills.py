@@ -393,11 +393,35 @@ class SkillManager:
                   AND trial_count <= :max_trials
             """), {"retire_at": retire_at, "max_trials": max_trials})
 
+    async def _merge_into(self, keeper_id: int, dup_id: int, worked: bool) -> None:
+        """Fold a duplicate's reinforcement history into the keeper, THEN supersede
+        it. Folding is load-bearing: without it a merged cluster loses its trial
+        history, so salience-ranked surfacing / repeat-escalation can't see that a
+        lesson recurred N times (the whole point of coalescing the sprawl)."""
+        from sqlalchemy import select
+        from nmem.db.models import SkillModel
+        async with self._db.session() as session:
+            keeper = (await session.execute(
+                select(SkillModel).where(SkillModel.id == keeper_id))).scalar_one_or_none()
+            dup = (await session.execute(
+                select(SkillModel).where(SkillModel.id == dup_id))).scalar_one_or_none()
+            if keeper is None or dup is None:
+                return
+            keeper.trial_count += dup.trial_count
+            keeper.success_count += dup.success_count
+            keeper.salience = max(keeper.salience, dup.salience)
+        await self.supersede(dup_id, keeper_id)
+
     async def dedup(self) -> None:
-        """Supersede near-duplicate active skills into the strongest of each
-        cluster. Greedy, within a project_scope only — never merges across
-        scopes. Uses the same forward-pointer supersede as everything else.
-        No-op unless skills + dedup are enabled."""
+        """Supersede duplicate active skills into the strongest of each cluster,
+        folding reinforcement history into the keeper. Two phases, within a
+        project_scope only (never across scopes):
+          A. exact canonical_key groups — the clean path that coalesces paraphrases
+             of one lesson (which the embedding threshold cannot, since paraphrases
+             and distinct skills overlap in cosine);
+          B. greedy embedding clustering (≥ dedup_threshold) on what remains.
+        Uses the same forward-pointer supersede as everything else. No-op unless
+        skills + dedup are enabled."""
         cfg = self._skills_cfg()
         if not self._enabled or not getattr(cfg, "dedup_enabled", False):
             return
@@ -416,9 +440,27 @@ class SkillManager:
                           SkillModel.trial_count.desc(), SkillModel.id.asc()))
             ).scalars().all()
 
-        # group by scope; greedy keep-or-supersede
+        # Phase A: exact canonical_key coalescing (scope + key), keeper = first
+        # (strongest, by the ORDER BY above). Removes merged ids from the pool
+        # so Phase B doesn't touch them.
+        merged: set[int] = set()
+        by_key: dict = {}
+        for r in rows:
+            if r.canonical_key:
+                by_key.setdefault((r.project_scope, r.canonical_key), []).append(r)
+        for group in by_key.values():
+            if len(group) < 2:
+                continue
+            keeper = group[0]
+            for r in group[1:]:
+                await self._merge_into(keeper.id, r.id, r.worked)
+                merged.add(r.id)
+
+        # Phase B: greedy embedding clustering on the remaining active rows.
         by_scope: dict = {}
         for r in rows:
+            if r.id in merged:
+                continue
             by_scope.setdefault(r.project_scope, []).append(r)
         for group in by_scope.values():
             kept: list[tuple[int, list[float]]] = []
@@ -427,7 +469,7 @@ class SkillManager:
                 match = next((kid for kid, kemb in kept
                               if cosine_similarity(emb, kemb) >= threshold), None)
                 if match is not None:
-                    await self.supersede(r.id, match)
+                    await self._merge_into(match, r.id, r.worked)
                 else:
                     kept.append((r.id, emb))
 
