@@ -55,8 +55,11 @@ enables, do first).** Each writes its own table, so enable + validate one at a t
 - ✅ **A-i.4 `NMEM_SYM_CONSOLIDATION_ENABLED`** — DONE + live-verified. `/admin/dreamstate` ran
   `consolidate_episodes` → **45** `symbol_consolidated_patterns` from her episodes.
 
-**A-ii — procedure REWARD (needs a wiring fix, like earlier items):**
-- ☐ **A-ii.1 `NMEM_SYM_UTILITY_PLASTICITY_ENABLED`** — reward procedures by achieved utility (EWMA).
+**A-ii — procedure REWARD (needed a wiring fix, done):**
+- ✅ **A-ii.1 `NMEM_SYM_UTILITY_PLASTICITY_ENABLED`** — DONE + live-verified (michelle 9984ba7). Wired
+  `recall_lessons`→proposal→observations→`record_action_outcome(procedure_ids)`. After a pursuit,
+  procedures 93/376/160 moved reward 0.0→0.300 (EWMA) + trial_count++. nmem-sym unchanged (reward path
+  was complete; only host wiring missing). — reward procedures by achieved utility (EWMA).
   Two paths: goal-resolution credit (goals.py:399/417) + episode reward (episodes.py:105, needs
   `pids`). **GAP:** michelle's `record_action_outcome` passes NO `procedure_ids`, so the episode path
   can't fire — WIRE the procedures she recalled/used into the pursuit outcome (assess the goal path
@@ -65,9 +68,15 @@ enables, do first).** Each writes its own table, so enable + validate one at a t
   may need a procedure-consolidation pass too.
 
 **A-iii — STRATEGY induction (needs rewarded procedures; do after A-ii):**
-- ☐ **A-iii.1 `NMEM_SYM_STRATEGY_MEMORY_ENABLED`** — promote recurring procedure edge-type shapes into
-  portable strategies (bridge.py:2861, dreamstate). *Validate:* strategy rows promoted from recurring
-  procedure shapes.
+- ✅ **A-iii.1 `NMEM_SYM_STRATEGY_MEMORY_ENABLED`** — ENABLED + wired + correct; `induce_strategies` ran
+  clean via `/admin/dreamstate` and promoted **0** strategies — CORRECTLY: it mines recurring
+  `edge_type_sequence` shapes (len≥2, ≥2 instances), but michelle's 12 active procedures are all
+  `edge_type_sequence` len 0 (flat, skill-derived — no multi-edge sequences). So it self-activates once
+  she forms multi-edge procedures. **Left ON** (harmless no-op until substrate exists). *Downstream dep
+  (backlog BL-3):* michelle's skill→procedure path yields FLAT procedures; nothing forms sequential
+  (multi-edge) procedures yet — that's the substrate strategy induction (and richer procedural reuse)
+  needs. Correction: active procedures = 12 (matches skills); the "422" was total incl. superseded — no
+  active-procedure sprawl.
 
 - (defer `DREAMSTATE_GAIN_BUDGET` — an ops optimization, do last of A.)
 
@@ -117,6 +126,12 @@ Found during a broad michelle log scan 2026-09-07 (no tracebacks/crashes — fai
   graph richness Clusters A/C + #4/#5 depend on. *Fix options:* add a world/associative edge-type tier
   to DEFAULT_EDGE_TYPES, and/or have schema-induction auto-promote frequently-proposed types from
   `symbol_edge_type_proposals`. Belongs near Cluster C.
+- ☐ **BL-3 — no multi-edge procedure formation (blocks strategy induction + richer procedural reuse).**
+  michelle's procedures come only from the skill→procedure mirror = FLAT (`edge_type_sequence` len 0).
+  Strategy induction (A-iii), and portable multi-step procedures generally, need SEQUENTIAL procedures
+  (edge-type shapes len≥2). Nothing currently compiles those — candidates: derive them from
+  goal-decomposition paths (`decompose_goal`), from the sandbox step traces (#3 reflection could emit an
+  ordered edge sequence, not just flat lessons), or from recurring episode chains. Surfaced by A-iii.
 - ☐ **BL-2 — extractor JSON parse not fence/extra-data tolerant (minor robustness).**
   `extract.py` occasionally hits `JSON parse failed … Extra data` when the LLM wraps JSON in ```json
   fences or emits trailing data → that entry's triples are lost. Same failure mode we already fixed in
