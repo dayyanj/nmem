@@ -225,13 +225,33 @@ raises → never discharges). Built the two seams the drive's design left for th
 </details>
 
 ### Cluster E — Self-improvement / meta (has caveats)
-- ☐ **E1. `NMEM_SYM_CONCERN_PERSISTENCE_ENABLED`** — persist concerns across restart (rumination);
-  low-risk, pairs with #4/#5.
-- ☐ **E2. `NMEM_COMMITMENT_DETECTION__ENABLED`** — detect commitments/obligations from text.
-- ☐ **E3. `NMEM_AUTONOMY__ENABLED`** (proactive_retrieve / auto_capture_skills) — **revisit the Test 3
-  caveat**: auto_capture fires on entry types michelle doesn't produce, proactive_retrieve emits
-  `memory.surfaced` nothing consumes. Enable only if we wire a consumer or it earns its keep.
-- ☐ **E4. `NMEM_SELF_ENGINEERING__ENABLED`** — self-improvement loop (DJ-AI has it gated; assess risk).
+**Cluster E — DONE 2026-09-07** (michelle 1c695e0; all self-provision their tables via
+`create_all` / `CREATE TABLE IF NOT EXISTS` on restart — no migrations). Both E2 + E4 ride the
+**nightly** path (`run_nightly_synthesis`), NOT `run_full_cycle` — added `/admin/nightly` to
+trigger it on demand (+ `/admin/probe_recipes` read-only).
+- ✅ **E1. `NMEM_SYM_CONCERN_PERSISTENCE_ENABLED`** — ENABLED; `symbol_concerns` auto-created;
+  flush/load wired each tick. **Mechanism verified + correct** (persists NATIVE concerns only;
+  `resolve_on_action` mirrored concerns — nmem curiosity + recall seeds — are deliberately EXCLUDED,
+  re-derived from their durable source). **Population time-gated**: michelle's live concerns are
+  mostly curiosity-mirrors + recall-seeds (not persisted by design); native concerns need an
+  `EVENT_CONCERN_MAP` event (hypothesis.disputed / extraction.contradiction / self_model.limitation)
+  — rare on her current workload. Ready for when it matters. (nmem-sym's own suite covers the
+  persist/revive round-trip.)
+- ✅ **E2. `NMEM_COMMITMENT_DETECTION__ENABLED`** — ENABLED; `nmem_commitments` present. Runs clean
+  (1 bounded LLM pass/nightly) → **0 detected**. Substrate-gated: her journal is research findings,
+  not dated promises-with-requesters (same shape as `auto_capture_skills`). Live + ready if she ever
+  makes commitments (e.g. via peer exchange).
+- ✅ **E3. `NMEM_AUTONOMY__ENABLED`** — DONE with Cluster D (surface_now feeds the recall consumer +
+  `PROACTIVE_RETRIEVE` journal path also feeds it). `auto_capture_skills` left OFF (Test-3).
+- ✅ **E4. `NMEM_SELF_ENGINEERING__ENABLED` (+ `INCLUDE_IN_PROMPT`)** — ENABLED, staged
+  (distill→inspect→inject). michelle HAS the substrate (reliable canonicalized skills). **Fully
+  validated:** nightly distilled **2 high-quality recipes** from her real skills (#133 "Snippet-First
+  Search Triage", #93 "Efficient Browser Research Tactic" — check AI Overview/snippets first, pivot
+  keyboard→mouse on failure), `status=active` (passed the acceptance gate, no policy-override
+  language). Injection gate PROVEN: a matching research query injects both; "weather in Paris"
+  injects none (near-exact-match ≥0.6). **Safety: edits its OWN injected prompt context, NEVER host
+  code/config** — bounded (3 LLM/run + size caps), acceptance-gated, host-vetoable, staleness-decayed.
+  DJ-AI keeps it OFF (byte-identical). `PROPOSE_SUBAGENTS` left off (deferred — needs a spawn host).
 
 ### Cluster F — Deferred (external deps michelle lacks)
 - ⏸ `NMEM_SYM_SENSORY_CONTEXT_ENABLED` — needs a sensory DB (`sensory_db_dsn`).
