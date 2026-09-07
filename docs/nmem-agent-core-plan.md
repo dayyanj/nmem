@@ -79,10 +79,12 @@ bootstrap. Target §5 shape: a few hundred LOC, mostly not-logic.
 nmem-lib-update + DJ-AI restart (NOT a bare restart). Everything is default-off, so DJ-AI stays
 byte-identical until per-flag enable.
 
-**Two open decisions (need founder call):** (a) Phase order — do the cheap validated thin-outs
-(Phase 1) first to bank the win, or lead with the Phase 2 flagship (this doc's original "first
-move")? (b) `nmem-agent-core` as a **standalone repo** vs a **package inside nmem** (lighter to
-start, no new CI/release). Recorded in §7-bis below once decided.
+**Two decisions — RESOLVED (founder, 2026-09-07):**
+- **(a) Phase order → Thin-outs first, then flagship.** Do Phase 1 (delete `curiosity.py` +
+  starvation guard) before the Phase 2 nmem-act runner — bank the validated LOC win + de-risk first.
+- **(b) Packaging → a package INSIDE nmem (`nmem.agent_core`), start light.** No new repo/CI/release;
+  ships with nmem (every agent already installs it). Graduate to a standalone repo later only if it
+  earns it. So Phase 3 = create the `nmem.agent_core` subpackage, not a new repo.
 
 ---
 
