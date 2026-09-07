@@ -152,9 +152,28 @@ visibly starting; it deepens as the graph accrues causal density (C4/promotions 
   so mechanistic/counterfactual stay thin near-term regardless; C.a+C4 enrich WORLD/associative
   structure (the achievable near-term win), and C1/C2 are positioned for when causal density grows.
 
-### Cluster D — Recall drive
-- ☐ **D1. `NMEM_SYM_RECALL_DRIVE_ENABLED`** — drive-initiated proactive memory surfacing before
-  acting (complements #2 recall/#3 capture on the surface side).
+### Cluster D — Recall drive  [REVIEWED 2026-09-07 — COUPLED to E-autonomy + needs a consumer]
+- ☐ **D1. `NMEM_SYM_RECALL_DRIVE_ENABLED`** — a `recall` drive that, on recall pressure carrying a
+  TARGET, asks nmem to proactively surface memory for it (`bridge._do_recall` → `mem.request_surface`).
+  **Two hard findings from review — D is NOT a clean solo enable:**
+  1. **DEP on E-autonomy:** `request_surface` (memory.py:220) → `autonomy.surface_now`, which **returns
+     False unless `NMEM_AUTONOMY__ENABLED`** (+ `PROACTIVE_RETRIEVE`). So `_do_recall` gets "nothing
+     surfaced" → RuntimeError → pressure never discharges → drive **inert** without autonomy. **Enable
+     E3 autonomy FIRST/with D.** (Dep-map: `RECALL_DRIVE` requires `NMEM_AUTONOMY__ENABLED` + `PROACTIVE_RETRIEVE`.)
+  2. **No consumer (Test-3 gap, confirmed):** surfacing emits `memory.surfaced`, which **nothing in
+     michelle consumes** (viz_bridge subscribes journal/ltm/shared only). So recall would surface into
+     the void. **The real build = wire a consumer** that injects surfaced memory into pursuit context
+     (a natural companion to #2 `recall_lessons` / #3 — recall-before-act on the *drive's* target). Same
+     "wire a consumer" pattern as B3. This ALSO makes E3's `proactive_retrieve` useful (resolves the
+     Test-3 finding), so **do D + E3 + the consumer together.**
+  3. **Pressure source:** recall pressure needs a source — host `inject_pressure()` or a recall-routed
+     concern/competence signal. *Assess on resume:* does michelle generate recall pressure (via concerns/
+     competence)? If not, the drive never fires — may need a concern→recall route or is inherently quiet.
+- **D plan (resume):** (a) enable `NMEM_AUTONOMY__ENABLED` + `PROACTIVE_RETRIEVE` (E3); (b) enable
+  `RECALL_DRIVE`; (c) BUILD a `memory.surfaced` consumer in michelle (subscribe → stash surfaced
+  items → inject into the next pursuit's context, alongside `recall_lessons`); (d) confirm/route recall
+  pressure; (e) validate: recall fires → `memory.surfaced` → consumer injects → pursuit uses it +
+  drive discharges. Skip E3's `auto_capture_skills` (Test-3: fires on 0 of her entry types — leave off).
 
 ### Cluster E — Self-improvement / meta (has caveats)
 - ☐ **E1. `NMEM_SYM_CONCERN_PERSISTENCE_ENABLED`** — persist concerns across restart (rumination);
@@ -195,6 +214,10 @@ Whole-line `#` comments (above the flag) are fine.
 | `SYM_OUTCOME_SURPRISE_ENABLED` (B1) | — | `record_action_outcome` with `source` set (actuation loop) |
 | `SYM_PENDING_UTTERANCES_ENABLED` (B2) | **`OUTCOME_SURPRISE` (B1)** | auto-subscribes to the `outcome.surprising` bus |
 | `SYM_COMMUNICATION_DRIVE_ENABLED` (B3) | `DRIVES_ENABLED` | host handler for the `communicate` intent + (sensory vocabulary) |
+| `SYM_RECALL_DRIVE_ENABLED` (D1) | `DRIVES_ENABLED` + **`AUTONOMY__ENABLED` + `AUTONOMY__PROACTIVE_RETRIEVE`** (request_surface is autonomy-gated) | a `memory.surfaced` CONSUMER (michelle has none — must build) + a recall-pressure source |
+| `AUTONOMY__ENABLED` (E3) | — | for value: a `memory.surfaced` consumer; skip `AUTO_CAPTURE_SKILLS` (Test-3: 0 michelle entry types) |
+| `SYM_EXTRACT_AUTOPROMOTE_EDGE_TYPES_ENABLED` (C.a) | — | dreamstate running; reuses proposals/canonical ledger |
+| `SYM_HYPOTHESIS_POSTERIOR/COUNTERFACTUAL`, `PREDICTION_GROUNDING_LLM`, `EXTRACT_MULTI_TURN` (C1-C4) | — (shapes benefit from graph causal density) | vllm_backends for LLM grounding/shapes |
 
 ## Issues surfaced (backlog — address later)
 Found during a broad michelle log scan 2026-09-07 (no tracebacks/crashes — fail-open holding).
