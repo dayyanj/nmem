@@ -102,6 +102,35 @@ cannot for a web-browsing agent. Two upstream implications instead of deletion:
 - Decision: reflection likely beats heuristic capture on tool-use → **upstream action-trace
   reflection into nmem-act's outcome sink** (`ACT_LLM_REFLECT_ENABLED`).
 
+#### Test 3 — RESULT (2026-09-07): native autonomy CANNOT replace recall/tool_learning; fix the sprawl upstream
+Same structural pattern as Test 2 — the native feature is keyed on a model that doesn't match
+michelle's actuation reality. Determined analytically (no flag flip needed; `proactive_retrieve`
+would only have run wasteful searches, `auto_capture_skills` would have captured 0):
+
+- **`auto_capture_skills` fires on ZERO of michelle's entries.** Her journal is entirely
+  `fact|pursuit` (92), `observation|pursuit` (27), `judgment|hypothesis` (3) — none in the default
+  `skill_entry_types` (`decision/outcome/retro/lesson`). Native capture is keyed on entry types she
+  doesn't produce, AND only sees the **journal** — never the tool-use **steps** where her real
+  skills live. It also captures verbatim, `worked=True`, no reflection (heuristic; "Phase 1.5").
+- **`proactive_retrieve` emits `memory.surfaced` that NOTHING consumes.** michelle's viz_bridge
+  subscribes to `journal.added`/`ltm.saved`/`shared.saved`, not `memory.surfaced`. Her pursuit loop
+  PULLs (targeted `memory.recall(obj)` right before acting). Native surface is PUSH-on-write — a
+  conversational-agent feature (offer context mid-dialogue), structurally mismatched to a goal loop.
+- **`tool_learning` captures the genuinely valuable thing** the native path can't: LLM-reflective
+  browser procedures from actual sandbox steps ("verify URL after a click", "wait for skeleton
+  screens before acting", "ctrl+a then backspace after ctrl+l to clear the address bar"). They DO
+  coalesce with reuse (top skills 9×/8×/5×).
+
+**Verdict: KEEP recall-before-pursuit AND tool_learning.** Neither is surplus. The real defect is
+skill **sprawl**: 396 skills, avg 1.15 trials — semantic near-duplicates aren't merging
+("repetitive clicking" / "repetitive scroll" / "repetitive scrolling" = one lesson, three phrasings).
+Upstream fixes (benefit every agent), not deletions:
+- **semantic coalescing in `nmem.skills.record`:** merge a new `what` into an existing skill above a
+  cosine threshold (bump trial/success) instead of inserting a near-dup. This is THE sprawl fix.
+- **`ACT_LLM_REFLECT_ENABLED` (nmem-act):** make LLM-reflective capture off the action trace a
+  native option in the outcome sink — `tool_learning` is the reference implementation. Then reflective
+  skill capture (keyed on STEPS, not journal type) is available to any actuating agent.
+
 ### Test 4 — Pursuit loop → nmem-act *(needs a SandboxExecutor adapter; last)*
 - Register michelle's sandbox as an nmem-act executor. Second-instance A/B on achievement +
   goal-lifecycle correctness (infra-vs-failed / unclaim / salvage = acceptance spec).
@@ -111,3 +140,27 @@ cannot for a web-browsing agent. Two upstream implications instead of deletion:
   `/admin/consolidate` to measure promotion without waiting.
 - michelle stays the live proving ground throughout; DJ-AI shares these libs → land+bake on
   michelle before any DJ-AI rollout.
+
+## SWEEP CONCLUSION (2026-09-07) — all tests done
+Recurring finding across Tests 2 & 3: **the bespoke code is NOT surplus.** Each native feature is
+keyed on a model that doesn't match michelle's actuation reality (world-signals vs graph-topology
+signals; PUSH-on-write vs PULL-at-decision; journal-type capture vs tool-STEP capture). So the
+`nmem-agent-core` move is NOT "flip native flags + delete bespoke" — it's **upstream the bespoke
+advantage into the nmem libs so every agent gets it** (the founder's stated principle). Keep
+`curiosity.py`, `recall`-before-pursuit, and `tool_learning` in the core; make the libs able to
+do what they do.
+
+### Upstream backlog (ranked; all validated by this sweep + the codex review)
+1. **honest_discharge for outward-actuated drives (nmem-sym)** — codex #3 + Test 1. An outward
+   drive actuated via nmem-act must discharge on the *actuator's real outcome*, not internal
+   self-satisfaction. Highest confidence (validated twice); correctness gap; benefits michelle+DJ-AI.
+2. **semantic coalescing in `nmem.skills.record` (nmem)** — Test 3. Merge near-duplicate `what`
+   above a cosine threshold instead of inserting. THE fix for skill sprawl (396 @ 1.15 trials).
+3. **`ACT_LLM_REFLECT_ENABLED` (nmem-act)** — Test 3. LLM-reflective capture off the action trace
+   as a native outcome-sink option; `tool_learning` is the reference. Reflective, STEP-keyed capture
+   for any actuating agent.
+4. **`DRIVES_GOAL_LLM_ENRICH` (nmem-sym)** — Test 2. LLM-enrich a concern into a concrete,
+   actuator-appropriate objective; `curiosity.py` is the reference. Makes the native producer usable.
+5. **graph-consolidation actuator (michelle/nmem-act)** — Test 2. `graph_hypothesis` curiosity
+   signals want an INTERNAL "link these two similar-but-unconnected nodes?" action, not a web pursuit.
+- Side-finding: michelle emits only graph-topology hypotheses (5) — why so few *world* hypotheses?
