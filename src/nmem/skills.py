@@ -44,6 +44,7 @@ class SkillInfo:
     superseded_by_id: int | None = None
     agent_id: str | None = None
     project_scope: str | None = None
+    canonical_key: str | None = None
     similarity: float | None = None       # populated by find()
     created_at: datetime | None = None
 
@@ -133,12 +134,15 @@ class SkillManager:
         name: str | None = None,
         agent_id: str | None = None,
         project_scope: str | None = ...,     # sentinel → inherit instance scope
+        canonical_key: str | None = None,
     ) -> SkillInfo | None:
         """Record a skill outcome ("worked / didn't work").
 
-        If a near-duplicate active skill exists (cosine ≥ dedup_threshold),
-        reinforce it instead of inserting — the conscious-layer LTP/LTD. Returns
-        None when skills are disabled.
+        Dedup, in order: (1) if a `canonical_key` is supplied, coalesce into the
+        active skill sharing that exact key — paraphrases of one lesson thus merge
+        regardless of embedding distance; (2) else if a near-duplicate active skill
+        exists (cosine ≥ dedup_threshold), reinforce it. Only when neither matches
+        is a new skill inserted. Returns None when skills are disabled.
         """
         if not self._enabled:
             return None
@@ -147,9 +151,19 @@ class SkillManager:
         if project_scope is ...:
             project_scope = self._scope()
         name = name or (what[:80] if what else "skill")
+
+        # (1) Canonical-key coalescing — exact match, no embedding needed. This is
+        # what makes paraphrases of one lesson merge (the embedding threshold can't
+        # separate paraphrases from distinct skills). Off unless a key is supplied.
+        if canonical_key:
+            dup = await self._find_by_canonical_key(canonical_key, project_scope, agent_id)
+            if dup is not None:
+                await self.reinforce(dup, worked)
+                return await self.get(dup)
+
         embedding = await self._embed(what)
 
-        # Coalesce into a near-duplicate active skill if one exists.
+        # (2) Embedding coalescing — near-duplicate active skill.
         if embedding is not None:
             dup = await self._find_duplicate(embedding, project_scope, agent_id)
             if dup is not None:
@@ -162,6 +176,7 @@ class SkillManager:
                 success_count=1 if worked else 0, trial_count=1,
                 trigger_embedding=embedding, salience=1.0, status="active",
                 agent_id=agent_id, project_scope=project_scope,
+                canonical_key=canonical_key,
             )
             session.add(row)
             await session.flush()
@@ -535,6 +550,29 @@ class SkillManager:
 
     # ── helpers ───────────────────────────────────────────────
 
+    async def _find_by_canonical_key(self, canonical_key: str,
+                                     project_scope: str | None,
+                                     agent_id: str | None) -> int | None:
+        """Return the id of the active skill sharing this exact canonical_key
+        (same scope), else None. The cheap, threshold-free coalescing path —
+        paraphrases mapped to one key merge here. Scoping mirrors _find_duplicate."""
+        from sqlalchemy import text as sa_text
+        params: dict[str, Any] = {"key": canonical_key}
+        if project_scope is None:
+            scope_sql = "AND project_scope IS NULL"
+        else:
+            scope_sql = "AND project_scope = :scope"
+            params["scope"] = project_scope
+        sql = sa_text(f"""
+            SELECT id FROM nmem_skills
+            WHERE status = 'active' AND canonical_key = :key {scope_sql}
+            ORDER BY trial_count DESC
+            LIMIT 1
+        """)
+        async with self._db.session() as session:
+            row = (await session.execute(sql, params)).first()
+        return row[0] if row is not None else None
+
     async def _find_duplicate(self, embedding: list[float],
                               project_scope: str | None,
                               agent_id: str | None) -> int | None:
@@ -595,4 +633,6 @@ class SkillManager:
             trial_count=row.trial_count, status=row.status, salience=row.salience,
             sym_procedure_id=row.sym_procedure_id,
             superseded_by_id=row.superseded_by_id, agent_id=row.agent_id,
-            project_scope=row.project_scope, created_at=row.created_at)
+            project_scope=row.project_scope,
+            canonical_key=getattr(row, "canonical_key", None),
+            created_at=row.created_at)

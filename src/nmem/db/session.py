@@ -27,7 +27,7 @@ from nmem.db.models import Base, HAS_PGVECTOR
 logger = logging.getLogger(__name__)
 
 # Current schema version. Bump when adding migrations to _migrate_schema.
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 
 class DatabaseManager:
@@ -267,6 +267,25 @@ class DatabaseManager:
                 "v4: widen nmem_journal_entries.entry_type to VARCHAR(100)",
             )
 
+        if version < 5:
+            # Canonical dedup key for skills — a low-entropy form of `what` that
+            # paraphrases of one lesson share, so record() coalesces them by exact
+            # key instead of the embedding threshold (which can't separate
+            # paraphrases from distinct skills). Nullable → existing rows fall back
+            # to embedding dedup; new keyed rows coalesce. Partial index backs the
+            # exact-key lookup on the hot path (active, keyed rows only).
+            await _run(
+                "ALTER TABLE nmem_skills "
+                "ADD COLUMN IF NOT EXISTS canonical_key VARCHAR(200)",
+                "v5: add canonical_key to nmem_skills",
+            )
+            await _run(
+                "CREATE INDEX IF NOT EXISTS ix_nmem_skills_canonical "
+                "ON nmem_skills (canonical_key, project_scope) "
+                "WHERE status = 'active' AND canonical_key IS NOT NULL",
+                "v5: partial index for skill canonical-key dedup",
+            )
+
         # Bump schema version in its own session
         async with self.session() as session:
             await session.execute(text(
@@ -313,6 +332,14 @@ class DatabaseManager:
                 f"ON {tbl} USING hnsw(trigger_embedding vector_cosine_ops) "
                 f"WITH (m = 16, ef_construction = 64)",
                 f"hnsw {tbl}")
+
+        # Skill canonical-key dedup lookup (fresh installs; the versioned migration
+        # covers existing DBs). Partial: only active, keyed rows.
+        await _run(
+            "CREATE INDEX IF NOT EXISTS ix_nmem_skills_canonical "
+            "ON nmem_skills (canonical_key, project_scope) "
+            "WHERE status = 'active' AND canonical_key IS NOT NULL",
+            "skill canonical-key dedup")
 
         # Partial UNIQUE index: at most one live (proposed/accepted) sub-agent
         # proposal per source cluster — backstops read-before-write dedup against

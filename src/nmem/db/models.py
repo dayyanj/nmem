@@ -529,6 +529,11 @@ class SkillModel(Base):
     name: Mapped[str] = mapped_column(String(200))
     what: Mapped[str] = mapped_column(Text)                       # process / trigger description
     outcome: Mapped[str] = mapped_column(Text, default="")
+    # Optional canonical dedup key: a low-entropy form of `what` (host- or
+    # LLM-supplied) that paraphrases of the SAME lesson share, so record() can
+    # coalesce them without relying on the embedding threshold (which can't
+    # separate paraphrases from distinct skills). NULL = fall back to embedding dedup.
+    canonical_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     # Plasticity at the conscious layer: worked vs didn't, reinforced over trials.
     worked: Mapped[bool] = mapped_column(Boolean, default=True)
