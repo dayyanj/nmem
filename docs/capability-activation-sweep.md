@@ -46,8 +46,12 @@ reorder A by effort+dependency into three sub-groups:
 
 **A-i — outcome/episode CONSUMERS (fire immediately from what michelle already produces; clean
 enables, do first).** Each writes its own table, so enable + validate one at a time:
-- ▶ **A-i.1 `NMEM_SYM_FAILURE_MEMORY_ENABLED`** — ENABLED; complete code path. Fires on verified=False
-  pursuits → `symbol_failures`. *Validating:* polling for the first failed pursuit (slow — needs a fail).
+- ✅ **A-i.1 `NMEM_SYM_FAILURE_MEMORY_ENABLED`** — ENABLED + wired + code-path-confirmed; awaiting first
+  post-enable failure. michelle already emits `status="failure"` on verified=False pursuits (she had
+  failures at 07:18/07:19, but FAILURE_MEMORY went live at the 07:28 restart — so all failures predate
+  the enable; verified streak since). NOT a firing bug — `symbol_failures` will populate on her next
+  failed pursuit (poll watching). Zero michelle-side risk (she already passes status; the path is
+  nmem-sym's own, covered by its tests).
 - ✅ **A-i.2 `NMEM_SYM_SELF_CAPABILITY_ENABLED`** — DONE + live-verified. `self_capability_stats` row for
   `pursue_knowledge` (success_count=1, sample_size=1, mean_task_success=1) accrued from the first pursuit.
 - ✅ **A-i.3 `NMEM_SYM_WORLD_MODEL_ENABLED`** — DONE + live-verified. `symbol_transitions` row
