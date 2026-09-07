@@ -544,6 +544,12 @@ class SkillsConfig(BaseModel):
     dedup_threshold: float = 0.85
     """Cosine similarity above which two skills are considered duplicates."""
 
+    canonicalize_enabled: bool = False
+    """record() LLM-normalizes `what` into a canonical_key (a low-entropy slug) when
+    the caller doesn't supply one, so paraphrases of one lesson coalesce. Reuses the
+    existing nmem LLM provider; off / noop-LLM / any failure → no key (embedding-only
+    dedup, unchanged). The intelligence lives in nmem, not each bot."""
+
     rank_by_salience: bool = False
     """find() blends a reinforcement bonus (ln(trial_count+1)) into the ranking so a
     lesson learned many times outranks a one-off at similar similarity. Off = pure

@@ -118,7 +118,7 @@ class MemorySystem:
         # didn't". Durable + vectorized here; mirrors into nmem-sym's live
         # procedure ledger when a backend attaches. Inert until config.skills.enabled.
         from nmem.skills import SkillManager
-        self._skills = SkillManager(self._db, self._emit, self._config, self._embedding)
+        self._skills = SkillManager(self._db, self._emit, self._config, self._embedding, self._llm)
         self._prompt._skills = self._skills   # enable the opt-in prompt section
         # Skill decay + dedup ride the consolidation full cycle. Self-gated
         # (no-op unless skills + the decay/dedup flags are on), so registering

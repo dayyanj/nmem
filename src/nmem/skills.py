@@ -56,11 +56,12 @@ _TERMINAL = {"superseded": "superseded", "retired": "retired", "abandoned": "ret
 class SkillManager:
     """Conscious skills + forwarding to a registered cognitive backend."""
 
-    def __init__(self, db, emit, config=None, embedder=None):
+    def __init__(self, db, emit, config=None, embedder=None, llm=None):
         self._db = db
         self._emit = emit                    # async mem._emit — host-facing events
         self._config = config                # NmemConfig — scope + skills settings
         self._embedder = embedder            # embedding provider (sync .embed)
+        self._llm = llm                      # LLMProvider — optional canonicalization
         self._backend: Any = None            # registered subconscious backend
         # Serializes mirroring so an inline record() and a concurrent
         # flush_pending() can't double-mirror the same skill.
@@ -88,6 +89,55 @@ class SkillManager:
             return await asyncio.to_thread(self._embedder.embed, text)
         except Exception as e:   # pragma: no cover
             logger.debug("Skill embedding failed: %s", e)
+            return None
+
+    async def _existing_keys(self, project_scope: str | None, limit: int = 40) -> list[str]:
+        """A sample of canonical_keys already in this scope — fed to the canonicalizer
+        so it REUSES an existing key for the same lesson (convergence) instead of
+        minting a synonym, which would just move the paraphrase problem up a level."""
+        from sqlalchemy import text as sa_text
+        params: dict[str, Any] = {"limit": limit}
+        scope_sql = "AND project_scope = :scope" if project_scope is not None else \
+                    "AND project_scope IS NULL"
+        if project_scope is not None:
+            params["scope"] = project_scope
+        sql = sa_text(f"""
+            SELECT canonical_key, count(*) c FROM nmem_skills
+            WHERE status='active' AND canonical_key IS NOT NULL {scope_sql}
+            GROUP BY canonical_key ORDER BY c DESC LIMIT :limit
+        """)
+        async with self._db.session() as session:
+            rows = (await session.execute(sql, params)).all()
+        return [r[0] for r in rows]
+
+    async def _canonicalize(self, what: str, project_scope: str | None) -> str | None:
+        """LLM-normalize a lesson into a stable, low-entropy canonical_key (kebab-case
+        slug) so paraphrases of one lesson share a key and coalesce. Reuses the existing
+        nmem LLM provider. Returns None (→ embedding-only dedup) when disabled, no LLM,
+        or on any failure/empty — never raises into the write path."""
+        cfg = self._skills_cfg()
+        if not getattr(cfg, "canonicalize_enabled", False) or self._llm is None or not what:
+            return None
+        try:
+            existing = await self._existing_keys(project_scope)
+            known = ("\nReuse one of these EXISTING keys verbatim if it means the same "
+                     "lesson:\n" + "\n".join(f"- {k}" for k in existing)) if existing else ""
+            system = (
+                "You normalize a lesson learned by an AI agent into a stable canonical KEY so "
+                "that differently-worded notes about the SAME underlying lesson collapse to one "
+                "key. Reply with ONLY a short kebab-case slug (3-6 words, lowercase, hyphens, no "
+                "punctuation), naming the GENERAL lesson — not the specific wording or context." + known)
+            slug = await self._llm.complete(system, what[:500], max_tokens=24,
+                                            temperature=0.0, timeout=10.0)
+            slug = (slug or "").strip().splitlines()[0].strip().strip(".").lower()
+            # sanitize to a readable kebab slug: treat spaces/hyphens/underscores as
+            # word breaks, drop other punctuation, rejoin with single hyphens.
+            slug = slug.replace("-", " ").replace("_", " ")
+            slug = "-".join("".join(c for c in w if c.isalnum()) for w in slug.split() if w)
+            slug = slug.strip("-")[:200]
+            return slug or None
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Skill canonicalize failed (→ embedding dedup): %s", e)
             return None
 
     # ── backend registration (IoC) ────────────────────────────
@@ -151,6 +201,11 @@ class SkillManager:
         if project_scope is ...:
             project_scope = self._scope()
         name = name or (what[:80] if what else "skill")
+
+        # (0) Derive a canonical_key via the LLM when the caller didn't supply one
+        # (layer 2, flag-gated). None on disabled/no-LLM/failure → embedding-only path.
+        if not canonical_key:
+            canonical_key = await self._canonicalize(what, project_scope)
 
         # (1) Canonical-key coalescing — exact match, no embedding needed. This is
         # what makes paraphrases of one lesson merge (the embedding threshold can't
