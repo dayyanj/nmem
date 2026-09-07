@@ -88,12 +88,16 @@ enables, do first).** Each writes its own table, so enable + validate one at a t
 **Reviewed 2026-09-07.** A 3-stage pipeline with real deps: B1 generates surprise → B2 (auto-subscribed
 to the `outcome.surprising` drive-event bus) stores candidate utterances → B3 is the drive to actually
 say them. B1/B2 fire from what michelle already produces; B3 needs a host handler (+ is sensory-oriented).
-- ☐ **B1 `NMEM_SYM_OUTCOME_SURPRISE_ENABLED`** — GENERATOR. `episodes.record_action_outcome` →
+- ✅ **B1 `NMEM_SYM_OUTCOME_SURPRISE_ENABLED`** — DONE + live-verified. `symbol_outcome_expectations`
+  building (`drive:novelty|pursue_knowledge|n=1|pred_ewma=1.0`); `outcome.surprising` will fire on the
+  first deviation (a failed pursuit → converges with A-i.1). GENERATOR. `episodes.record_action_outcome` →
   `surprise.appraise_outcome` (complete): appraises each outcome vs a per-`(source,action_type)` EWMA in
   `symbol_outcome_expectations` (lazily created), emits `outcome.surprising` on a large gap. Fires on
   michelle's pursuits. Clean enable, FIRST. *Validate:* `symbol_outcome_expectations` baselines build;
   `outcome.surprising` events emit on deviation (early on, before baselines settle, expect some).
-- ☐ **B2 `NMEM_SYM_PENDING_UTTERANCES_ENABLED`** — CONSUMER (needs B1). `bridge` auto-subscribes
+- ✅ **B2 `NMEM_SYM_PENDING_UTTERANCES_ENABLED`** — ENABLED + wiring-verified ("Pending-utterance
+  consumer wired to outcome.surprising" in log). Awaiting the first surprise event → `symbol_pending_
+  utterances` (same gate as A-i.1/B1-surprise: michelle's next deviating/failed pursuit). CONSUMER (needs B1). `bridge` auto-subscribes
   `_on_pending_utterance_event` to `outcome.surprising` → `pending.consider_utterance` → row in
   `symbol_pending_utterances` (complete module; optional LLM phrasing/worth-threshold). Clean enable,
   after B1. *Validate:* `symbol_pending_utterances` candidates appear after surprising outcomes.
