@@ -1,6 +1,9 @@
 # nmem capability-activation sweep — plan & tracker
 
-**Status:** in progress. **Started:** 2026-09-07. **Companions:**
+**Status:** SWEEP COMPLETE 2026-09-07 — Clusters A–E enabled+validated on michelle; F assessed &
+correctly deferred (role-substrate michelle lacks; each F capability already proven on a sibling
+agent or belonging to the twin). Every capability michelle's role can exercise has been swept.
+**Started:** 2026-09-07. **Companions:**
 [native-vs-bespoke-test-plan.md](./native-vs-bespoke-test-plan.md),
 [nmem-agent-core-plan.md](./nmem-agent-core-plan.md).
 
@@ -253,13 +256,38 @@ trigger it on demand (+ `/admin/probe_recipes` read-only).
   code/config** — bounded (3 LLM/run + size caps), acceptance-gated, host-vetoable, staleness-decayed.
   DJ-AI keeps it OFF (byte-identical). `PROPOSE_SUBAGENTS` left off (deferred — needs a spawn host).
 
-### Cluster F — Deferred (external deps michelle lacks)
-- ⏸ `NMEM_SYM_SENSORY_CONTEXT_ENABLED` — needs a sensory DB (`sensory_db_dsn`).
-- ⏸ `NMEM_SYM_OBLIGATIONS_ENABLED` (+`OBLIGATION_PERSISTENCE`) — extrinsic motivation; needs a
-  delegator/obligation source michelle doesn't have yet.
-- (Other prefixes to sweep later once these land: NMEM_IMMUNE layers beyond skeptic, NMEM_EXCHANGE
-  peering depth, NMEM_IDENTITY (voice — needs audio), NMEM_RECOGNITION, NMEM_ENTITY, NMEM_CLUSTERING
-  tuning.)
+### Cluster F — ASSESSED 2026-09-07 (boundary of michelle's role; confirmed in code, not assumed)
+The sweep's honest edge: F is where michelle's ROLE (isolated, self-directed research peer — no
+senses, no external delegator) genuinely lacks the substrate. Each verdict is grounded in code, and
+the on-by-default subsystems here are confirmed LIVE (so F is *swept*, not skipped).
+- ✅ **RECOGNITION / ENTITY / CLUSTERING — already live.** No `*_enabled` master switch in nmem
+  config (EntityConfig/ClusteringConfig/RecognitionConfig are tuning-only) → always-on subsystems.
+  Active on michelle as baseline; nothing to enable.
+- ✅ **EXCHANGE peering — already live.** No `ExchangeConfig` in nmem config; michelle peers with
+  DJ-AI (`dm:michelle:djai`) via her own `service/peer.py` + nmem-exchange. No "depth" switch exists.
+- ⚪ **IMMUNE (beyond skeptic) — N/A.** Skeptic already baseline-on; `NMEM_IMMUNE_DB_DSN` is UNWIRED
+  in-repo (read nowhere) — there is no immune-beyond-skeptic wired to enable.
+- ⏸ **`NMEM_SYM_OBLIGATIONS_ENABLED` (+persistence) — DEFER (founder-decided 2026-09-07).** Source is
+  `commitments.py:249` (a recorded commitment forwards to the backend as an obligation). michelle has
+  ZERO obligation source: E2 commitment-detection yields 0 (no dated promises in her journal) and
+  there are no `impose_obligation` / `commitments.record` / `register_requestor` calls in her code —
+  she has no external delegator (by design; unlike DJ-AI's founder + Redis delegation). Worse,
+  enabling it switches her drive loop from event-wake to the timer-stepped **meta-arbiter** path (a
+  responsiveness regression) for zero benefit. The capability is **already proven in production on
+  DJ-AI** (nmem 0.9.x commitments/obligations, live since 2026-08-16). Revisit only if michelle gains
+  a delegator (e.g. DJ-AI delegating to her).
+- ⏸ **`NMEM_SYM_SENSORY_CONTEXT_ENABLED` (+`SENSORY_DB_DSN`) — DEFER.** Needs the nmem-sym-sensor DB
+  + a live sensory stream. michelle has no audio/camera; that sensor DB is the twin's TABULA2 voice
+  embedder, not hers. Genuinely external.
+- ⏸ **`NMEM_IDENTITY` (voice recognition) — DEFER.** Needs audio input michelle doesn't have — twin
+  territory (`nmem-identity` lives in the twin/DJ-AI voice stack).
+
+**Sweep conclusion:** Clusters A–E enabled+validated on michelle (each either live-proven or honestly
+substrate-gated with the capability confirmed correct). F is correctly deferred: its three genuine
+capabilities (obligations/sensory/voice) require substrate michelle's role lacks, and each is either
+already proven on a sibling agent (obligations→DJ-AI) or belongs to a different agent (sensory/voice
+→ twin). The on-by-default F subsystems are confirmed live. **Every capability michelle's role can
+exercise has been swept.**
 
 ## Flag dependency map (what each enabled flag REQUIRES)
 Captured as we go — prerequisites (other flags), external substrate, and any host-side wiring.
