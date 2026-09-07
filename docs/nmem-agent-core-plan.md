@@ -51,6 +51,29 @@ infra-vs-actuation-failure classification, cancel/error un-claim, startup recove
 exhaust, merit outcome write — still lives entirely in michelle's `cognition.py` pursuit loop
 (~lines 300–370). That is the reference spec to lift into nmem-act.
 
+### LIFT-AND-SHIFT COMPLETE 2026-09-08 — a new agent is config + persona + (executor) + host I/O
+Founder priority: get the core lift-and-shift-ready BEFORE DJ-AI (Phase 4). Done. Decisions:
+headless I/O-agnostic runtime; proof = michelle-on-core + a minimal example.
+- **`nmem.agent_core` now provides the whole runtime** (nmem 852f316, b3b9326):
+  `AgentRuntime` (headless boot→run→shutdown + all cognition wiring/loops), `Persona`+`seed_persona`,
+  `build_memory`/`build_symbol_graph`, `build_backend` (provider-agnostic LLM), `CommsLoop`/`ChannelSink`,
+  `SymbolGoalStore`, recall consumer. Agent seams: `build_executor(bridge)`, `build_proposal`,
+  `comms_sink`, `skill_chronic`; mem/graph/backend can be passed pre-built (host owns them) or built by
+  the runtime.
+- **michelle-on-core (completeness proof, michelle a746f69):** her mind now boots entirely on
+  `AgentRuntime`. cognition.py's init/loops deleted (start_cognition builds+starts the runtime;
+  close_cognition stops it); identity seeds → `seed_persona(build_persona())`. Validated LIVE: healthy,
+  all plugins/prediction/drives/pursuit/consolidation/recall/comms up, goal 480 pursued→achieved via
+  GoalPursuit, recall surfaced 5, 0 stranded, 0 tracebacks. michelle keeps her memory.py/model_backend/
+  db/viz/peer/sandbox as adapters + FastAPI I/O.
+- **minimal example (nmem f6884ad):** `examples/minimal_agent/` — a pure-cognition "scout" agent in
+  four files (agent.yaml + capabilities.env + persona.py + ~20-line main.py), no cognition code.
+  Smoke-tested (persona builds, config loads, AgentRuntime constructs). README shows run / make-it-act /
+  add-I/O.
+- **Remaining agent_core roadmap** (not blocking; incremental): thin michelle's memory.py/model_backend
+  to delegate to `build_memory`/`build_backend`; graduate peer glue; a DB-engine helper; an optional thin
+  HTTP helper. All validate-then-thin, michelle live.
+
 ### EXECUTED 2026-09-07 — Phases 1–3 done; PAUSED before Phase 4 (founder)
 - ✅ **Phase 1** (michelle f0aac72): deleted `curiosity.py` (shadow-compare: native A5 producer at
   parity+ — all recent drive_intent goals native, curiosity dormant) + the inert starvation guard.
