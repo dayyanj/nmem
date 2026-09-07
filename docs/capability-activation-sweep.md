@@ -180,6 +180,24 @@ raises → never discharges). Built the two seams the drive's design left for th
   seed a recall concern → fully autonomous recall with no host seed (needs `EVENT_CONCERN_MAP`
   multi-routing; single-spec today). Noted in the design doc.
 
+**Post-build review (2026-09-07)** — adversarial pass on the shipped D code:
+- ✅ **FIXED (nmem-sym ebc3008): benign no-match was recorded as a bridge error.**
+  Pre-existing `_do_recall` raised on "nothing surfaced"; `_safe` then counted it
+  (`errors++`, `errors_by_subsystem`, `last_error_at`) + tracebacked, and deferred-relief
+  raised a second traceback. A no-match is the NORMAL outcome on michelle's sparse store,
+  so it corrupted the error-count health signal + flooded logs. `_do_recall` now returns
+  bool; the handler reports strength 0.0 for a no-op (still no discharge) without counting
+  it as an error. Verified: no-match recall silent (0 tracebacks/0 errors), match unchanged.
+- **Accepted (not fixed — evidence says fine):** (a) auto-seeding recall for the FULL
+  specific objective has a low surface hit-rate (many no-ops), but fires stay bounded (recall
+  ~1:3 vs novelty over 20min; concerns decay below threshold within the 60s cooldown so they
+  don't re-fire/storm — the 0.92 auto-seed decays under θ in ~5s). Not starving intrinsic
+  drives. Could seed broader entity terms for better yield — optional. (b) the surfaced block
+  and the inline `prior = memory.recall(obj)` overlap (two "what you already know" blocks in
+  the pursuit prompt); benign — distinctly labelled, `context_for` dedups within itself. (c)
+  `PROACTIVE_RETRIEVE` also feeds the consumer independently (journal-triggered surface) — bonus
+  coverage, distinguished by `reason`. Both are fine.
+
 <details><summary>Original D review (pre-build) — kept for provenance</summary>
 
 - ☐ **D1. `NMEM_SYM_RECALL_DRIVE_ENABLED`** — a `recall` drive that, on recall pressure carrying a
