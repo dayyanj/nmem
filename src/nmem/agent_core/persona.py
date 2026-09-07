@@ -33,6 +33,7 @@ class Persona:
     baseline_kb: dict[str, tuple[str, str]] = field(default_factory=dict)    # key -> (content, category)
     capabilities: str = ""
     capabilities_key: str = ""
+    world_entities: str = ""   # display names for goal-enrichment grounding (falls back to topic labels)
 
 
 async def seed_persona(mem, graph, persona: Persona) -> None:

@@ -12,8 +12,9 @@ plus that host I/O. Everything cognitive is here and toggled by the ``capabiliti
 the process already loaded (nmem/nmem-sym read their flags from env).
 
 Agent-specific seams (all optional except config+persona):
-  * ``executor``       — an nmem-act :class:`ActionExecutor` (the agent's hands). Without
-                         it, the pursuit loop is simply not started (a pure-thinker agent).
+  * ``build_executor`` — ``(bridge) -> ActionExecutor``: build the agent's hands once the
+                         bridge exists (the executor's outcome sink usually needs it).
+                         Without it, the pursuit loop is simply not started (a pure thinker).
   * ``build_proposal`` — turns a :class:`~nmem_act.PursuitGoal` into an ActionProposal;
                          paired with the executor (it shapes the params the executor wants).
   * ``comms_sink``     — a :class:`~nmem.agent_core.comms.ChannelSink` for the communication
@@ -39,24 +40,32 @@ class AgentRuntime:
         config: dict,
         persona: Persona,
         *,
-        executor: Any | None = None,
+        build_executor: Callable[[Any], Any] | None = None,
         build_proposal: Callable | None = None,
         comms_sink: Any | None = None,
         skill_chronic: Callable[[dict], Awaitable[None]] | None = None,
         backend: Any | None = None,
+        mem: Any | None = None,
+        graph: Any | None = None,
     ) -> None:
         self._config = config
         self._persona = persona
-        self._executor = executor
+        self._build_executor = build_executor
         self._build_proposal = build_proposal
         self._comms_sink = comms_sink
         self._skill_chronic = skill_chronic
 
-        self.mem = None
-        self.graph = None
+        # Accept pre-built mem/graph/backend (a host that already owns its boot passes
+        # them; the runtime then does ONLY the cognition wiring and does NOT close them
+        # on stop). Otherwise the runtime builds + owns + closes them.
+        self.mem = mem
+        self.graph = graph
         self.backend = backend
+        self._owns_mem = mem is None
+        self._owns_graph = graph is None
         self.bridge = None
         self._prediction = None
+        self._runner = None
         self._pursuit = None
         self._consol_task = None
         self._drive_task = None
@@ -65,9 +74,13 @@ class AgentRuntime:
 
     # ── lifecycle ─────────────────────────────────────────────────
     async def start(self) -> dict:
-        """Bring the mind up: memory + graph + backend + persona + cognition + loops."""
-        self.mem = await build_memory(self._config)
-        self.graph = await build_symbol_graph(self._config)
+        """Bring the mind up: memory + graph + backend + persona + cognition + loops.
+        mem/graph/backend passed to the constructor are used as-is; anything not passed
+        is built here."""
+        if self.mem is None:
+            self.mem = await build_memory(self._config)
+        if self.graph is None:
+            self.graph = await build_symbol_graph(self._config)
         if self.backend is None:
             from nmem.agent_core.backend import build_backend
             self.backend = build_backend(self._config)
@@ -97,9 +110,12 @@ class AgentRuntime:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
             self._consol_task = None
-        for name, obj in (("sym", self.graph), ("nmem", self.mem)):
+        # Only close mem/graph the runtime itself built; a host that passed them in
+        # owns their teardown.
+        for name, obj, owned in (("sym", self.graph, self._owns_graph),
+                                 ("nmem", self.mem, self._owns_mem)):
             try:
-                if obj is not None and hasattr(obj, "close"):
+                if owned and obj is not None and hasattr(obj, "close"):
                     await obj.close()
             except Exception as e:  # noqa: BLE001
                 log.warning("[runtime] close %s: %s", name, e)
@@ -131,7 +147,11 @@ class AgentRuntime:
         self.bridge.connect(mem)
 
         self._wire_goal_enrichment()
-        self._wire_actuation()
+        if self._build_executor is not None:
+            try:
+                self._runner = self._build_executor(self.bridge)
+            except Exception as e:  # noqa: BLE001
+                log.warning("[runtime] build_executor failed: %s", e, exc_info=True)
         self._wire_comms(s)
         self._wire_recall(s)
 
@@ -170,8 +190,8 @@ class AgentRuntime:
         findings provider, so the native goal producer writes concrete objectives."""
         try:
             p = self._persona
-            entities = self._config.get("world_entities", "") or ", ".join(
-                lbl for lbl, *_ in p.world_seed_topics)
+            entities = (p.world_entities or self._config.get("world_entities", "")
+                        or ", ".join(lbl for lbl, *_ in p.world_seed_topics))
             obj_text = "\n".join(f"- {t}" for _l, t in p.objectives)
 
             async def _recent_findings() -> str:
@@ -185,20 +205,6 @@ class AgentRuntime:
             self.bridge.set_goal_enrichment_context(obj_text, entities, _recent_findings)
         except Exception as e:  # noqa: BLE001
             log.warning("[runtime] goal-enrichment registration failed: %s", e)
-
-    def _wire_actuation(self) -> None:
-        """Register the agent's executor as the nmem-act runner (if it exposes a build
-        hook), so pursuit + the outcome sink close the experiential loop."""
-        ex = self._executor
-        if ex is None:
-            return
-        try:
-            # An executor may need the bridge (e.g. to build its outcome sink). Support
-            # a `build(bridge)` hook; otherwise the executor is used directly.
-            if hasattr(ex, "build"):
-                ex.build(self.bridge)
-        except Exception as e:  # noqa: BLE001
-            log.warning("[runtime] actuation build failed: %s", e, exc_info=True)
 
     def _wire_comms(self, s) -> None:
         if not (getattr(s, "communication_drive_enabled", False)
@@ -245,15 +251,14 @@ class AgentRuntime:
         """Start the goal-pursuit loop if the agent actuates. Gated by
         config['pursuit']['enabled'] (default True when an executor is present)."""
         pcfg = (self._config.get("pursuit", {}) or {})
-        if self._executor is None or self._build_proposal is None or not pcfg.get("enabled", True):
+        if self._runner is None or self._build_proposal is None or not pcfg.get("enabled", True):
             return False
-        runner = getattr(self._executor, "runner", None) or self._executor
         from nmem_act import GoalPursuit
         from nmem.agent_core.goal_store import SymbolGoalStore
         self._pursuit = GoalPursuit(
             SymbolGoalStore(self.graph.pool,
                             source_type=pcfg.get("source_type", "drive_intent")),
-            runner, self._build_proposal)
+            self._runner, self._build_proposal)
         interval = float(pcfg.get("interval_seconds", 300))
         cap = max(1, int(pcfg.get("max_per_cycle", 1)))
         self._pursue_task = asyncio.create_task(self._pursue_loop(interval, cap))
