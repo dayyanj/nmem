@@ -62,6 +62,9 @@ _LAZY = {
     "Capability": ("nmem.agent_core.capabilities", "Capability"),
     "validate_capabilities": ("nmem.agent_core.capabilities", "validate"),
     "check_capability_env": ("nmem.agent_core.capabilities", "check_env"),
+    "capability_catalog": ("nmem.agent_core.capabilities", "catalog"),
+    "PRESETS": ("nmem.agent_core.capabilities", "PRESETS"),
+    "preset_flags": ("nmem.agent_core.capabilities", "preset_flags"),
 }
 
 __all__ = list(_LAZY) + ["recall"]

@@ -219,3 +219,94 @@ def requires_closure(flag: str) -> set[str]:
         seen.add(f)
         stack.extend(CAPABILITIES.get(f, Capability(f)).requires)
     return seen
+
+
+# ── Presets (the studio's "basic" view — dependency-complete flag bundles) ───────
+PRESETS: dict[str, dict] = {
+    "memory": {
+        "label": "Memory",
+        "blurb": "A remembering agent: tiered memory + consolidation. No drives or goals.",
+        "flags": ["NMEM_SYM_CONSOLIDATION_ENABLED"],
+    },
+    "reflective": {
+        "label": "Reflective",
+        "blurb": "Adds learning: skills, proactive recall, and self-engineering recipes.",
+        "flags": ["NMEM_SYM_CONSOLIDATION_ENABLED", "NMEM_AUTONOMY__ENABLED",
+                  "NMEM_AUTONOMY__PROACTIVE_RETRIEVE", "NMEM_SELF_ENGINEERING__ENABLED",
+                  "NMEM_SELF_ENGINEERING__INCLUDE_IN_PROMPT"],
+    },
+    "full_cognition": {
+        "label": "Full cognition",
+        "blurb": "The whole mind: drives, concerns, goals, pursuit, dreamstate, prediction, recall.",
+        "flags": ["NMEM_SYM_DRIVES_ENABLED", "NMEM_SYM_DRIVES_HONEST_DISCHARGE",
+                  "NMEM_SYM_CONCERNS_ENABLED", "NMEM_SYM_GOALS_ENABLED",
+                  "NMEM_SYM_DRIVES_CREATE_GOALS", "NMEM_SYM_DRIVES_GOAL_LLM_ENRICH",
+                  "NMEM_SYM_SCHEMAS_ENABLED", "NMEM_SYM_ANALOGY_ENABLED",
+                  "NMEM_SYM_SELF_MODEL_ENABLED", "NMEM_SYM_PROCEDURES_ENABLED",
+                  "NMEM_SYM_PREDICTION_ENABLED", "NMEM_SYM_CONSOLIDATION_ENABLED",
+                  "NMEM_AUTONOMY__ENABLED", "NMEM_SYM_RECALL_DRIVE_ENABLED",
+                  "NMEM_SELF_ENGINEERING__ENABLED", "NMEM_SELF_ENGINEERING__INCLUDE_IN_PROMPT"],
+    },
+}
+
+
+def preset_flags(name: str) -> set[str]:
+    """A preset's flags expanded to include every transitive dependency (so a preset is
+    always dependency-complete). Empty for an unknown preset."""
+    base = set(PRESETS.get(name, {}).get("flags", ()))
+    for f in list(base):
+        base |= requires_closure(f)
+    return base
+
+
+# ── Enriched catalog for the UI (schema-introspected; keeps pills from drifting) ─
+def catalog(*, env=None) -> list[dict]:
+    """The capability list the studio renders: each map entry enriched with the LIVE
+    pydantic ``Field(description=…, default=…)`` from the settings classes, plus the
+    current enabled-state from ``env``. Enrichment is best-effort (lazy imports);
+    falls back to the map's own ``summary`` + default-off. Import stays cheap unless
+    this is called."""
+    meta = _field_meta()
+    on = enabled_flags(env)
+    out = []
+    for c in _CAPS:
+        desc, default = meta.get(c.flag, ("", False))
+        out.append({
+            "flag": c.flag,
+            "group": c.group,
+            "summary": desc or c.summary,          # prefer the authoritative schema description
+            "requires": list(c.requires),
+            "substrate": c.substrate,
+            "default": bool(default),
+            "enabled": c.flag in on,
+        })
+    return out
+
+
+def _field_meta() -> dict:
+    """{env_var: (description, default)} introspected from the pydantic settings classes.
+    nmem-sym fields are flat (NMEM_SYM_<NAME>); nmem sections are nested (NMEM_<SEC>__<FIELD>)."""
+    meta: dict = {}
+
+    def _default(fi):
+        d = getattr(fi, "default", None)
+        # pydantic uses a sentinel for "no default"; treat non-bools/sentinels as off
+        return d if isinstance(d, bool) else False
+
+    try:
+        from nmem_sym import config as sym_config
+        for name, fi in type(sym_config.settings).model_fields.items():
+            meta["NMEM_SYM_" + name.upper()] = (getattr(fi, "description", "") or "", _default(fi))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from nmem.config import NmemConfig
+        for sec, sfi in NmemConfig.model_fields.items():
+            sub = getattr(sfi, "annotation", None)
+            if hasattr(sub, "model_fields"):
+                for fname, ffi in sub.model_fields.items():
+                    meta["NMEM_" + sec.upper() + "__" + fname.upper()] = (
+                        getattr(ffi, "description", "") or "", _default(ffi))
+    except Exception:  # noqa: BLE001
+        pass
+    return meta
