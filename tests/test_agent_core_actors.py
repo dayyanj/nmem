@@ -34,6 +34,19 @@ def test_safe_name():
     assert _safe_name("GET /v1/items/{id}") == "GET_v1_items_id"
 
 
+def test_mcp_connect_failure_is_graceful():
+    # a bad MCP server must not kill agent boot: connect_mcp returns ([], None), not an exception.
+    import pytest
+    pytest.importorskip("mcp")
+    from nmem.agent_core.actors.mcp import connect_mcp
+
+    async def go():
+        actions, aclose = await connect_mcp(
+            {"name": "nope", "transport": "stdio", "command": "definitely-not-a-real-binary-xyz"})
+        assert actions == [] and aclose is None
+    asyncio.run(go())
+
+
 def test_assemble_registry_from_webhooks():
     async def go():
         reg, aclose = await assemble_registry({"webhooks": [

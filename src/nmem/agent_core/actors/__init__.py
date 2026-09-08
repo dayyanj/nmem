@@ -33,6 +33,11 @@ def _chat_with_tools(backend):
     """Adapt an agent_core.backend to nmem-act's OpenAIToolSelector callable contract:
     ``async (messages, tools) -> (content, [{id,name,arguments}])``."""
     async def cwt(messages: list[dict], tools: list[dict]):
+        # No permitted tools this step (gate filtered them all out) → a plain chat. Passing an
+        # empty `tools` array is rejected by strict servers ("tools must not be an empty array"),
+        # and with nothing to call the model should just answer / conclude.
+        if not tools:
+            return await backend.chat(messages, max_tokens=1024), []
         res = await backend.chat_with_tools(messages, tools, tool_choice="auto", max_tokens=1024)
         calls = [{"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in res.tool_calls]
         return res.content, calls
