@@ -79,14 +79,13 @@ but hasn't graduated — the **experiential outcome sink** and the **peer/comms 
 today copies ~200 LOC of michelle's `actuation.py` + `peer.py`. Those two (Group 2) are the real gap:
 they decide how effortless a new *actor* is, not just a new thinker.
 
-**Group 1 — dedup thinning** (michelle still carries copies of already-graduated code; low risk):
-- **A. `memory.py` → `build_memory`/`build_symbol_graph`.** michelle constructs mem+graph with her own
-  config-reading — a near-duplicate. Delegate after a small config-shape map (carry her belief/policy
-  trust). Keeps her `get_mem`/`recall`/`remember` accessors. *Also proves `build_memory` on the live
-  agent* (only construct-tested by the example today). Risk: low–med.
-- **B. `model_backend.py` → `agent_core.backend`.** michelle's LLM client is the *verbatim source* of
-  the graduated module → make her file `from nmem.agent_core.backend import *`, delete the duplicate.
-  Risk: low (5-min win; a new provider/family fix then lands once).
+**Group 1 — dedup thinning — ✅ DONE 2026-09-08 (michelle 0e4edb6):**
+- ✅ **A. `memory.py` → `build_memory`/`build_symbol_graph`.** `init_memory`/`init_symbol_graph` now
+  delegate via a config shim that preserves michelle's exact structural values (domain=michelle-cognition
+  + her custom edge_types). Kept `get_mem`/`recall`/`remember`. Validated live: graph reconnected to her
+  existing domain, data intact (836 nodes / 214 ltm), 0 tracebacks. Proves `build_memory` on the live agent.
+- ✅ **B. `model_backend.py` → `agent_core.backend`.** 239 → 17 LOC re-export; `get_backend`/`init_backend`/
+  `build_backend` + classes preserved. Brain still gemma via the re-export.
 
 **Group 2 — reusable-capability graduations** (the real prize — make a new *actor* a config, not a copy):
 - **C. Experiential outcome sink** *(highest value, trickiest)*. michelle's `actuation._make_sink`
@@ -119,9 +118,9 @@ they decide how effortless a new *actor* is, not just a new thinker.
 `sandbox_client`), `build_proposal` specifics, persona DATA + prompt files, the agent's I/O (FastAPI /
 voice / CLI) + bespoke endpoints (michelle's `converse`), and config values.
 
-**Suggested order:** B → A → D → C → F → (E, G). B/A are quick dedup; D completes comms; **C is the item
-that most changes how effortless a new *actor* is** (do it with focus for the careful validation); F only
-once a second HTTP agent is imminent. None block standing up a new agent today.
+**Suggested order:** ~~B → A~~ ✅ → **D → C** → F → (E, G). B/A done (dedup); D completes comms next; **C is
+the item that most changes how effortless a new *actor* is** (do it with focus for the careful
+validation); F only once a second HTTP agent is imminent. None block standing up a new agent today.
 
 ### EXECUTED 2026-09-07 — Phases 1–3 done; PAUSED before Phase 4 (founder)
 - ✅ **Phase 1** (michelle f0aac72): deleted `curiosity.py` (shadow-compare: native A5 producer at
