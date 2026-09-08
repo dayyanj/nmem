@@ -223,43 +223,40 @@ consistent with Spwig's AGPL ethos).
 
 ## 13. RESUME — next steps to a running studio (post-compact start here)
 
-**Where we are:** the whole config-authoring **backend is built + tested** (no web layer yet):
-`agent_core.capabilities` (map/validator/`catalog()`/`PRESETS`/`preset_flags`), `agent_core.config_writer`
-(`build_agent_files`/`write_agent`/`render_capabilities_env`/`render_agent_yaml`/`split_secrets`),
-`Persona.from_dict/to_dict`. `AgentRuntime` fail-fasts on bad flag combos. Ops router
-(`agent_core.ops.make_ops_router`) is the dashboard backend. The entry-UI is designed:
-`docs/mockups/studio-wizard.html` (grounded in the real catalog; the SPA to productionise).
+**Where we are:** Steps 1–3 are **DONE + validated live** (michelle's venv on dj-ai, real Postgres +
+real Gemma). The studio is a runnable single-agent appliance:
+- `agent_core.studio` — the `/studio/*` router (`catalog`/`test-llm`/`list-models`/`create`),
+  `create_studio_app()` (router + SPA at `/`), `studio_index_html()`. Commit `a348a88`.
+- `src/nmem/agent_core/studio_ui/index.html` — the productionised wizard SPA, generated from the
+  design mockup by `docs/mockups/build_studio_spa.py` (mockup = SoT for markup/style; generator swaps
+  its simulated `<script>` for live `/studio/*` wiring). Commit `ce1f087`.
+- `agent_core.studio_server` — the **single-agent appliance** (wizard mode ↔ agent mode; create→boot
+  via container restart; agent-dir discovery; secrets.env at 0600; `provision_db`). `docker/studio/`
+  = Dockerfile + compose (studio + pgvector + redis, external LLM) + entrypoint.sh + Dockerfile.dockerignore.
+  Commit `6b907ab`. **Image build:** kick `docker compose build` from `docker/studio/` (long: CPU torch +
+  bundled all-MiniLM). Python path is proven; the build only validates layering.
+- Config-authoring backend (`capabilities` map/validator/`catalog()`/`PRESETS`, `config_writer`) as before,
+  now also emitting `backends.brain` + `api_key_env` key resolution (the two gaps the boot exposed).
+- **Topology DECIDED (founder, 2026-09-08):** single-agent appliance (one image = studio + the agent).
+  Multi-agent = several appliances or the later control-plane topology.
 
-**Build order (each step is small; validate on michelle's venv + against the mockup):**
+**Build order — resume at Step 4:**
 
-1. **`agent_core/studio.py` — the `/studio/*` FastAPI router** (mirror `ops.py`: lazy FastAPI import,
-   late-bound). Endpoints:
-   - `GET  /studio/catalog` → `{catalog: capability_catalog(), presets: PRESETS}` (the wizard's data).
-   - `POST /studio/test-llm` `{provider,base_url,model,key,dialect}` → build `agent_core.backend`
-     (OpenAICompatible/Anthropic), one-token chat, return `{ok,model,latency_ms,error}`. Key used, never
-     returned. (This makes the mockup's Test button real; reuses the graduated backend.)
-   - `POST /studio/list-models` `{base_url,key}` → server-side `GET {base}/models` → list.
-   - `POST /studio/create` `{spec}` → `config_writer.write_agent(dir, spec)` → store `secrets` to the
-     secret file/env → (optional) bootstrap + start an `AgentRuntime`. Return status.
-   - Add a tiny `test_studio_router.py` (catalog shape; test-llm error classification with a stub backend).
-2. **Productionise the wizard SPA** from `docs/mockups/studio-wizard.html`: replace the inlined `CATALOG`
-   with a `fetch('/studio/catalog')`, wire Test→`/studio/test-llm`, fetch-models→`/studio/list-models`,
-   Create→`/studio/create`. Serve it at `/` from the same app. Keep the v3 design (warm type, mascot slot,
-   dependency-enforced pills, env preview). Mascot art: founder to supply (drop-in SVG/data-URI).
-3. **First-boot + compose image**: `Dockerfile` + `docker-compose.yml` (studio app + postgres/pgvector +
-   redis + bundled all-MiniLM embedder; external LLM). First boot: create the agent DB, land on the wizard;
-   after Create, `build_memory`/`build_symbol_graph` self-provision tables, runtime starts. Persist via named
-   volumes.
-4. **Dashboard page** = mount `make_ops_router` behind the studio; give it a face (health + `/admin/*`).
+1. ~~`agent_core/studio.py` — the `/studio/*` router~~ **DONE** (`a348a88`).
+2. ~~Productionise the wizard SPA~~ **DONE** (`ce1f087`).
+3. ~~First-boot + compose image (single-agent appliance)~~ **DONE** (`6b907ab`); image-build layering is
+   the only unverified bit.
+4. **Dashboard page** = give agent mode a face over `make_ops_router` (already mounted): health + `/admin/*`
+   as a small UI, not raw JSON. (`studio_server.build_agent_app` currently serves a placeholder landing.)
 5. **Chat page** needs the **G graduation** (`build_memory_context` + persona system prompt into agent_core;
    michelle's converse is the reference). **Viz**: bundle nmem-viz, point at the agent's graph.
 6. **Actors** (later): `WebhookToolExecutor` + MCP executor over nmem-act tool-calling (no-code tools) +
    the plugin-mount for custom executors (§5).
 7. **Hive** (last): Path B from `nmem-migration-hive-handover.md`, as an "advanced: shared world" flow.
 
-**Decide before the web build (constrains architecture):** the license split / studio↔engine boundary
-(§9, §11) — in-process vs HTTP. The `/studio/*` router above assumes in-process-with-HTTP, which is fine
-either way, but the *packaging/licensing* of the SPA+router as the proprietary layer depends on this call.
+**Still open (founder call, does NOT block Steps 4–5):** the license split / studio↔engine boundary
+(§9, §11). The appliance is in-process-with-HTTP, which works under either license model; only the
+*packaging/licensing* of the SPA + `/studio/*` + appliance as the proprietary layer depends on this call.
 
 **Guardrails carried in:** env-flag rules are now enforced by `config_writer` (don't bypass it — write env
 only through it). Default-off/additive. DJ-AI FROZEN. The nmem/nmem-act/nmem-sym repos also have an
