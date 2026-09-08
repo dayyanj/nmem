@@ -270,10 +270,12 @@ real Gemma). The studio is a runnable single-agent appliance:
 6. **Actors — DONE** (`bdddf51`, `997dac9`, `c16a17e`, `e1ad4c2`, `21044da`, `ce96061`, `ac9fd53`). The
    `agent_core.actors` seam: **a protocol is just an adapter that emits nmem-act Actions; the executor, gate,
    and learning loop are one, never forked.** `build_executor(registry, backend=…)` = a gated,
-   outcome-recording ToolCallingExecutor driven by the agent's brain. Four adapters, all validated:
-   **webhook/OpenAPI** (HTTP endpoints as tools), **MCP** (Streamable HTTP + stdio, official SDK, v1/v2-tolerant),
-   **plugin-mount** (drop-in Python), **A2A** (delegate a task to another agent; message/send→tasks/send
-   fallback). Appliance wiring: config_writer persists `actors:`/`autonomy:`; agent mode assembles the registry
+   outcome-recording ToolCallingExecutor driven by the agent's brain. Five adapters, all validated:
+   **webhook/OpenAPI** (HTTP endpoints as tools), **UTCP** (`d7270f1` — lightweight MCP-alternative: a UTCP
+   manual's HTTP tools via the same webhook path; field-tolerant, non-HTTP skipped), **MCP** (Streamable HTTP +
+   stdio, official SDK, v1/v2-tolerant), **plugin-mount** (drop-in Python), **A2A** (delegate a task to another
+   agent; message/send→tasks/send fallback). (`d7270f1` also fixed a real webhook GET bug — an empty params
+   dict made httpx drop the URL's query string.) Appliance wiring: config_writer persists `actors:`/`autonomy:`; agent mode assembles the registry
    in a lifespan hook, builds the gated executor, and exposes `GET /tools` + `POST /act`; dashboard has an Act
    panel; wizard Step 04 authors tools + autonomy. Autonomy gate defaults read_only (safe). Full container smoke:
    create-with-webhook → agent mode → `/tools` → `/act` drives Gemma to call the tool. `mcp` bundled in the image.
