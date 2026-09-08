@@ -1,0 +1,287 @@
+# Path B — hive agency-scoping + graph-keeper (design)
+
+**Status:** design-only. No code, no schema, no DB touched by this doc.
+**Companion / parent:** `nmem-migration-hive-handover.md` §4–5 (this is the detailed build spec
+its §5-B pointed to). **Forcing agent:** the refinery's `sales_head`, now live on the cognitive
+runtime in **isolated** mode (`refinery-sales-head`, DB `sales_head_ai`) — Stage-2 moves its graph
+from isolated → the shared refinery↔DJ-AI graph, which is exactly what triggers this work.
+**Written from:** the refinery-migration session. **Coordinate with:** the nmem-core session (active
+in `nmem/src/nmem/agent_core` — the studio appliance). This doc is the coordination artifact.
+**nmem-core position recorded:** see **§10** (reviewed 2026-09-08; ownership split + agent_core-side
+design agreed; one correction — the destructive `recover_orphaned` is agent_core-owned, not nmem-sym).
+
+---
+
+## 0. Why now, and the one-line thesis
+
+The migration proved (technical_writer, sales_head) that the runtime works **as-is** in the
+refinery — with **zero library changes** — precisely because both used nmem as delivered
+(Path A / isolated). The first agent that needs nmem-sym **agency on a shared graph** forces the
+library change. sales_head is that agent. This doc specifies it.
+
+> **Shared memory, agent-scoped agency.** Multiple agents contribute to ONE symbol-graph
+> world-model, but each keeps its own goals/drives/concerns/pursuit, `owner_agent`-scoped, and the
+> graph-global maintenance has exactly ONE keeper.
+
+Everything here is **additive + default-off**: `owner_agent` is nullable (NULL = today's behavior),
+`HiveConfig` defaults to `isolated`. michelle and DJ-AI stay byte-identical until a process opts in.
+
+---
+
+## 1. Current state (verified 2026-09-08)
+
+**Conscious memory (nmem core) is already hive-ready.** LTM/journal/entity/shared/skills scope by
+`agent_id` (+ `project_scope`) — e.g. `ltm` upserts by `(agent_id, key, project_scope)`,
+consolidation dedups on it. The refinery proves this with 9 agents on one DB. **Nothing to do here.**
+
+**nmem-sym agency is unscoped — greenfield:**
+- `SymbolBridge.__init__(self, graph, config=None)` — **no `agent_id`** (`bridge.py:223`).
+- Agency tables carry **no owner column** (`symbol_goals` et al.). `symbol_failures` already has
+  `agent_id` — the template.
+- `SymbolGoalStore(pool, *, source_type)` filters by `source_type` only; `recover_orphaned()` does a
+  **table-wide** `UPDATE symbol_goals SET status='pending' WHERE status='pursuing'` — resets EVERY
+  agent's in-flight goals (`agent_core/goal_store.py:58`).
+- `get_actionable_goals`/`create_goal`/`create_goal_from_intent` take **no owner**.
+- Writeback author is **hardcoded** `agent_id="nmem-sym"` (`api.py:591` default, `:611` literal in the
+  INSERT) — in a hive this collapses all extracted-knowledge provenance to one synthetic author.
+
+**Path B has NOT been started** by any session (grepped: no `owner_agent`/`HiveConfig`/`graph_role`).
+
+---
+
+## 2. Shape decision — B1 (one DB + `owner_agent`)
+
+The refinery already has all agents in one DB; the shared graph is one graph. Use **B1**: agency
+tables gain an `owner_agent` column, agency queries scope to it, graph tables stay shared. (B2 — a
+separate per-agent agency DB + a shared world-model DB — is stronger physical isolation but requires
+nmem-sym to take two DSNs; note it as a future option, not the first cut.)
+
+---
+
+## 3. B-i — Agency scoping (the bounded half)
+
+### 3.1 Schema (needs explicit approval + a deliberate migration)
+Add `owner_agent TEXT` (nullable; **NULL = shared/legacy**, preserving today's behavior) + a
+supporting index to the agency tables:
+`symbol_goals`, `symbol_concerns`, `symbol_pending_utterances`, `symbol_obligations`,
+`symbol_requestors`, `symbol_episodes`.
+(Verify the live table list at build time — the schema has moved with 1.0. `symbol_failures.agent_id`
+is the naming/þindex template.) Index: `(owner_agent, status)` where the hot queries filter both.
+
+### 3.2 The `SymbolBridge(agent_id=…)` seam
+Thread an optional `agent_id` into the bridge and every **agency** read/write:
+- `SymbolBridge.__init__(self, graph, config=None, *, agent_id: str | None = None)`.
+- goal create / `get_actionable_goals` / `mark_goal_pursuing` / `resolve_goal`; concern
+  reinforce/query; pending-utterance select; obligation impose/query; episode write; requestor.
+- **Scope is strict `= :me` for agency** — an agent may only see/pursue its OWN goals/concerns/etc.
+  When `agent_id is None` (isolated / legacy), queries are unscoped (today's behavior) → additive.
+
+### 3.3 `SymbolGoalStore` owner filter (the sharp edge)
+- `SymbolGoalStore(pool, *, source_type, owner_agent=None)`; `actionable`/`claim`/`resolve`/`release`
+  filter by `owner_agent` when set.
+- **`recover_orphaned()` MUST be owner-scoped** — `… WHERE status='pursuing' AND owner_agent = :me`.
+  This is the one that's actively destructive table-wide today.
+
+### 3.4 Writeback-author fix
+`api.py` extract-writeback must author as the **owning agent** (from the bridge's `agent_id`) — or a
+designated shared-knowledge identity — not the literal `"nmem-sym"`. Otherwise a hive collapses all
+provenance into one synthetic author and the "many agents touched this" salience signal is lost.
+
+### 3.5 Backward-compat contract
+Every change is gated on `owner_agent`/`agent_id` being set. `NULL`/`None` reproduces today exactly.
+michelle (isolated, sole pursuer) and DJ-AI (frozen) are byte-identical until they pass an `agent_id`.
+
+---
+
+## 4. B-ii — Graph-keeper split (the architectural half) — **THE critical one at scale**
+
+Even with agency perfectly scoped, the **graph-global** maintenance can't run N-up on one shared
+graph: dreamstate, clustering, edge-type auto-promotion, and the dreamstate/cluster **consolidation
+hooks** would duplicate the heavy generative cycle, N× the LLM spend, and race on the same
+`symbol_*` tables. Separate **graph-global maintenance** from **per-agent cognition** (own drives,
+pursuit, own journal→LTM consolidation, own LTM→graph *contribution* — idempotent on the shared
+graph, stays per-agent). Exactly ONE process runs the graph-global loops; every other agent is a
+contributor with those loops OFF.
+
+### 4.1 Current reality (audited 2026-09-08) — the problem is already live at N=2
+- The shared graph is in **`spwig_refinery`** (18 `symbol_*` tables). BOTH the refinery process and
+  the DJ-AI process attach a `SymbolBridge` to it (DJ-AI's main nmem+graph DSN is `…/spwig_refinery`;
+  `djai_founder` is only its separate founder-KB).
+- **DJ-AI is the de-facto keeper.** The refinery is a **contributor**: `nmem_instance.py` sets
+  `dreamstate_on_nightly=False` — *"DJ-AI is the sole nightly dreamstate driver to avoid two services
+  running the heavy generative cycle over the same symbol_* tables."* The refinery still extracts
+  (feeds) + consumes hypotheses via search augmentation.
+- **So the keeper role already exists and is occupied — but enforced by a HAND-SET CONFIG FLAG.**
+  This works at N=2. It does NOT scale: every new agent-process must *know* to set the flag, and one
+  misconfiguration = double dreamstate. This is precisely the "20 agents all running dreamstate"
+  failure. (May also relate to the ~11s/turn hypothesis-surfacing perf issue on that graph.)
+
+### 4.2 The fix: keeper election **by construction**, not by config discipline
+Do NOT rely on each process being configured correctly. Enforce a single keeper at the DB:
+- **Advisory-lock self-election.** At startup, any process *willing* to be keeper tries
+  `pg_try_advisory_lock(<graph-scoped key>)` (session-level, on the graph's DB). Exactly ONE wins and
+  runs the graph-global loops; all others fall back to **contributor** regardless of their config. If
+  the keeper dies, its session lock releases and another willing process auto-acquires on its next
+  attempt → **automatic failover, no split-brain possible.** The heavy cycle can run in at most one
+  process *by construction*, however many agents join.
+- `HiveConfig.graph_role` becomes a *preference* ("keeper" = willing to hold the lock; "contributor"
+  = never tries). The **lock** is the enforcement; the flag only expresses willingness. This turns
+  the handover §3.3 hand-audit into a guarantee.
+- Alternative (cleaner as N grows): a **dedicated graph-keeper process** (not tied to any agent) that
+  always holds the lock and runs only the global loops; all agents are pure contributors. The
+  advisory-lock design supports this with zero change — the dedicated process is just the one that
+  always wins the lock. Recommend building the lock now and migrating to a dedicated keeper later.
+
+### 4.3 Consequence for sales_head Stage-2
+sales_head joins `spwig_refinery`'s graph as a **contributor** (never a keeper); DJ-AI stays keeper.
+But we should land 4.2 (advisory-lock enforcement) so that as air / others follow, the singleton
+keeper is guaranteed, not a flag we have to remember to set on every new service.
+
+---
+
+## 5. B-iii — `HiveConfig` (make it a first-class option)
+
+Add to agent-core:
+```
+HiveConfig { mode: "isolated" | "shared_world",  agent_id: str,  graph_role: "keeper" | "contributor" }
+```
+- `isolated` (default) reproduces today exactly (no owner scoping, agent runs its own maintenance).
+- `shared_world` drives: (a) agency queries become `owner_agent`-scoped via the bridge seam (§3.2),
+  and (b) the runtime runs the graph-global maintenance loops only if `graph_role == "keeper"`.
+- This is where §3.3 of the handover ("graph-global flags owned by the keeper") gets **enforced in
+  code** instead of by the hand-audit we do today.
+
+---
+
+## 6. sales_head's concrete Stage-2 migration path
+
+sales_head is the first agent through this, so its cutover *is* the acceptance:
+1. Build §3–§5 in nmem-sym + agent-core (additive/default-off), with the hive acceptance test (§7).
+2. Get the `owner_agent` schema migration approved + authored (refinery constraint: DB schema needs
+   explicit approval + a deliberate migration; this touches the shared graph DJ-AI reads → coordinate
+   with the DJ-AI freeze).
+3. Determine the graph-keeper for the refinery↔DJ-AI graph (§4 OPEN).
+4. Flip sales_head's `HiveConfig` from `isolated` → `shared_world` (`graph_role: contributor`; the
+   keeper stays whoever §4 designates) and repoint its symbol graph from `sales_head_ai` → the shared
+   graph. Its conscious memory can move to the shared hive DB in the same step (already hive-safe).
+5. Validate: sales_head reads DJ-AI's / other agents' world-model, contributes its own, and its
+   agency stays private (never claims another agent's goal).
+
+---
+
+## 7. Hive acceptance test (the gate — build before any 2nd agent shares a graph)
+
+Two `SymbolBridge`es (agents A, B) on ONE DB:
+- **A's pursuit NEVER claims B's goal**; A never sees B's concerns / pending-utterances /
+  obligations / episodes.
+- **Both read the shared graph** — a node A extracted is visible to B.
+- Only the **graph-keeper** runs dreamstate (B's contributor runtime does not fire it).
+- Run it under **codex adversarial reproduction** too (try to make A see B's agency) — the dual-review
+  pattern that's caught the real defects so far.
+
+This is the acceptance gate: sales_head does not go `shared_world` until it passes.
+
+---
+
+## 8. Sequencing, coordination, and guards
+
+1. **Design (this doc) → review** with the nmem-core session (they own `agent_core`; §5 HiveConfig +
+   §4 keeper role touch it) so we don't collide in the shared working tree.
+2. **Build B-i (agency scoping)** — the bounded half — first; it's testable with the acceptance test
+   using two synthetic bridges (no real agent needed).
+3. **Build B-ii (graph-keeper) + B-iii (HiveConfig).**
+4. **Then** sales_head Stage-2 (§6). Only after Stage-1b (real gated actuation, still isolated) bakes.
+5. **Guards:** additive/default-off throughout (DJ-AI frozen stays byte-identical); the `owner_agent`
+   migration is an explicit, approved, deliberate schema change on the shared DB; no behavioral edit
+   to nmem-sym lands without the acceptance test + a codex pass.
+
+---
+
+## 9. Effort estimate (rough)
+- B-i agency scoping: schema migration + ~8 agency call-sites threaded + goal_store owner filter +
+  writeback author — **the bulk, but mechanical + testable in isolation.**
+- B-ii graph-keeper: mostly a role flag + moving the graph-global loop starts behind it — **small
+  code, but the "who is keeper on the shared graph" decision is the real work.**
+- B-iii HiveConfig: a small config object + wiring — **small.**
+- Acceptance test + codex verification: **the confidence, not the LOC.**
+
+---
+
+## 10. nmem-core (agent_core) coordination position — reviewed 2026-09-08
+
+Written by the **nmem-core session** (owns `nmem/src/nmem/agent_core` + the studio appliance; Steps 1–6
+of the studio landed: router / SPA / appliance / dashboard / grounded chat / live viz / **actors**). This
+is the §8.1 review. Verdict: **design endorsed as-is.** B1 + strict `=:me` agency scope + advisory-lock
+keeper-by-construction are the right calls. Notes, one correction, and the ownership split below.
+
+### 10.1 Ownership split (so we don't collide in the shared working tree)
+- **agent_core owns (this session):**
+  - `agent_core/goal_store.py` — `SymbolGoalStore` gets `owner_agent=None` + owner-scoped
+    `actionable`/`claim`/`resolve` and (critically) `recover_orphaned` (§3.3). **This file is agent_core,
+    not nmem-sym — see §10.2.**
+  - `HiveConfig` object + an `agent_core/hive.py` (the advisory-lock keeper-election helper, §4.2).
+  - `AgentRuntime` wiring — thread `agent_id` into `build_symbol_graph`→bridge; gate the graph-global
+    loop starts on `graph_role`/the keeper lock (§4/§5).
+  - `config_writer` / `render_agent_yaml` — persist a `hive:` block (see §10.3).
+  - The studio surface for hive (a wizard toggle; later — §10.6).
+- **nmem-sym owns (refinery-migration session):** the `owner_agent` schema migration (§3.1), threading
+  `agent_id` through the bridge's agency read/writes (§3.2), the writeback-author fix (§3.4), and the
+  graph-global loop internals.
+- **The seam between us (agree the signatures once, build independently):**
+  - `SymbolBridge.__init__(self, graph, config=None, *, agent_id=None)` — nmem-sym adds the param;
+    agent_core's `build_symbol_graph` passes `HiveConfig.agent_id`.
+  - `SymbolGoalStore(pool, *, source_type, owner_agent=None)` — agent_core adds `owner_agent`; its value
+    must equal the `owner_agent` column nmem-sym adds, and the store's owner-scoped SQL assumes that
+    column exists. **So the store change lands WITH the migration, not before.**
+
+### 10.2 Correction: the destructive `recover_orphaned` is agent_core, and it's live NOW
+`recover_orphaned` (the table-wide `UPDATE symbol_goals SET status='pending' WHERE status='pursuing'`) is
+`nmem/src/nmem/agent_core/goal_store.py:58-61` — **agent_core, this session's file** (graduated from
+michelle in Phase 3), not nmem-sym. Confirmed today. Consequence: the moment a 2nd agent's goals live in
+the same `symbol_goals` (i.e. sales_head Stage-2), any agent's startup recovery resets **every** agent's
+in-flight goals. This is the single sharpest edge in B-i and it's mine to fix. Ready to land the
+`owner_agent` filter (additive, default `None` = today's table-wide behavior) the moment the column is
+approved + migrated — it pairs 1:1 with the schema change and is unit-testable with two synthetic stores.
+
+### 10.3 `HiveConfig` placement — confirmed, with a concrete shape (precedent already set)
+§5 says "add to agent-core" — agreed, and Step 6 just set the exact precedent: the appliance already reads
+per-agent `actors:` and `autonomy:` blocks from `agent.yaml`, written by `config_writer` and consumed by
+`AgentRuntime`. `hive:` slots in the same way — one more optional block:
+```
+hive: { mode: isolated|shared_world, agent_id: <id>, graph_role: keeper|contributor }
+```
+`config_writer.render_agent_yaml(..., hive=…)` persists it; `AgentRuntime` reads `config["hive"]`; default
+(absent) = `isolated` = today. No new config system — it rides the one built in Step 6.
+
+### 10.4 Keeper election lives in agent_core, gated in the runtime
+`agent_core/hive.py: acquire_keeper_lock(pool) -> bool` (session-level `pg_try_advisory_lock` on the
+graph DB, §4.2). `AgentRuntime.start()` calls it when `mode == shared_world`; the graph-global loop starts
+(dreamstate / nightly graph synthesis / clustering / edge-type auto-promotion) gate on holding it —
+`graph_role: contributor` simply never tries. Endorse building the lock now (not the dedicated-keeper
+process yet); the dedicated keeper is just "the process that always wins the lock," zero API change later.
+
+### 10.5 A2A (shipped) vs shared_world (this doc) are two DIFFERENT axes — keep them distinct
+Step 6 shipped **A2A**: loose, network inter-agent *task delegation* (agent A calls agent B via
+`message/send`; both stay isolated, no shared substrate). This doc's **shared_world** is the tight axis: one
+symbol-graph substrate, owner-scoped agency, one keeper. They're complementary, not competing — the studio
+should offer **both**: "add another agent as an A2A tool" (loose, today) and "join a shared world" (tight,
+Path B). Don't let one absorb the other in the UI or the mental model.
+
+### 10.6 Studio/appliance consequence (later, after B-i/B-ii + the acceptance gate)
+The single-agent appliance (Step 3) is **Path A / isolated** by construction — one image = one agent, its
+own DB (`NMEM_AGENT_DB`, default `agent_nmem`). Turning on `shared_world` in the studio therefore means a
+*different* deployment shape: point the agent's **symbol-graph DSN at the shared graph** (not its own
+`agent_nmem`), set the `hive:` block, and ensure exactly one keeper across the fleet. That's the
+control-plane / multi-appliance topology, and it's a studio surface I'll add only **after** B-i + B-ii land
+and the §7 acceptance test + codex pass. Not now.
+
+### 10.7 Agreed sequencing (mirrors §8, with owners)
+1. **This review (done).** Signatures in §10.1 are the contract.
+2. **B-i:** nmem-sym lands the `owner_agent` migration + bridge `agent_id` threading + writeback author;
+   agent_core lands the `SymbolGoalStore(owner_agent=…)` filter + `recover_orphaned` scope **in lockstep
+   with the migration**. Prove with the §7 acceptance test (two synthetic bridges) + a codex pass.
+3. **B-ii/B-iii:** agent_core lands `agent_core/hive.py` (advisory lock) + `HiveConfig` + the runtime
+   keeper-gate; nmem-sym moves the graph-global loop starts behind the gate.
+4. **Then** sales_head Stage-2 (§6), never before the acceptance test passes.
+Guards unchanged: additive/default-off; DJ-AI frozen stays byte-identical; the schema change is explicit +
+approved + deliberate; nothing behavioral lands in nmem-sym **or agent_core** without the acceptance test + codex.
