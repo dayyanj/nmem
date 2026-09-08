@@ -253,9 +253,16 @@ real Gemma). The studio is a runnable single-agent appliance:
    than uvicorn served on (asyncpg connections bound to the wrong loop → every `/admin/*` = "another operation
    in progress"); runtime now starts in a FastAPI **lifespan** hook on the serving loop. Full container smoke
    passed: `compose up` → create over HTTP → SIGTERM/restart seam → agent boots ~15s → dashboard + `/admin/*` ok.
-5. **Chat page (RESUME HERE)** needs the **G graduation** (`build_memory_context` + persona system prompt into
-   agent_core; michelle's converse is the reference) so agent mode can hold a grounded conversation. **Viz**:
-   bundle nmem-viz, point at the agent's graph.
+5. **Chat** — **DONE** (`1023724`). The **G graduation**: `agent_core.chat` (`system_prompt(persona)` +
+   `build_context` = `mem.prompt.build(...).full_injection` + `converse(runtime,msg)`); `AgentRuntime.converse()`;
+   studio `POST /chat` + a chat panel in the dashboard (client keeps history, memory grounds each turn).
+   Validated live on Gemma (agent recites seeded objectives, coherent 2-turn). michelle NOT yet thinned onto it
+   (her capability-context prefix + persona files are hers) — optional follow-up.
+   **Viz (RESUME HERE, but BLOCKED):** bundle nmem-viz at the agent's graph. Two blockers to clear first:
+   (a) nmem-viz is an UNCOMMITTED NAS repo (`apps/nmem-viz`, no git/Dockerfile) — must be packaged before it can
+   ship in the image; (b) `nmem_sym/viz_events.py` enables on `NMEM_SYM_VIZ_ENABLED == "1"`, but `config_writer`
+   writes booleans as `true` — reconcile the flag semantics (make viz_events use the `_on`-style check, or the
+   map special-case it) or the wizard toggle silently no-ops. Until then, viz stays a manual/external step.
 6. **Actors** (later): `WebhookToolExecutor` + MCP executor over nmem-act tool-calling (no-code tools) +
    the plugin-mount for custom executors (§5).
 7. **Hive** (last): Path B from `nmem-migration-hive-handover.md`, as an "advanced: shared world" flow.
