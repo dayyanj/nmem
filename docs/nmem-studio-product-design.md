@@ -246,10 +246,16 @@ real Gemma). The studio is a runnable single-agent appliance:
 2. ~~Productionise the wizard SPA~~ **DONE** (`ce1f087`).
 3. ~~First-boot + compose image (single-agent appliance)~~ **DONE** (`6b907ab`); image-build layering is
    the only unverified bit.
-4. **Dashboard page** = give agent mode a face over `make_ops_router` (already mounted): health + `/admin/*`
-   as a small UI, not raw JSON. (`studio_server.build_agent_app` currently serves a placeholder landing.)
-5. **Chat page** needs the **G graduation** (`build_memory_context` + persona system prompt into agent_core;
-   michelle's converse is the reference). **Viz**: bundle nmem-viz, point at the agent's graph.
+4. ~~Dashboard page — agent-mode face over `make_ops_router`~~ **DONE** (`b1a338e`). `studio_ui/dashboard.html`
+   served at `/` in agent mode: live `/health` (status/brain/cognition-states/plugins, 5s refresh) + a panel
+   driving `/admin/*` (consolidate/nightly/dreamstate + query-driven probe_recipes/seed_recall). `/health` now
+   carries `agent_id`. **Also fixed a real bug it exposed:** agent mode started the runtime on a different loop
+   than uvicorn served on (asyncpg connections bound to the wrong loop → every `/admin/*` = "another operation
+   in progress"); runtime now starts in a FastAPI **lifespan** hook on the serving loop. Full container smoke
+   passed: `compose up` → create over HTTP → SIGTERM/restart seam → agent boots ~15s → dashboard + `/admin/*` ok.
+5. **Chat page (RESUME HERE)** needs the **G graduation** (`build_memory_context` + persona system prompt into
+   agent_core; michelle's converse is the reference) so agent mode can hold a grounded conversation. **Viz**:
+   bundle nmem-viz, point at the agent's graph.
 6. **Actors** (later): `WebhookToolExecutor` + MCP executor over nmem-act tool-calling (no-code tools) +
    the plugin-mount for custom executors (§5).
 7. **Hive** (last): Path B from `nmem-migration-hive-handover.md`, as an "advanced: shared world" flow.
