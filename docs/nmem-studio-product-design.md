@@ -277,9 +277,15 @@ real Gemma). The studio is a runnable single-agent appliance:
    in a lifespan hook, builds the gated executor, and exposes `GET /tools` + `POST /act`; dashboard has an Act
    panel; wizard Step 04 authors tools + autonomy. Autonomy gate defaults read_only (safe). Full container smoke:
    create-with-webhook → agent mode → `/tools` → `/act` drives Gemma to call the tool. `mcp` bundled in the image.
-7. **Hive (RESUME HERE, last):** Path B from `nmem-migration-hive-handover.md`, as an "advanced: shared world"
-   flow. The other session is scoping it — see `docs/path-b-hive-scoping-design.md`. A2A (Step 6) is the
-   agent-to-agent primitive it builds on.
+7. **Hive (last) — in coordination.** Path B from `nmem-migration-hive-handover.md`, as an "advanced: shared
+   world" flow. Reviewed the refinery-migration session's spec and recorded the nmem-core position in
+   `docs/path-b-hive-scoping-design.md` §10: ownership split, seam signatures, and the correction that the
+   destructive `recover_orphaned` is agent_core-owned (`goal_store.py`). agent_core slices when B-i starts:
+   `SymbolGoalStore(owner_agent=…)` + scoped `recover_orphaned`, `HiveConfig` (rides the Step-6
+   actors/autonomy config-block precedent), `agent_core/hive.py` advisory-lock keeper election gated in
+   AgentRuntime, `config_writer` `hive:` block. NOTE: A2A (Step 6, shipped) is the *loose* inter-agent axis;
+   shared_world is the *tight* shared-graph axis — the studio offers both. Gated on schema approval + the §7
+   acceptance test + a codex pass; DJ-AI frozen.
 
 **Still open (founder call, does NOT block Steps 4–5):** the license split / studio↔engine boundary
 (§9, §11). The appliance is in-process-with-HTTP, which works under either license model; only the
