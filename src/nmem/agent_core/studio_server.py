@@ -147,6 +147,19 @@ async def _start_agent(spec: dict, agent_dir: str) -> None:
 
 
 # ── the two apps ────────────────────────────────────────────────────────────────
+def _build_gate(cfg: dict | None):
+    """Build the actor autonomy gate from the agent's ``autonomy`` config.
+    ``{level: read_only|tiered|full, allow: [...], deny: [...]}``. Defaults to read_only —
+    safe by construction (only read-only tools run until the operator raises it)."""
+    from nmem_act.autonomy import AutonomyGate, AutonomyLevel
+    cfg = cfg or {}
+    try:
+        level = AutonomyLevel((cfg.get("level") or "read_only").lower())
+    except ValueError:
+        level = AutonomyLevel.READ_ONLY
+    return AutonomyGate(level=level, allow=set(cfg.get("allow") or []), deny=set(cfg.get("deny") or []))
+
+
 def build_wizard_app():
     """WIZARD mode: the setup wizard + /studio/* router, wired to the appliance's secret store,
     DB provisioner, and restart-into-agent-mode."""
@@ -179,11 +192,28 @@ def build_agent_app():
     persona = Persona.from_dict(yaml.safe_load(open(persona_yaml))) if os.path.exists(persona_yaml) \
         else Persona(agent_id=config.get("db", {}).get("config_key", "agent"))
 
-    runtime = AgentRuntime(config, persona)            # pure thinker; add executors via a custom image
+    # Actor executor holder — filled in the lifespan (async registry assembly), read by the
+    # build_executor closure the runtime calls during start(). Pure thinker if no actors: config.
+    actors = {"reg": None, "gate": None, "close": None}
+
+    def _build_executor(bridge):
+        reg = actors["reg"]
+        if reg is None or len(reg) == 0:
+            return None                                # nothing to act with → stays a pure thinker
+        from nmem.agent_core.actors import build_executor as _mk
+        return _mk(reg, backend=runtime.backend, mem=runtime.mem, agent_id=runtime.agent_id,
+                   bridge=bridge, gate=actors["gate"])
+
+    runtime = AgentRuntime(config, persona, build_executor=_build_executor)
     viz = {"bridge": None}
 
     @asynccontextmanager
     async def lifespan(app):
+        actors_cfg = config.get("actors")
+        if actors_cfg:                                 # connect MCP/A2A + register tools BEFORE start()
+            from nmem.agent_core.actors import assemble_registry
+            actors["reg"], actors["close"] = await assemble_registry(actors_cfg)
+            actors["gate"] = _build_gate(config.get("autonomy"))
         await runtime.start()                          # on uvicorn's loop → connections bound correctly
         log.info("[studio] agent %s up: %s", runtime.agent_id, runtime.status)
         from nmem.agent_core.viz import init_viz       # live deltas → nmem-viz /ingest (if configured)
@@ -191,6 +221,8 @@ def build_agent_app():
         yield
         if viz["bridge"] is not None:
             await viz["bridge"].close()
+        if actors["close"] is not None:
+            await actors["close"]()                    # tear down live MCP/A2A sessions
         await runtime.stop()
 
     def _health_extras():
@@ -207,6 +239,42 @@ def build_agent_app():
     @app.get("/", response_class=HTMLResponse)
     async def home():
         return dashboard
+
+    @app.get("/tools")
+    async def tools():
+        """The actor tools this agent has, with capability class + autonomy level — what the
+        dashboard's Act panel shows and what the gate governs."""
+        reg = actors["reg"]
+        gate = actors["gate"]
+        items = []
+        if reg is not None:
+            for name in reg.names():
+                a = reg.get(name)
+                items.append({"name": name, "capability": a.capability_class.value,
+                              "description": a.description})
+        return {"ok": True, "tools": items,
+                "autonomy": (config.get("autonomy") or {}).get("level", "read_only"),
+                "has_executor": runtime._runner is not None}
+
+    @app.post("/act")
+    async def act(req: dict):
+        """Give the agent a goal and let it use its tools to accomplish it (one gated,
+        outcome-recorded ToolCallingExecutor run). Body: {goal}. Returns the composite status +
+        the per-tool step trace."""
+        goal = (req or {}).get("goal", "").strip()
+        if not goal:
+            return {"ok": False, "error": "goal required"}
+        if runtime._runner is None:
+            return {"ok": False, "error": "this agent has no tools configured (pure thinker)"}
+        from nmem.agent_core.actors import run as _run
+        try:
+            outcome = await _run(runtime._runner, goal)
+            obs = outcome.observations or {}
+            return {"ok": True, "status": getattr(outcome.status, "value", str(outcome.status)),
+                    "steps": obs.get("steps", []), "summary": getattr(outcome, "outcome", "")}
+        except Exception as e:  # noqa: BLE001
+            log.warning("[studio] act failed: %s", e, exc_info=True)
+            return {"ok": False, "error": str(e)}
 
     @app.post("/chat")
     async def chat(req: dict):

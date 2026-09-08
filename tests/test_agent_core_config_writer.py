@@ -80,6 +80,21 @@ def test_split_secrets():
     assert split_secrets(agent_id="scout") == {}   # nothing to store
 
 
+def test_agent_yaml_actors_and_autonomy():
+    import yaml
+    doc = yaml.safe_load(render_agent_yaml(
+        agent_id="scout",
+        llm={"provider": "openai", "base_url": "http://x/v1", "model": "m"},
+        actors={"mcp": [{"name": "gh", "transport": "http", "url": "https://mcp.example/x"}],
+                "webhooks": [{"name": "ping", "url": "http://x/ping"}]},
+        autonomy={"level": "tiered", "allow": ["llm_tool_call", "gh_search"]}))
+    assert doc["actors"]["mcp"][0]["url"] == "https://mcp.example/x"
+    assert doc["autonomy"]["level"] == "tiered"
+    # omitted when not provided (pure thinker default)
+    plain = yaml.safe_load(render_agent_yaml(agent_id="x", llm={"provider": "openai", "model": "m"}))
+    assert "actors" not in plain and "autonomy" not in plain
+
+
 def test_persona_round_trip():
     p = Persona(agent_id="scout", objectives=[("learn", "Learn the domain.")],
                 goal_priorities={"learn": 0.9},

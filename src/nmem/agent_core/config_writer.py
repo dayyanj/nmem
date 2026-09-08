@@ -65,10 +65,13 @@ def render_agent_yaml(
     symbol_graph: dict | None = None, pursuit: dict | None = None,
     db_env_key: str | None = None, db_url=None,
     belief: dict | None = None, policy: dict | None = None,
+    actors: dict | None = None, autonomy: dict | None = None,
 ) -> str:
     """Render the NON-SECRET ``agent.yaml`` (structural config for agent_core.build_memory /
     build_symbol_graph / AgentRuntime). API keys are NOT written here — they are secrets
-    (see ``split_secrets``). ``llm`` = {provider, base_url, model}; a key is stripped if present."""
+    (see ``split_secrets``). ``llm`` = {provider, base_url, model}; a key is stripped if present.
+    ``actors`` = the declarative tool config (webhooks/openapi/mcp/a2a/plugins_dir) the actor seam
+    reads; ``autonomy`` = {level, allow, deny} governing what the actor executor may run."""
     import yaml
 
     env_key = db_env_key or f"{agent_id.upper()}_DB_DSN_ASYNC"
@@ -103,6 +106,10 @@ def render_agent_yaml(
     }
     if pursuit is not None:
         doc["pursuit"] = pursuit
+    if actors:
+        doc["actors"] = actors
+    if autonomy:
+        doc["autonomy"] = autonomy
     return yaml.safe_dump(doc, sort_keys=False, default_flow_style=False)
 
 
@@ -144,7 +151,7 @@ def build_agent_files(spec: dict) -> dict:
         "agent.yaml": render_agent_yaml(
             agent_id=agent_id, llm=llm, embedding=spec.get("embedding"),
             symbol_graph=spec.get("symbol_graph"), pursuit=spec.get("pursuit"),
-            db_url=spec.get("db_url")),
+            db_url=spec.get("db_url"), actors=spec.get("actors"), autonomy=spec.get("autonomy")),
         "persona.yaml": yaml.safe_dump(persona.to_dict(), sort_keys=False) if persona else "",
         "secrets": split_secrets(agent_id=agent_id, llm_key=key, llm_key_env=key_env,
                                  embed_key=(spec.get("embedding") or {}).get("api_key", "")),
