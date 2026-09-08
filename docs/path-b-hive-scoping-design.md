@@ -395,8 +395,15 @@ connections on one DB). Only **B-i** (the `SymbolGoalStore` owner filter + the b
 needs the approved `owner_agent` column, so it lands in lockstep with your migration.
 
 Revised order (supersedes §10.7 step order, same owners):
-1. **Now, unblocked:** agent_core builds B-iii (`HiveConfig`) + B-ii (`agent_core/hive.py` `KeeperLock` +
-   `AgentRuntime` keeper-gate + `config_writer` `hive:` block), additive/default-off, with the lock test.
+1. ~~**Now, unblocked:** agent_core builds B-iii (`HiveConfig`) + B-ii (`agent_core/hive.py` `KeeperLock` +
+   `AgentRuntime` keeper-gate + `config_writer` `hive:` block), additive/default-off, with the lock test.~~
+   **DONE** (nmem `de5d7ac`). `agent_core/hive.py` (`HiveConfig`, `KeeperLock` on a dedicated conn per
+   §11.1, `become_keeper`, deterministic `keeper_key`); `AgentRuntime` parses `config["hive"]`, elects the
+   keeper before the cognition loops keyed on the shared graph's **DB name** (not per-agent domain),
+   exposes `is_keeper` + `status[hive|keeper]`, releases on stop; `config_writer` writes the `hive:` block.
+   Validated vs real Postgres: one keeper across two agents on one graph DB, contributor never tries,
+   isolated never elects, lock failover proven. **The keeper flag is live; what remains for B-ii is step 3
+   below — nmem-sym reading `is_keeper` to actually suppress the graph-global loops in a contributor.**
 2. **On migration approval:** nmem-sym lands the `owner_agent` migration + bridge `agent_id` threading +
    writeback author; agent_core lands the `SymbolGoalStore(owner_agent=…)` filter + scoped
    `recover_orphaned` — together, behind the §7 acceptance test + a codex pass.
