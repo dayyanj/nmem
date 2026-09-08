@@ -267,11 +267,19 @@ real Gemma). The studio is a runnable single-agent appliance:
    release owner). Fixed single-agent DB name (`NMEM_AGENT_DB=agent_nmem`) so viz knows the DB URL up-front;
    viz reads the graph snapshot from that DB + live deltas from /ingest; dashboard shows a "Brain" link.
    Full-stack validated: `compose up` → create → agent streams `POST /ingest 200`, viz serves SPA + /api/graph.
-6. **Actors (RESUME HERE):** `WebhookToolExecutor` + MCP executor over nmem-act tool-calling (no-code tools) +
-   the plugin-mount for custom executors (§5). Turns the appliance's pure-thinker into an actor
-   (`AgentRuntime(build_executor=…)`).
-7. **Hive** (last): Path B from `nmem-migration-hive-handover.md`, as an "advanced: shared world" flow. (The
-   other session is scoping this — see `docs/path-b-hive-scoping-design.md`.)
+6. **Actors — DONE** (`bdddf51`, `997dac9`, `c16a17e`, `e1ad4c2`, `21044da`, `ce96061`, `ac9fd53`). The
+   `agent_core.actors` seam: **a protocol is just an adapter that emits nmem-act Actions; the executor, gate,
+   and learning loop are one, never forked.** `build_executor(registry, backend=…)` = a gated,
+   outcome-recording ToolCallingExecutor driven by the agent's brain. Four adapters, all validated:
+   **webhook/OpenAPI** (HTTP endpoints as tools), **MCP** (Streamable HTTP + stdio, official SDK, v1/v2-tolerant),
+   **plugin-mount** (drop-in Python), **A2A** (delegate a task to another agent; message/send→tasks/send
+   fallback). Appliance wiring: config_writer persists `actors:`/`autonomy:`; agent mode assembles the registry
+   in a lifespan hook, builds the gated executor, and exposes `GET /tools` + `POST /act`; dashboard has an Act
+   panel; wizard Step 04 authors tools + autonomy. Autonomy gate defaults read_only (safe). Full container smoke:
+   create-with-webhook → agent mode → `/tools` → `/act` drives Gemma to call the tool. `mcp` bundled in the image.
+7. **Hive (RESUME HERE, last):** Path B from `nmem-migration-hive-handover.md`, as an "advanced: shared world"
+   flow. The other session is scoping it — see `docs/path-b-hive-scoping-design.md`. A2A (Step 6) is the
+   agent-to-agent primitive it builds on.
 
 **Still open (founder call, does NOT block Steps 4–5):** the license split / studio↔engine boundary
 (§9, §11). The appliance is in-process-with-HTTP, which works under either license model; only the
