@@ -35,6 +35,62 @@ class Persona:
     capabilities_key: str = ""
     world_entities: str = ""   # display names for goal-enrichment grounding (falls back to topic labels)
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "Persona":
+        """Build a Persona from plain data (a studio-written persona.yaml / json). Lenient:
+        objectives accept [label, statement] pairs OR bare statement strings; world_seed_topics
+        accept [label, objective, priority]; baseline_kb maps key -> [content, category]."""
+        d = d or {}
+
+        def _pairs(v):
+            out = []
+            for i, item in enumerate(v or []):
+                if isinstance(item, (list, tuple)):
+                    out.append((str(item[0]), str(item[1])))
+                else:  # bare statement -> synthesize a label
+                    out.append((f"obj{i+1}", str(item)))
+            return out
+
+        def _topics(v):
+            out = []
+            for item in v or []:
+                if isinstance(item, (list, tuple)):
+                    lbl, obj = str(item[0]), str(item[1])
+                    pri = float(item[2]) if len(item) > 2 else 0.8
+                    out.append((lbl, obj, pri))
+            return out
+
+        kb = {}
+        for k, val in (d.get("baseline_kb") or {}).items():
+            if isinstance(val, (list, tuple)):
+                kb[k] = (str(val[0]), str(val[1]) if len(val) > 1 else "fact")
+            else:
+                kb[k] = (str(val), "fact")
+
+        return cls(
+            agent_id=d["agent_id"],
+            objectives=_pairs(d.get("objectives")),
+            goal_priorities={str(k): float(v) for k, v in (d.get("goal_priorities") or {}).items()},
+            world_seed_topics=_topics(d.get("world_seed_topics")),
+            baseline_kb=kb,
+            capabilities=d.get("capabilities", ""),
+            capabilities_key=d.get("capabilities_key", ""),
+            world_entities=d.get("world_entities", ""),
+        )
+
+    def to_dict(self) -> dict:
+        """Serialise to plain data (for a studio-written persona.yaml). Round-trips with from_dict."""
+        return {
+            "agent_id": self.agent_id,
+            "objectives": [[l, s] for l, s in self.objectives],
+            "goal_priorities": dict(self.goal_priorities),
+            "world_seed_topics": [[l, o, p] for l, o, p in self.world_seed_topics],
+            "baseline_kb": {k: [c, cat] for k, (c, cat) in self.baseline_kb.items()},
+            "capabilities": self.capabilities,
+            "capabilities_key": self.capabilities_key,
+            "world_entities": self.world_entities,
+        }
+
 
 async def seed_persona(mem, graph, persona: Persona) -> None:
     """Idempotently seed a persona's objectives, world mandate, and baseline KB.
