@@ -109,5 +109,18 @@ def test_test_llm_unknown_provider():
     assert r.json()["ok"] is False
 
 
+def test_agent_dashboard_html_wires_ops():
+    # the agent-mode dashboard is a face over /health + /admin/* — assert it's wired to them
+    # (served by studio_server.build_agent_app; no DB needed to check the asset itself).
+    from nmem.agent_core.studio import agent_dashboard_html
+    html = agent_dashboard_html()
+    assert "<!DOCTYPE html>" in html and "nmem-studio" in html
+    assert "/health" in html
+    for path in ("/admin/consolidate", "/admin/nightly", "/admin/dreamstate",
+                 "/admin/probe_recipes", "/admin/seed_recall"):
+        assert path in html
+    assert "setInterval(refresh" in html      # live auto-refresh of health
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

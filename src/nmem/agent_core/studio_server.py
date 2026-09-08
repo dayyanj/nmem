@@ -148,15 +148,21 @@ def build_wizard_app():
     return create_studio_app(config_dir=DATA_DIR, store_secrets=store_secrets, start_agent=_start_agent)
 
 
-async def build_agent_app():
-    """AGENT mode: boot the one agent from its on-disk config (env already sourced by the
-    entrypoint) and expose the ops router (+ /health). Returns (app, runtime)."""
+def build_agent_app():
+    """AGENT mode: build the app for the one agent on the data volume (env already sourced by
+    the entrypoint) — the ops router (+ /health) and the dashboard at ``/``. Returns (app,
+    runtime). The runtime is started in a **lifespan hook**, NOT here: its asyncpg connections
+    must be created on the SAME event loop that serves requests, or every DB-backed endpoint
+    hits 'another operation is in progress'. So build synchronously, start under uvicorn's loop."""
+    from contextlib import asynccontextmanager
+
     import yaml
     from fastapi import FastAPI
     from fastapi.responses import HTMLResponse
 
     from nmem.agent_core import AgentRuntime, make_ops_router
     from nmem.agent_core.persona import Persona
+    from nmem.agent_core.studio import agent_dashboard_html
 
     agent_dir = find_agent_dir()
     if agent_dir is None:
@@ -168,39 +174,42 @@ async def build_agent_app():
         else Persona(agent_id=config.get("db", {}).get("config_key", "agent"))
 
     runtime = AgentRuntime(config, persona)            # pure thinker; add executors via a custom image
-    await runtime.start()
-    log.info("[studio] agent %s up: %s", runtime.agent_id, runtime.status)
 
-    app = FastAPI(title=f"nmem agent · {runtime.agent_id}")
-    app.include_router(make_ops_router(lambda: runtime))
+    @asynccontextmanager
+    async def lifespan(app):
+        await runtime.start()                          # on uvicorn's loop → connections bound correctly
+        log.info("[studio] agent %s up: %s", runtime.agent_id, runtime.status)
+        yield
+        await runtime.stop()
+
+    app = FastAPI(title=f"nmem agent · {runtime.agent_id}", lifespan=lifespan)
+    # expose the agent id in /health so the dashboard can name what it's looking at
+    app.include_router(make_ops_router(lambda: runtime, extra_health=lambda: {"agent_id": runtime.agent_id}))
+
+    dashboard = agent_dashboard_html()
 
     @app.get("/", response_class=HTMLResponse)
     async def home():
-        return (f"<!doctype html><meta charset=utf-8><title>{runtime.agent_id}</title>"
-                f"<body style='font-family:system-ui;max-width:40rem;margin:4rem auto;line-height:1.6'>"
-                f"<h1>{runtime.agent_id} is awake.</h1>"
-                f"<p>This nmem agent is running. Inspect it at "
-                f"<a href='/health'>/health</a>, or drive a cycle via the <code>/admin/*</code> ops "
-                f"endpoints. Chat + memory-viz land in a later studio step.</p></body>")
+        return dashboard
 
     return app, runtime
 
 
 def main() -> None:
     """Entry: pick the mode by whether the agent exists, then serve with uvicorn. The
-    entrypoint has already sourced capabilities.env + secrets.env in agent mode."""
+    entrypoint has already sourced capabilities.env + secrets.env in agent mode. The runtime
+    starts inside uvicorn's loop (agent-app lifespan), so DB connections bind to the serving loop."""
     import uvicorn
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     port = int(os.environ.get("STUDIO_PORT", "8080"))
 
     if agent_exists():
-        import asyncio
-        app, _rt = asyncio.get_event_loop().run_until_complete(build_agent_app())
-        uvicorn.run(app, host="0.0.0.0", port=port)
+        app, _rt = build_agent_app()
     else:
         log.info("[studio] no agent yet — serving the setup wizard on :%d", port)
-        uvicorn.run(build_wizard_app(), host="0.0.0.0", port=port)
+        app = build_wizard_app()
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":

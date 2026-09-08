@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>nmem agent · dashboard</title>
+<style>
+  :root{
+    color-scheme:light dark;
+    --bg:#efece6; --surface:#fffdf9; --surface-2:#f6f2ea; --ink:#211d17; --muted:#6b6357;
+    --line:#e6e0d5; --line-2:#d8d1c3; --accent:#b5670a; --accent-ink:#fffaf2;
+    --accent-soft:#f7e6ca; --accent-line:#e6b877; --ok:#2c7a54; --warn:#b03a3a;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:"Trebuchet MS","Segoe UI",Verdana,system-ui,-apple-system,sans-serif;
+    --display:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,"Times New Roman",serif;
+    --r:12px; --shadow:0 1px 2px rgba(40,30,15,.05),0 10px 26px -14px rgba(40,30,15,.22);
+  }
+  @media (prefers-color-scheme:dark){:root{
+    color-scheme:dark;
+    --bg:#141210; --surface:#1e1b17; --surface-2:#252118; --ink:#efe9df; --muted:#a49a89;
+    --line:#312c24; --line-2:#40392e; --accent:#f0a83a; --accent-ink:#1c1509;
+    --accent-soft:#3a2c12; --accent-line:#63501f; --ok:#57c08a; --warn:#e2726f;
+    --shadow:0 1px 2px rgba(0,0,0,.45),0 14px 34px -16px rgba(0,0,0,.7);
+  }}
+  :root[data-theme="light"]{color-scheme:light;
+    --bg:#efece6;--surface:#fffdf9;--surface-2:#f6f2ea;--ink:#211d17;--muted:#6b6357;--line:#e6e0d5;
+    --line-2:#d8d1c3;--accent:#b5670a;--accent-ink:#fffaf2;--accent-soft:#f7e6ca;--accent-line:#e6b877;
+    --ok:#2c7a54;--warn:#b03a3a;--shadow:0 1px 2px rgba(40,30,15,.05),0 10px 26px -14px rgba(40,30,15,.22);}
+  :root[data-theme="dark"]{color-scheme:dark;
+    --bg:#141210;--surface:#1e1b17;--surface-2:#252118;--ink:#efe9df;--muted:#a49a89;--line:#312c24;
+    --line-2:#40392e;--accent:#f0a83a;--accent-ink:#1c1509;--accent-soft:#3a2c12;--accent-line:#63501f;
+    --ok:#57c08a;--warn:#e2726f;--shadow:0 1px 2px rgba(0,0,0,.45),0 14px 34px -16px rgba(0,0,0,.7);}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.5;font-size:14px;
+    -webkit-font-smoothing:antialiased;background-image:radial-gradient(circle at 88% -5%,var(--accent-soft),transparent 45%)}
+  code{font-family:var(--mono);font-size:.86em;background:var(--surface-2);border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+  header.top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:14px;padding:12px 22px;
+    background:color-mix(in srgb,var(--surface) 86%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:-.01em;font-size:15px}
+  .brand small{font-weight:500;color:var(--muted);letter-spacing:0}
+  .spacer{flex:1}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:5px 11px;
+    border-radius:999px;border:1px solid var(--line-2);background:var(--surface-2)}
+  .chip.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,var(--line))}
+  .chip.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,var(--line))}
+  .chip .dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+  .chip .dot.live{animation:pulse 2s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  main{max-width:1180px;margin:0 auto;padding:26px 22px 80px;display:grid;
+    grid-template-columns:minmax(0,1fr) 380px;gap:26px;align-items:start}
+  section.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
+    box-shadow:var(--shadow);padding:20px 22px 22px;margin-bottom:20px}
+  h1{font-family:var(--display);font-weight:600;font-size:26px;letter-spacing:-.01em;margin:0 0 .1em;text-wrap:balance}
+  h2{font-family:var(--display);font-weight:600;font-size:18px;letter-spacing:-.005em;margin:.2em 0 .5em}
+  .eyebrow{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+  .sub{color:var(--muted);margin:.1em 0 1em;max-width:60ch}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:13px;margin-top:4px}
+  .kv .k{color:var(--muted)} .kv .v{font-family:var(--mono);font-size:12.5px;word-break:break-word}
+  .states{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px}
+  @media (max-width:720px){.states{grid-template-columns:1fr}}
+  .state{display:flex;align-items:center;gap:9px;background:var(--surface-2);border:1px solid var(--line-2);
+    border-radius:10px;padding:9px 12px}
+  .state .lbl{font-weight:600;font-size:12.5px}
+  .state .val{margin-left:auto;font:600 11px/1 var(--mono);text-transform:uppercase;letter-spacing:.04em}
+  .state.on{border-color:color-mix(in srgb,var(--ok) 45%,var(--line-2))}
+  .state.on .val{color:var(--ok)}
+  .state.off .val{color:var(--muted)}
+  .state .sw{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+  .state.on .sw{background:var(--ok)}
+  .grp-h{font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);
+    margin:16px 0 8px;display:flex;align-items:center;gap:8px}
+  .grp-h .ln{flex:1;height:1px;background:var(--line)}
+  .plugs{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+  .plug{font:600 11px/1 var(--mono);padding:5px 9px;border-radius:7px;border:1px solid var(--line-2);background:var(--surface-2);color:var(--muted)}
+  .plug.wired{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,var(--line-2))}
+  .act{display:flex;flex-direction:column;gap:9px}
+  .actbtn{display:flex;align-items:center;gap:11px;text-align:left;cursor:pointer;font-family:inherit;color:inherit;
+    background:var(--surface-2);border:1px solid var(--line-2);border-radius:10px;padding:11px 13px;transition:border-color .12s,transform .07s}
+  .actbtn:hover{border-color:var(--accent-line);transform:translateY(-1px)}
+  .actbtn:disabled{opacity:.5;cursor:default;transform:none}
+  .actbtn .nm{font-weight:700;font-size:13px}
+  .actbtn .ds{color:var(--muted);font-size:11.5px;line-height:1.35;margin-top:2px}
+  .actbtn .ic{font-family:var(--mono);color:var(--accent);font-weight:700}
+  .probe{display:flex;gap:8px;margin:8px 0 2px}
+  .probe input{flex:1;font:inherit;color:var(--ink);background:var(--surface-2);border:1px solid var(--line-2);border-radius:8px;padding:8px 10px}
+  .probe input:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+  .probe button{font:700 12px/1 var(--sans);background:var(--accent);color:var(--accent-ink);border:0;border-radius:8px;padding:0 14px;cursor:pointer}
+  .probe button:hover{filter:brightness(1.06)}
+  .out{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);overflow:hidden;margin-top:2px}
+  .out .ph{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line);font:600 12px/1 var(--mono)}
+  .out .ph .fn{color:var(--muted)} .out .ph .st{margin-left:auto;font-size:11px}
+  .out .ph .st.ok{color:var(--ok)} .out .ph .st.err{color:var(--warn)} .out .ph .st.wait{color:var(--muted)}
+  pre.res{margin:0;padding:14px;font:12px/1.6 var(--mono);white-space:pre-wrap;word-break:break-word;max-height:44vh;overflow:auto;color:var(--ink)}
+  @media (max-width:940px){main{grid-template-columns:1fr}}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<header class="top">
+  <span class="brand"><svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="6" fill="var(--accent)"/><circle cx="9" cy="10" r="2" fill="var(--accent-ink)"/><circle cx="15" cy="10" r="2" fill="var(--accent-ink)"/><path d="M8 15c1.5 1.6 6.5 1.6 8 0" stroke="var(--accent-ink)" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>
+    nmem-studio <small id="agentname">· agent</small></span>
+  <span class="spacer"></span>
+  <span class="chip" id="statuschip"><span class="dot live"></span> <span id="statustxt">connecting…</span></span>
+</header>
+
+<main>
+  <div>
+    <section class="card">
+      <span class="eyebrow">Agent</span>
+      <h1 id="agenttitle">…</h1>
+      <p class="sub">This nmem agent is running in the studio appliance. Watch its state below, and drive a
+        cognition cycle on demand from the panel on the right.</p>
+      <div class="grp-h">Reasoning brain<span class="ln"></span></div>
+      <div class="kv" id="brainkv"></div>
+    </section>
+
+    <section class="card">
+      <span class="eyebrow">Cognition</span>
+      <h2>What this mind is doing</h2>
+      <div class="states" id="states"></div>
+      <div class="grp-h">Symbol-graph plugins<span class="ln"></span></div>
+      <div class="plugs" id="plugs"></div>
+    </section>
+  </div>
+
+  <aside>
+    <section class="card">
+      <span class="eyebrow">Operate</span>
+      <h2>Run a cycle</h2>
+      <div class="act">
+        <button class="actbtn" onclick="act('/admin/consolidate',{},this)">
+          <span class="ic">↻</span><span><span class="nm">Consolidate</span><span class="ds">Promote journal → LTM and run the graph-extraction hooks.</span></span></button>
+        <button class="actbtn" onclick="act('/admin/nightly',{},this)">
+          <span class="ic">☾</span><span><span class="nm">Nightly synthesis</span><span class="ds">Commitment detection, self-engineering distillation, retrospective, policy alignment.</span></span></button>
+        <button class="actbtn" onclick="act('/admin/dreamstate',{},this)">
+          <span class="ic">✷</span><span><span class="nm">Dreamstate</span><span class="ds">Explore, bridge structural holes, generate hypotheses.</span></span></button>
+      </div>
+
+      <div class="grp-h">Probe<span class="ln"></span></div>
+      <div class="probe">
+        <input id="recipeq" type="text" placeholder="query → which recipes would inject?" onkeydown="if(event.key==='Enter')probe('/admin/probe_recipes','recipeq')">
+        <button onclick="probe('/admin/probe_recipes','recipeq')">Recipes</button>
+      </div>
+      <div class="probe">
+        <input id="recallq" type="text" placeholder="target → force a recall (needs the recall drive)" onkeydown="if(event.key==='Enter')probe('/admin/seed_recall','recallq')">
+        <button onclick="probe('/admin/seed_recall','recallq')">Recall</button>
+      </div>
+
+      <div class="out">
+        <div class="ph"><span class="fn" id="outname">result</span><span class="st" id="outst"></span></div>
+        <pre class="res" id="res"># run an action to see its result</pre>
+      </div>
+    </section>
+  </aside>
+</main>
+
+<script>
+async function getJSON(path,opts){const r=await fetch(path,opts);return r.json();}
+
+function chip(status){
+  const c=document.getElementById('statuschip'),t=document.getElementById('statustxt');
+  const ok=status==='healthy';
+  c.className='chip '+(ok?'ok':'warn'); t.textContent=ok?'healthy':(status||'unreachable');
+}
+function stateEl(label,on,valOn,valOff){
+  return `<div class="state ${on?'on':'off'}"><span class="sw"></span><span class="lbl">${label}</span>`+
+         `<span class="val">${on?(valOn||'on'):(valOff||'off')}</span></div>`;
+}
+async function refresh(){
+  let h;
+  try{ h=await getJSON('/health'); }catch(e){ chip('unreachable'); return; }
+  chip(h.status);
+  const id=h.agent_id||'agent';
+  document.getElementById('agentname').textContent='· '+id;
+  document.getElementById('agenttitle').textContent=id;
+  document.title='nmem · '+id;
+  const b=h.brain||{};
+  document.getElementById('brainkv').innerHTML =
+    `<span class="k">provider</span><span class="v">${b.provider||'—'}</span>`+
+    `<span class="k">model</span><span class="v">${b.model||'—'}</span>`+
+    `<span class="k">family</span><span class="v">${b.family||'—'}</span>`+
+    `<span class="k">memory</span><span class="v">${h.memory?'connected':'down'}</span>`;
+  const c=h.cognition||{};
+  document.getElementById('states').innerHTML =
+    stateEl('Cognition', !!c.enabled) +
+    stateEl('Drives', !!c.drives) +
+    stateEl('Prediction', !!c.prediction) +
+    stateEl('Consolidation', !!c.consolidation) +
+    stateEl('Actuation', !!c.actuation, 'acting', 'thinker');
+  const plugs=c.plugins||{};
+  document.getElementById('plugs').innerHTML = Object.keys(plugs).length
+    ? Object.entries(plugs).map(([k,v])=>`<span class="plug ${v==='wired'?'wired':''}" title="${v}">${k.replace(/Plugin$/,'')}</span>`).join('')
+    : '<span class="plug">none wired</span>';
+}
+
+function setOut(name,status){document.getElementById('outname').textContent=name;
+  const st=document.getElementById('outst');st.className='st '+status;
+  st.textContent=status==='wait'?'running…':status;}
+async function act(path,body,btn){
+  const name=path.split('/').pop();
+  setOut(name,'wait'); document.getElementById('res').textContent='…';
+  if(btn)btn.disabled=true;
+  try{
+    const r=await getJSON(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+    setOut(name, r.ok===false?'err':'ok');
+    document.getElementById('res').textContent=JSON.stringify(r,null,2);
+  }catch(e){ setOut(name,'err'); document.getElementById('res').textContent=String(e); }
+  finally{ if(btn)btn.disabled=false; refresh(); }
+}
+function probe(path,inputId){
+  const q=document.getElementById(inputId).value.trim();
+  if(!q){setOut(path.split('/').pop(),'err');document.getElementById('res').textContent='# enter a query first';return;}
+  act(path,{query:q},null);
+}
+
+refresh(); setInterval(refresh, 5000);
+</script>
+</body>
+</html>

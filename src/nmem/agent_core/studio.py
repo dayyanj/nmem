@@ -209,6 +209,13 @@ def studio_index_html() -> str:
     return (files("nmem.agent_core") / "studio_ui" / "index.html").read_text(encoding="utf-8")
 
 
+def agent_dashboard_html() -> str:
+    """The agent-mode dashboard SPA (studio_ui/dashboard.html) — a face over /health + the
+    /admin/* ops endpoints. Served at ``/`` once the appliance is running its agent."""
+    from importlib.resources import files
+    return (files("nmem.agent_core") / "studio_ui" / "dashboard.html").read_text(encoding="utf-8")
+
+
 def create_studio_app(*, config_dir: str = ".", store_secrets: Callable[[dict], None] | None = None,
                       start_agent: Callable | None = None, get_runtime: Callable | None = None):
     """A ready-to-serve FastAPI app = the /studio/* router + the wizard SPA at ``/``. This is
