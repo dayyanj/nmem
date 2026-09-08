@@ -35,6 +35,9 @@ them. Agents without `nmem_sym`/`nmem_act` installed can still `import nmem`.
 - `make_ops_router` (ops) — OPTIONAL FastAPI router (lazy-imported): /health +
   /admin/{consolidate,nightly,dreamstate,probe_recipes,seed_recall}. An HTTP agent
   mounts it for instant observability; a voice/CLI agent ignores it.
+- `make_studio_router` (studio) — OPTIONAL FastAPI router (lazy-imported): /studio/
+  {catalog,test-llm,list-models,create}. The nmem-studio setup-wizard backend — stands
+  a new agent up from a web UI; the LLM key never leaves the server.
 
 **Roadmap (extract validate-then-thin from michelle, michelle stays live)**
 - a DB-engine helper (Group 1E) + prompt-assembly helpers (Group 3G) — opportunistic.
@@ -57,6 +60,7 @@ _LAZY = {
     "PeerExchangeSink": ("nmem.agent_core.peer", "PeerExchangeSink"),
     "build_experiential_sink": ("nmem.agent_core.actuation", "build_experiential_sink"),
     "make_ops_router": ("nmem.agent_core.ops", "make_ops_router"),
+    "make_studio_router": ("nmem.agent_core.studio", "make_studio_router"),
     "SymbolGoalStore": ("nmem.agent_core.goal_store", "SymbolGoalStore"),
     "CAPABILITIES": ("nmem.agent_core.capabilities", "CAPABILITIES"),
     "Capability": ("nmem.agent_core.capabilities", "Capability"),
