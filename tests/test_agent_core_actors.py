@@ -47,6 +47,29 @@ def test_mcp_connect_failure_is_graceful():
     asyncio.run(go())
 
 
+def test_plugin_mount_registers_and_skips_broken(tmp_path):
+    # a good plugin registers its Action; a broken one is skipped, not fatal.
+    (tmp_path / "good.py").write_text(
+        "from nmem_act import Action, CapabilityClass\n"
+        "from nmem_act.registry import ActionResult\n"
+        "async def _run(p):\n"
+        "    return ActionResult(success=True, outcome='ok', observations={'echo': p})\n"
+        "def register(reg):\n"
+        "    reg.register(Action(name='echo', handler=_run,\n"
+        "        capability_class=CapabilityClass.READ_ONLY, description='echo',\n"
+        "        parameters={'type':'object','properties':{'x':{'type':'string'}}}))\n")
+    (tmp_path / "broken.py").write_text("this is not valid python :(\n")
+    (tmp_path / "_ignored.py").write_text("raise RuntimeError('should never import')\n")
+
+    from nmem_act import ActionRegistry
+    from nmem.agent_core.actors.plugins import load_plugins
+    reg = ActionRegistry()
+    loaded = load_plugins(str(tmp_path), reg)
+    assert reg.names() == ["echo"]                    # good registered; broken + _ignored skipped
+    assert any("good.py" in p for p in loaded) and len(loaded) == 1
+    assert reg.get("echo").parameters["properties"]["x"]["type"] == "string"
+
+
 def test_assemble_registry_from_webhooks():
     async def go():
         reg, aclose = await assemble_registry({"webhooks": [
