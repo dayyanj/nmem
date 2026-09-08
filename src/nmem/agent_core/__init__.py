@@ -78,6 +78,10 @@ _LAZY = {
     "system_prompt": ("nmem.agent_core.chat", "system_prompt"),
     "init_viz": ("nmem.agent_core.viz", "init_viz"),
     "VizBridge": ("nmem.agent_core.viz", "VizBridge"),
+    "HiveConfig": ("nmem.agent_core.hive", "HiveConfig"),
+    "KeeperLock": ("nmem.agent_core.hive", "KeeperLock"),
+    "become_keeper": ("nmem.agent_core.hive", "become_keeper"),
+    "keeper_key": ("nmem.agent_core.hive", "keeper_key"),
 }
 
 __all__ = list(_LAZY) + ["recall", "chat"]

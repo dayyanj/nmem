@@ -28,6 +28,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from nmem.agent_core.hive import HiveConfig
 from nmem.agent_core.memory import build_memory, build_symbol_graph
 from nmem.agent_core.persona import Persona, seed_persona
 
@@ -74,6 +75,12 @@ class AgentRuntime:
         self._pursue_task = None
         self.status: dict = {"enabled": False}
 
+        # Hive (Path B): isolated (default) = today, byte-identical. shared_world elects a single
+        # graph-keeper by advisory lock (see agent_core.hive); is_keeper gates the graph-global loops.
+        self.hive = HiveConfig.from_dict(config.get("hive"))
+        self.is_keeper = False
+        self._keeper_lock = None
+
     @property
     def agent_id(self) -> str:
         return self._persona.agent_id
@@ -107,8 +114,36 @@ class AgentRuntime:
             from nmem.agent_core.backend import build_backend
             self.backend = build_backend(self._config)
         await seed_persona(self.mem, self.graph, self._persona)
+        await self._elect_keeper()
         await self._wire_cognition()
         return self.status
+
+    async def _elect_keeper(self) -> None:
+        """Shared-world graph-keeper election (§4.2). A process willing to keep (``graph_role:
+        keeper``) tries the advisory lock on the SHARED graph DB; exactly one wins. The winner's
+        ``is_keeper`` authorizes the graph-global loops; everyone else is a contributor. Isolated
+        agents and contributors never try → no behavior change. Election failure ⇒ contributor
+        (never fatal). NOTE: wiring the specific loop starts behind ``is_keeper`` is the
+        nmem-sym-coordinated step (docs/path-b-hive-scoping-design.md §12.5 step 3)."""
+        if not self.hive.wants_keeper or self.graph is None:
+            return
+        from nmem.agent_core.hive import become_keeper, keeper_key
+        from nmem.agent_core.memory import _db_url
+        try:
+            db = self._config.get("db", {})
+            graph_dsn = _db_url(self._config, env_key=db.get("env_key"),
+                                config_key=db.get("config_key", "default"))
+            # Key on the SHARED graph's DB NAME (not the per-agent domain) so every contender on
+            # the same graph computes the SAME key — else each would win its own lock.
+            dbname = graph_dsn.rsplit("/", 1)[-1].split("?")[0]
+            self._keeper_lock = await become_keeper(graph_dsn, keeper_key(dbname))
+        except Exception as e:  # noqa: BLE001
+            log.warning("[runtime] keeper election failed (running as contributor): %s", e)
+            self._keeper_lock = None
+        self.is_keeper = self._keeper_lock is not None
+        log.info("[runtime] hive=shared_world graph_role=%s keeper=%s (graph-global loops %s)",
+                 self.hive.graph_role, self.is_keeper,
+                 "authorized" if self.is_keeper else "suppressed [step-3 gate]")
 
     async def converse(self, message: str, **kw):
         """Hold one memory-grounded conversation turn with this agent (see
@@ -117,8 +152,15 @@ class AgentRuntime:
         return await converse(self, message, **kw)
 
     async def stop(self) -> None:
-        """Tear the mind down cleanly (idempotent). Cancel loops, stop consolidation,
-        close memory + graph."""
+        """Tear the mind down cleanly (idempotent). Cancel loops, release the keeper lock,
+        stop consolidation, close memory + graph."""
+        if self._keeper_lock is not None:
+            try:
+                await self._keeper_lock.release()   # frees the graph-keeper role for another process
+            except Exception as e:  # noqa: BLE001
+                log.warning("[runtime] keeper release: %s", e)
+            self._keeper_lock = None
+            self.is_keeper = False
         for t in (self._pursue_task, self._drive_task):
             if t is not None:
                 t.cancel()
@@ -210,7 +252,7 @@ class AgentRuntime:
         self.status = {
             "enabled": True, "plugins": plugins, "prediction": pred_on,
             "drives": drives_on, "consolidation": self._consol_task is not None,
-            "actuation": pursuit_on,
+            "actuation": pursuit_on, "hive": self.hive.mode, "keeper": self.is_keeper,
         }
 
     def _wire_goal_enrichment(self) -> None:
