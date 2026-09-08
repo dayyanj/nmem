@@ -30,11 +30,11 @@ them. Agents without `nmem_sym`/`nmem_act` installed can still `import nmem`.
 
 - `PeerExchange` / `PeerExchangeSink` (peer) — agent-to-agent messaging over
   nmem-exchange; inbound challenges run the agent's injected `on_challenge` cognition.
+- `build_experiential_sink` (actuation) — the act->learn outcome sink (episode +
+  procedure reward + honest discharge + merit finding memory) for any acting agent.
 
 **Roadmap (extract validate-then-thin from michelle, michelle stays live)**
-- the experiential outcome sink (record_action_outcome + honest discharge + merit memory).
-- adapters: a DB-engine helper + a reference actuator executor scaffold.
-- an optional thin HTTP helper (health + admin) for agents that want one.
+- a DB-engine helper (Group 1E) + an optional thin HTTP ops helper (Group 3F).
 """
 from __future__ import annotations
 
@@ -52,6 +52,7 @@ _LAZY = {
     "Utterance": ("nmem.agent_core.comms", "Utterance"),
     "PeerExchange": ("nmem.agent_core.peer", "PeerExchange"),
     "PeerExchangeSink": ("nmem.agent_core.peer", "PeerExchangeSink"),
+    "build_experiential_sink": ("nmem.agent_core.actuation", "build_experiential_sink"),
     "SymbolGoalStore": ("nmem.agent_core.goal_store", "SymbolGoalStore"),
 }
 
