@@ -122,6 +122,7 @@ def test_agent_dashboard_html_wires_ops():
     assert "setInterval(refresh" in html      # live auto-refresh of health
     assert "/chat" in html and "sendChat" in html   # the grounded chat panel (Step 5)
     assert "vizlink" in html                   # the nmem-viz "brain" link (Step 5b)
+    assert "/tools" in html and "/act" in html and "sendAct" in html   # the Act panel (Step 6)
 
 
 def test_init_viz_is_noop_without_config(monkeypatch):

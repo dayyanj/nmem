@@ -150,6 +150,22 @@
         <button class="go" onclick="sendChat()" id="chatsend">Send</button>
       </div>
     </section>
+
+    <section class="card" id="toolscard" hidden>
+      <span class="eyebrow">Act</span>
+      <h2>Tools &amp; acting</h2>
+      <p class="sub">This agent has hands. Give it a goal and it uses its tools (webhooks, MCP servers, other
+        agents) to accomplish it — every call gated by its autonomy level and recorded so it learns what works.</p>
+      <div class="plugs" id="toollist"></div>
+      <div class="chatbar" style="margin-top:12px">
+        <input id="actin" type="text" placeholder="Give the agent a goal to accomplish with its tools…" onkeydown="if(event.key==='Enter')sendAct()">
+        <button class="go" id="actsend" onclick="sendAct()">Act</button>
+      </div>
+      <div class="out" style="margin-top:10px">
+        <div class="ph"><span class="fn">act trace</span><span class="st" id="actst"></span></div>
+        <pre class="res" id="actres"># give the agent a goal to see the tools it uses</pre>
+      </div>
+    </section>
   </div>
 
   <aside>
@@ -268,7 +284,36 @@ async function sendChat(){
   finally{ btn.disabled=false; inp.focus(); }
 }
 
-refresh(); setInterval(refresh, 5000);
+// ── act (the agent uses its tools toward a goal) ──
+async function loadTools(){
+  try{
+    const t=await (await fetch('/tools')).json();
+    const card=document.getElementById('toolscard');
+    if(!t.tools || !t.tools.length){ card.hidden=true; return; }
+    card.hidden=false;
+    document.getElementById('toollist').innerHTML =
+      t.tools.map(x=>`<span class="plug ${x.capability==='read_only'?'wired':''}" title="${(x.description||'').replace(/"/g,'&quot;')}">${x.name} · ${x.capability}</span>`).join('')
+      + `<span class="plug" style="border-style:dashed">autonomy: ${t.autonomy}</span>`;
+  }catch(e){ /* pure thinker / tools endpoint absent */ }
+}
+function setActOut(s){const el=document.getElementById('actst');
+  el.className='st '+(s==='success'?'ok':(['err','blocked','failure'].includes(s)?'err':'wait'));
+  el.textContent=s==='wait'?'running…':s;}
+async function sendAct(){
+  const inp=document.getElementById('actin'), btn=document.getElementById('actsend');
+  const goal=inp.value.trim(); if(!goal) return;
+  btn.disabled=true; setActOut('wait'); document.getElementById('actres').textContent='working…';
+  try{
+    const r=await getJSON('/act',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({goal})});
+    setActOut(r.ok===false?'err':(r.status||'ok'));
+    document.getElementById('actres').textContent = r.ok===false
+      ? ('⚠ '+(r.error||'failed'))
+      : JSON.stringify({status:r.status, summary:r.summary, steps:r.steps}, null, 2);
+  }catch(e){ setActOut('err'); document.getElementById('actres').textContent=String(e); }
+  finally{ btn.disabled=false; }
+}
+
+refresh(); setInterval(refresh, 5000); loadTools();
 </script>
 </body>
 </html>
