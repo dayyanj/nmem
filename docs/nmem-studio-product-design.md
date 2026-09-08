@@ -221,9 +221,55 @@ consistent with Spwig's AGPL ethos).
   default and the marketing.)
 - **Image distribution:** self-host image only, hosted only, or both.
 
+## 13. RESUME — next steps to a running studio (post-compact start here)
+
+**Where we are:** the whole config-authoring **backend is built + tested** (no web layer yet):
+`agent_core.capabilities` (map/validator/`catalog()`/`PRESETS`/`preset_flags`), `agent_core.config_writer`
+(`build_agent_files`/`write_agent`/`render_capabilities_env`/`render_agent_yaml`/`split_secrets`),
+`Persona.from_dict/to_dict`. `AgentRuntime` fail-fasts on bad flag combos. Ops router
+(`agent_core.ops.make_ops_router`) is the dashboard backend. The entry-UI is designed:
+`docs/mockups/studio-wizard.html` (grounded in the real catalog; the SPA to productionise).
+
+**Build order (each step is small; validate on michelle's venv + against the mockup):**
+
+1. **`agent_core/studio.py` — the `/studio/*` FastAPI router** (mirror `ops.py`: lazy FastAPI import,
+   late-bound). Endpoints:
+   - `GET  /studio/catalog` → `{catalog: capability_catalog(), presets: PRESETS}` (the wizard's data).
+   - `POST /studio/test-llm` `{provider,base_url,model,key,dialect}` → build `agent_core.backend`
+     (OpenAICompatible/Anthropic), one-token chat, return `{ok,model,latency_ms,error}`. Key used, never
+     returned. (This makes the mockup's Test button real; reuses the graduated backend.)
+   - `POST /studio/list-models` `{base_url,key}` → server-side `GET {base}/models` → list.
+   - `POST /studio/create` `{spec}` → `config_writer.write_agent(dir, spec)` → store `secrets` to the
+     secret file/env → (optional) bootstrap + start an `AgentRuntime`. Return status.
+   - Add a tiny `test_studio_router.py` (catalog shape; test-llm error classification with a stub backend).
+2. **Productionise the wizard SPA** from `docs/mockups/studio-wizard.html`: replace the inlined `CATALOG`
+   with a `fetch('/studio/catalog')`, wire Test→`/studio/test-llm`, fetch-models→`/studio/list-models`,
+   Create→`/studio/create`. Serve it at `/` from the same app. Keep the v3 design (warm type, mascot slot,
+   dependency-enforced pills, env preview). Mascot art: founder to supply (drop-in SVG/data-URI).
+3. **First-boot + compose image**: `Dockerfile` + `docker-compose.yml` (studio app + postgres/pgvector +
+   redis + bundled all-MiniLM embedder; external LLM). First boot: create the agent DB, land on the wizard;
+   after Create, `build_memory`/`build_symbol_graph` self-provision tables, runtime starts. Persist via named
+   volumes.
+4. **Dashboard page** = mount `make_ops_router` behind the studio; give it a face (health + `/admin/*`).
+5. **Chat page** needs the **G graduation** (`build_memory_context` + persona system prompt into agent_core;
+   michelle's converse is the reference). **Viz**: bundle nmem-viz, point at the agent's graph.
+6. **Actors** (later): `WebhookToolExecutor` + MCP executor over nmem-act tool-calling (no-code tools) +
+   the plugin-mount for custom executors (§5).
+7. **Hive** (last): Path B from `nmem-migration-hive-handover.md`, as an "advanced: shared world" flow.
+
+**Decide before the web build (constrains architecture):** the license split / studio↔engine boundary
+(§9, §11) — in-process vs HTTP. The `/studio/*` router above assumes in-process-with-HTTP, which is fine
+either way, but the *packaging/licensing* of the SPA+router as the proprietary layer depends on this call.
+
+**Guardrails carried in:** env-flag rules are now enforced by `config_writer` (don't bypass it — write env
+only through it). Default-off/additive. DJ-AI FROZEN. The nmem/nmem-act/nmem-sym repos also have an
+in-flight **1.0.0 release-prep from another session** (CHANGELOG/README/pyproject/version) — NOT ours;
+never `git add -A`, always add specific files.
+
 ## 12. Reference index
-- Runtime + seams: `nmem/src/nmem/agent_core/` (runtime, ops [dashboard backend], comms, peer, actuation,
-  persona, memory, backend, goal_store, recall). Example: `nmem/examples/minimal_agent/`.
+- Runtime + seams: `nmem/src/nmem/agent_core/` (runtime, ops [dashboard backend], **capabilities**,
+  **config_writer**, comms, peer, actuation, persona, memory, backend, goal_store, recall). Example:
+  `nmem/examples/minimal_agent/`. Entry-UI mockup: `nmem/docs/mockups/studio-wizard.html`.
 - Tool-calling machinery (for the actor tiers): `nmem-act` (`ToolCallingExecutor`, `OpenAIToolSelector`,
   `ToolInfo`, `ToolStep`, `Done`).
 - Reference agent (chat/converse, executor pattern): `michelle-ai/service/` (`cognition.start_cognition`,
