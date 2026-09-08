@@ -152,13 +152,47 @@ function embeddingSpec(){if(document.getElementById('emb').value!=='remote')retu
     model:document.getElementById('embmdl').value.trim()||'all-MiniLM-L6-v2',
     api_key:document.getElementById('embkey').value.trim(),
     dimensions:parseInt(document.getElementById('embdim').value,10)||384};}
+// ── tools (Step 04): collect webhook / MCP / A2A entries into the actors config ──
+let TOOLS=[], _toolType='webhook';
+function _cap(s){return s.charAt(0).toUpperCase()+s.slice(1);}
+function setToolType(t){_toolType=t;['webhook','mcp','a2a'].forEach(x=>{
+  document.getElementById('tf'+_cap(x)).hidden=x!==t;
+  document.getElementById('tt'+_cap(x)).setAttribute('aria-pressed',x===t);});}
+function onMcpTransport(){const t=document.getElementById('mcp_transport').value;
+  document.getElementById('mcp_url_f').hidden=t!=='http';document.getElementById('mcp_cmd_f').hidden=t!=='stdio';}
+function _v(id){return document.getElementById(id).value.trim();}
+function _clear(ids){ids.forEach(i=>document.getElementById(i).value='');}
+function addTool(){
+  let e=null;
+  if(_toolType==='webhook'){const n=_v('wh_name'),u=_v('wh_url');if(!n||!u)return;
+    e={_type:'webhook',name:n,url:u,method:_v('wh_method')};_clear(['wh_name','wh_url']);}
+  else if(_toolType==='mcp'){const n=_v('mcp_name'),tr=_v('mcp_transport');if(!n)return;
+    if(tr==='http'){const u=_v('mcp_url');if(!u)return;e={_type:'mcp',name:n,transport:'http',url:u};}
+    else{const c=_v('mcp_cmd');if(!c)return;const p=c.split(/\s+/);e={_type:'mcp',name:n,transport:'stdio',command:p[0],args:p.slice(1)};}
+    _clear(['mcp_name','mcp_url','mcp_cmd']);}
+  else{const n=_v('a2a_name'),u=_v('a2a_url');if(!n||!u)return;e={_type:'a2a',name:n,card_url:u};_clear(['a2a_name','a2a_url']);}
+  TOOLS.push(e);renderToolChips();}
+function removeTool(i){TOOLS.splice(i,1);renderToolChips();}
+function renderToolChips(){document.getElementById('toolchips').innerHTML=TOOLS.map((t,i)=>
+  `<button class="pick" onclick="removeTool(${i})" title="click to remove"><div class="nm">${t.name}</div>`+
+  `<div class="bl">${t._type}${t.method?' · '+t.method:''}${t.url?' · '+t.url:''}${t.command?' · '+t.command+' '+(t.args||[]).join(' '):''}${t.card_url?' · '+t.card_url:''}</div>`+
+  `<div class="cnt">remove ✕</div></button>`).join('');}
+function collectActors(){const a={};
+  const w=TOOLS.filter(t=>t._type==='webhook').map(({_type,...r})=>r);
+  const m=TOOLS.filter(t=>t._type==='mcp').map(({_type,...r})=>r);
+  const g=TOOLS.filter(t=>t._type==='a2a').map(({_type,...r})=>r);
+  if(w.length)a.webhooks=w;if(m.length)a.mcp=m;if(g.length)a.a2a=g;
+  return Object.keys(a).length?a:null;}
+
 async function create(){const aid=document.getElementById('aid').value.trim();const t=document.getElementById('toast');
   const flash=(m)=>{t.textContent=m;t.classList.add('on');setTimeout(()=>t.classList.remove('on'),4200);};
   if(!aid){flash('✗ agent needs an id');return;}
   const persona={agent_id:aid,
     objectives:document.getElementById('obj').value.split('\n').map(s=>s.trim()).filter(Boolean),
     world_entities:document.getElementById('ent').value.trim()};
-  const body={agent_id:aid,enabled:[...enabled],persona,llm:llmSpec(),embedding:embeddingSpec(),outward_actions:'explore'};
+  const body={agent_id:aid,enabled:[...enabled],persona,llm:llmSpec(),embedding:embeddingSpec(),
+    outward_actions:'explore',autonomy:{level:document.getElementById('autonomy').value}};
+  const actors=collectActors(); if(actors)body.actors=actors;
   t.textContent='creating '+aid+'…';t.classList.add('on');
   const res=await api('/studio/create',body);
   if(res.ok){const dep=res.auto_enabled?.length?` (+${res.auto_enabled.length} deps)`:'';
@@ -177,7 +211,7 @@ async function create(){const aid=document.getElementById('aid').value.trim();co
     document.getElementById('env').textContent='could not load /studio/catalog — is the studio backend running?';
     return;
   }
-  renderTemplates();applyTemplate('researcher');selectPreset('reflective');setView('basic');initProviders();onProvider();
+  renderTemplates();applyTemplate('researcher');selectPreset('reflective');setView('basic');initProviders();onProvider();setToolType('webhook');
 })();
 </script>"""
 

@@ -235,8 +235,64 @@
       </div>
       <div id="basic"><div class="cards" id="presets" style="margin-top:12px"></div></div>
       <div id="advanced" hidden><div class="advwrap" id="groups"></div></div>
+    </section>
 
-      <div class="create">
+    <section class="card">
+      <span class="eyebrow">Step 04 · Tools</span>
+      <h2>Give it hands <span style="color:var(--muted);font-weight:400;font-size:14px">(optional)</span></h2>
+      <p class="sub">Add tools the agent can call to act in the world — your own webhooks, an MCP server, or
+        another agent over A2A. Every call is governed by the autonomy level below and recorded so the agent
+        learns what works. Leave empty for a pure thinker.</p>
+
+      <label class="fld"><span class="lab">Autonomy <span class="keynote">(what it may run without asking)</span></span>
+        <select id="autonomy">
+          <option value="read_only">read-only · only observe, never change the world (safe default)</option>
+          <option value="tiered">tiered · read-only always, plus an allowlist you control</option>
+          <option value="full">full · may run any tool you configure here</option>
+        </select></label>
+
+      <div class="seg" role="tablist" style="margin-top:14px">
+        <button id="ttWebhook" aria-pressed="true" onclick="setToolType('webhook')">Webhook</button>
+        <button id="ttMcp" aria-pressed="false" onclick="setToolType('mcp')">MCP server</button>
+        <button id="ttA2a" aria-pressed="false" onclick="setToolType('a2a')">Agent (A2A)</button>
+      </div>
+
+      <div id="tfWebhook" class="toolform">
+        <div class="row" style="margin-top:10px">
+          <label class="fld"><span class="lab">Name</span><input type="text" id="wh_name" placeholder="get_weather"></label>
+          <label class="fld"><span class="lab">Method</span>
+            <select id="wh_method"><option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option></select></label>
+        </div>
+        <label class="fld"><span class="lab">URL <span class="keynote">({placeholders} are filled from the tool's params)</span></span>
+          <input type="text" id="wh_url" placeholder="https://api.example.com/weather?city={city}"></label>
+      </div>
+
+      <div id="tfMcp" class="toolform" hidden>
+        <div class="row" style="margin-top:10px">
+          <label class="fld"><span class="lab">Name</span><input type="text" id="mcp_name" placeholder="github"></label>
+          <label class="fld"><span class="lab">Transport</span>
+            <select id="mcp_transport" onchange="onMcpTransport()"><option value="http">Streamable HTTP</option><option value="stdio">stdio (local process)</option></select></label>
+        </div>
+        <label class="fld" id="mcp_url_f"><span class="lab">Server URL</span>
+          <input type="text" id="mcp_url" placeholder="https://mcp.example.com/"></label>
+        <label class="fld" id="mcp_cmd_f" hidden><span class="lab">Command + args</span>
+          <input type="text" id="mcp_cmd" placeholder="npx -y @modelcontextprotocol/server-filesystem /data"></label>
+      </div>
+
+      <div id="tfA2a" class="toolform" hidden>
+        <div class="row" style="margin-top:10px">
+          <label class="fld"><span class="lab">Name</span><input type="text" id="a2a_name" placeholder="researcher"></label>
+          <label class="fld"><span class="lab">Agent Card URL</span><input type="text" id="a2a_url" placeholder="https://agent.example.com/"></label>
+        </div>
+      </div>
+
+      <div class="create" style="margin-top:10px">
+        <button class="go alt" type="button" onclick="addTool()">+ Add tool</button>
+        <span class="note">added tools appear below; click one to remove it.</span>
+      </div>
+      <div class="cards" id="toolchips" style="grid-template-columns:1fr;margin-top:6px"></div>
+
+      <div class="create" style="margin-top:20px;border-top:1px solid var(--line);padding-top:18px">
         <button class="go" onclick="create()">Create agent →</button>
         <span class="note">writes <code>agent.yaml</code> + <code>capabilities.env</code> + persona, bootstraps the DB, starts the runtime.</span>
       </div>
