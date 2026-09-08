@@ -70,6 +70,60 @@ def test_plugin_mount_registers_and_skips_broken(tmp_path):
     assert reg.get("echo").parameters["properties"]["x"]["type"] == "string"
 
 
+def test_a2a_delegate_with_tasks_send_fallback():
+    # a remote agent that only speaks early A2A (tasks/send) → the adapter must fall back from
+    # message/send and still get the reply. Also exercises Agent Card fetch + text extraction.
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    holder = {}
+
+    class H(BaseHTTPRequestHandler):
+        def _send(self, obj):
+            b = json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b)
+
+        def do_GET(self):
+            if "agent-card.json" in self.path:
+                self._send({"name": "old-agent", "description": "legacy",
+                            "url": f"http://127.0.0.1:{holder['port']}/rpc"})
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            if req["method"] == "message/send":       # legacy agent doesn't support it
+                self._send({"jsonrpc": "2.0", "id": req["id"],
+                            "error": {"code": -32601, "message": "method not found"}})
+            else:                                       # tasks/send → a Task with a status message
+                instr = req["params"]["message"]["parts"][0]["text"]
+                self._send({"jsonrpc": "2.0", "id": req["id"], "result": {
+                    "status": {"message": {"parts": [{"kind": "text", "text": f"did: {instr}"}]}}}})
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    holder["port"] = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        from nmem.agent_core.actors.a2a import a2a_action
+
+        async def go():
+            action, _ = await a2a_action({"card_url": f"http://127.0.0.1:{holder['port']}"})
+            assert action.name == "a2a_old_agent"
+            res = await action.handler({"task": "reticulate splines"})
+            assert res.success and res.observations["reply"] == "did: reticulate splines"
+        asyncio.run(go())
+    finally:
+        srv.shutdown()
+
+
 def test_assemble_registry_from_webhooks():
     async def go():
         reg, aclose = await assemble_registry({"webhooks": [
