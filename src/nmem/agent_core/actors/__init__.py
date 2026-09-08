@@ -91,6 +91,7 @@ async def assemble_registry(spec: dict, *, backend=None) -> tuple[Any, Any]:
         actors:
           webhooks:  [{name,url,method,description,parameters,capability_class}, ...]
           openapi:   [{spec_url|spec, base_url?, include?}, ...]
+          utcp:      [{manual_url|manual, name?, headers?, only?}, ...]
           mcp:       [{name,transport:http|stdio,url?|command?,args?,headers?,only?}, ...]
           a2a:       [{name,card_url,description?}, ...]
           plugins_dir: "/data/agent/plugins/executors"
@@ -108,6 +109,11 @@ async def assemble_registry(spec: dict, *, backend=None) -> tuple[Any, Any]:
     for oa in spec.get("openapi", []) or []:
         from nmem.agent_core.actors.webhook import openapi_actions
         for action in await openapi_actions(oa):
+            reg.register(action)
+
+    for man in spec.get("utcp", []) or []:
+        from nmem.agent_core.actors.utcp import utcp_actions
+        for action in await utcp_actions(man):
             reg.register(action)
 
     for server in spec.get("mcp", []) or []:

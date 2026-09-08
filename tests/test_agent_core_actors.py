@@ -70,6 +70,76 @@ def test_plugin_mount_registers_and_skips_broken(tmp_path):
     assert reg.get("echo").parameters["properties"]["x"]["type"] == "string"
 
 
+def test_webhook_get_preserves_url_query_string():
+    # regression: an empty params dict must NOT wipe a query string already on the URL (httpx
+    # replaces the query when given params) — a {placeholder} in the query, once filled, was lost.
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    seen = []
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        from nmem.agent_core.actors.webhook import webhook_action
+
+        async def go():
+            qp = webhook_action({"name": "q", "url": f"http://127.0.0.1:{port}/time?city={{city}}", "method": "GET"})
+            await qp.handler({"city": "Auckland"})              # query placeholder → filled + kept
+            fq = webhook_action({"name": "f", "url": f"http://127.0.0.1:{port}/s?key=abc", "method": "GET"})
+            await fq.handler({})                                 # fixed query, no params → kept
+        asyncio.run(go())
+        assert seen == ["/time?city=Auckland", "/s?key=abc"]
+    finally:
+        srv.shutdown()
+
+
+def test_utcp_manual_import_is_field_tolerant_and_skips_non_http():
+    # inline manual with three tools: two HTTP (different field-name conventions), one CLI (skipped).
+    async def go():
+        manual = {"utcp_version": "1.0", "tools": [
+            {"name": "get_weather", "description": "weather",
+             "inputs": {"type": "object", "properties": {"city": {"type": "string"}}},
+             "tool_provider": {"provider_type": "http", "http_method": "GET",
+                               "url": "https://api.example/weather?city={city}"}},
+            {"name": "post_note", "description": "note",
+             "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}},
+             "call_template": {"call_template_type": "http", "method": "POST", "url": "https://api.example/notes"}},
+            {"name": "run_local", "description": "cli",
+             "tool_provider": {"provider_type": "cli", "command": "ls"}},   # non-HTTP → skipped
+        ]}
+        from nmem.agent_core.actors.utcp import utcp_actions
+        from nmem_act import CapabilityClass
+        actions = await utcp_actions({"manual": manual, "name": "wx"})
+        by = {a.name: a for a in actions}
+        assert set(by) == {"wx_get_weather", "wx_post_note"}          # cli tool skipped
+        assert by["wx_get_weather"].capability_class == CapabilityClass.READ_ONLY   # GET
+        assert by["wx_post_note"].capability_class == CapabilityClass.MUTATING       # POST
+        assert by["wx_get_weather"].parameters["properties"]["city"]["type"] == "string"
+    asyncio.run(go())
+
+
+def test_assemble_registry_wires_utcp():
+    async def go():
+        manual = {"tools": [{"name": "ping", "tool_provider": {"type": "http", "url": "http://svc/ping"}}]}
+        reg, aclose = await assemble_registry({"utcp": [{"manual": manual, "name": "svc"}]})
+        assert reg.names() == ["svc_ping"]
+        await aclose()
+    asyncio.run(go())
+
+
 def test_a2a_delegate_with_tasks_send_fallback():
     # a remote agent that only speaks early A2A (tasks/send) → the adapter must fall back from
     # message/send and still get the reply. Also exercises Agent Card fetch + text extraction.

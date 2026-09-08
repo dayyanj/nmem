@@ -50,7 +50,10 @@ def webhook_action(spec: dict):
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 if method == "GET":
-                    r = await client.get(target, params=params, headers=headers)
+                    # `params or None`: an EMPTY dict makes httpx replace (drop) any query string
+                    # already on the URL — so a URL whose query held a {placeholder} (now filled)
+                    # would lose it. None leaves the URL's own query intact.
+                    r = await client.get(target, params=params or None, headers=headers)
                 else:
                     r = await client.request(method, target, json=params or None, headers=headers)
             try:
