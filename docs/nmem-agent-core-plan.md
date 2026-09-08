@@ -70,9 +70,58 @@ headless I/O-agnostic runtime; proof = michelle-on-core + a minimal example.
   four files (agent.yaml + capabilities.env + persona.py + ~20-line main.py), no cognition code.
   Smoke-tested (persona builds, config loads, AgentRuntime constructs). README shows run / make-it-act /
   add-I/O.
-- **Remaining agent_core roadmap** (not blocking; incremental): thin michelle's memory.py/model_backend
-  to delegate to `build_memory`/`build_backend`; graduate peer glue; a DB-engine helper; an optional thin
-  HTTP helper. All validate-then-thin, michelle live.
+#### Remaining agent_core roadmap (not blocking; incremental; validate-then-thin, michelle live)
+
+**Two tiers of agent set the target.** A **pure-thinker** agent (consolidate / dream / form goals /
+reason, no hands) is *already effortless* — the `minimal_agent` example proves it (config + persona +
+~20-line main). An **acting** agent (michelle-class) still has to hand-roll two things michelle proved
+but hasn't graduated — the **experiential outcome sink** and the **peer/comms channel** — so a new actor
+today copies ~200 LOC of michelle's `actuation.py` + `peer.py`. Those two (Group 2) are the real gap:
+they decide how effortless a new *actor* is, not just a new thinker.
+
+**Group 1 — dedup thinning** (michelle still carries copies of already-graduated code; low risk):
+- **A. `memory.py` → `build_memory`/`build_symbol_graph`.** michelle constructs mem+graph with her own
+  config-reading — a near-duplicate. Delegate after a small config-shape map (carry her belief/policy
+  trust). Keeps her `get_mem`/`recall`/`remember` accessors. *Also proves `build_memory` on the live
+  agent* (only construct-tested by the example today). Risk: low–med.
+- **B. `model_backend.py` → `agent_core.backend`.** michelle's LLM client is the *verbatim source* of
+  the graduated module → make her file `from nmem.agent_core.backend import *`, delete the duplicate.
+  Risk: low (5-min win; a new provider/family fix then lands once).
+
+**Group 2 — reusable-capability graduations** (the real prize — make a new *actor* a config, not a copy):
+- **C. Experiential outcome sink** *(highest value, trickiest)*. michelle's `actuation._make_sink`
+  chain — `record_action_outcome` (episode + procedure reward + surprise) → `discharge_drive` (honest
+  discharge, keyed on the `drive:` source) → merit finding memory (`importance=None`+grounding) — is
+  GENERIC; only the sandbox handler is hers. Graduate `agent_core.build_experiential_sink(bridge, mem,
+  agent_id)` (wrapped by the existing `make_reflective_sink`); a new actor then supplies only its action
+  handler + the verified/infra classification. This is the crown jewel (episodes/procedure-reward/honest
+  discharge) and exactly where the "episodes weren't recording" class of bug lived — graduating it means
+  no future agent re-hits it. Risk: **medium** — subtle correctness (verified-classified-once, discharge
+  keying, merit grounding); careful faithful lift + live re-validation of michelle's pursuit.
+- **D. Peer/comms channel.** `CommsLoop`/`ChannelSink` already graduated, but the concrete channel —
+  michelle's `PeerExchangeSink` + the nmem-exchange wiring in `peer.py` — is still hers. Graduate a
+  parameterized `agent_core.peer` (exchange adapter + `PeerExchangeSink`, keyed by channel + agent_id +
+  backend). Then any agent peering over nmem-exchange (the future twin, a michelle↔michelle2 mesh) gets
+  it free. Risk: low–med (mostly mechanical). **After C + D, a new acting agent ≈ executor adapter +
+  `build_proposal` + persona + config + I/O.**
+
+**Group 3 — optional sugar** (nice, not needed):
+- **E. DB-engine helper.** Graduate michelle's small standalone SQLAlchemy engine (`db.py`) as
+  `build_engine(dsn)` + `get_session`. Low value / low risk.
+- **F. Optional thin HTTP ops router.** michelle's `/health` + `/admin/{consolidate,dreamstate,nightly,
+  seed_recall,probe_recipes}` are generic (operate on `runtime.mem/graph/bridge`). Offer
+  `agent_core.make_ops_router(runtime)` an HTTP agent can mount. **Must stay optional** (lazy-import
+  FastAPI) so the headless core never drags in a web framework — a voice/CLI agent ignores it.
+- **G. Prompt-assembly helpers.** `build_memory_context` (tiered recall → prompt block) is generic and
+  could graduate; `build_system_prompt` is persona+channel-specific and stays. I/O-adjacent, low priority.
+
+**The floor — never graduates** (always the agent's own): the executor's actual work (michelle's
+`sandbox_client`), `build_proposal` specifics, persona DATA + prompt files, the agent's I/O (FastAPI /
+voice / CLI) + bespoke endpoints (michelle's `converse`), and config values.
+
+**Suggested order:** B → A → D → C → F → (E, G). B/A are quick dedup; D completes comms; **C is the item
+that most changes how effortless a new *actor* is** (do it with focus for the careful validation); F only
+once a second HTTP agent is imminent. None block standing up a new agent today.
 
 ### EXECUTED 2026-09-07 — Phases 1–3 done; PAUSED before Phase 4 (founder)
 - ✅ **Phase 1** (michelle f0aac72): deleted `curiosity.py` (shadow-compare: native A5 producer at
