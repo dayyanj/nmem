@@ -87,7 +87,20 @@ they decide how effortless a new *actor* is, not just a new thinker.
 - ✅ **B. `model_backend.py` → `agent_core.backend`.** 239 → 17 LOC re-export; `get_backend`/`init_backend`/
   `build_backend` + classes preserved. Brain still gemma via the re-export.
 
-**Group 2 — reusable-capability graduations** (the real prize — make a new *actor* a config, not a copy):
+**Group 2 — reusable-capability graduations — ✅ DONE 2026-09-08 (the real prize; a new actor is now
+a config, not a copy):**
+- ✅ **D (nmem 39527ca, michelle 2b317da):** `agent_core.peer` (`PeerExchange` + `PeerExchangeSink`) —
+  nmem-exchange lifecycle + inbound routing + comms channel; agent injects `on_challenge` + `mem` +
+  `agent_id`. michelle's peer.py 182→66 LOC. Validated live: exchange up as michelle on `dm:michelle:djai`,
+  comms wired, health 200, 0 tracebacks (fixed a `/health` ref to the removed `_ex` → `peer.is_live()`).
+- ✅ **C (nmem 089aad3, michelle 3303113):** `agent_core.build_experiential_sink` — the act→learn loop
+  (episode + procedure reward + honest discharge + merit finding memory). michelle's `_make_sink` deleted;
+  `build_runner` composes it with `make_reflective_sink`. Validated live: goal 504 pursued→achieved, merit
+  finding written (fact/confirmed, **emergent importance=5**), 0 tracebacks. **After D+C a new acting agent
+  = executor adapter + `build_proposal` + persona + config + I/O.**
+
+<details><summary>Original Group 2 spec (kept for provenance)</summary>
+
 - **C. Experiential outcome sink** *(highest value, trickiest)*. michelle's `actuation._make_sink`
   chain — `record_action_outcome` (episode + procedure reward + surprise) → `discharge_drive` (honest
   discharge, keyed on the `drive:` source) → merit finding memory (`importance=None`+grounding) — is
@@ -104,6 +117,8 @@ they decide how effortless a new *actor* is, not just a new thinker.
   it free. Risk: low–med (mostly mechanical). **After C + D, a new acting agent ≈ executor adapter +
   `build_proposal` + persona + config + I/O.**
 
+</details>
+
 **Group 3 — optional sugar** (nice, not needed):
 - **E. DB-engine helper.** Graduate michelle's small standalone SQLAlchemy engine (`db.py`) as
   `build_engine(dsn)` + `get_session`. Low value / low risk.
@@ -118,9 +133,10 @@ they decide how effortless a new *actor* is, not just a new thinker.
 `sandbox_client`), `build_proposal` specifics, persona DATA + prompt files, the agent's I/O (FastAPI /
 voice / CLI) + bespoke endpoints (michelle's `converse`), and config values.
 
-**Suggested order:** ~~B → A~~ ✅ → **D → C** → F → (E, G). B/A done (dedup); D completes comms next; **C is
-the item that most changes how effortless a new *actor* is** (do it with focus for the careful
-validation); F only once a second HTTP agent is imminent. None block standing up a new agent today.
+**Suggested order:** ~~B → A → D → C~~ ✅ ALL DONE (Groups 1+2 complete 2026-09-08). Only Group 3 sugar
+remains (E db-helper, F optional HTTP ops router, G prompt helpers) — none block standing up a new agent;
+do opportunistically. A new **acting** agent is now executor + build_proposal + persona + config + I/O;
+a **pure thinker** is persona + config + ~20-line main.
 
 ### EXECUTED 2026-09-07 — Phases 1–3 done; PAUSED before Phase 4 (founder)
 - ✅ **Phase 1** (michelle f0aac72): deleted `curiosity.py` (shadow-compare: native A5 producer at
