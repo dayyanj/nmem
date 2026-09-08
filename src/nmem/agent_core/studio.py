@@ -201,6 +201,37 @@ def make_studio_router(get_runtime: Callable | None = None, *, config_dir: str =
     return router
 
 
+def studio_index_html() -> str:
+    """The productionised wizard SPA (built from docs/mockups/studio-wizard.html into
+    studio_ui/index.html), read from the installed package so it ships in the wheel and is
+    served straight from an editable checkout too."""
+    from importlib.resources import files
+    return (files("nmem.agent_core") / "studio_ui" / "index.html").read_text(encoding="utf-8")
+
+
+def create_studio_app(*, config_dir: str = ".", store_secrets: Callable[[dict], None] | None = None,
+                      start_agent: Callable | None = None, get_runtime: Callable | None = None):
+    """A ready-to-serve FastAPI app = the /studio/* router + the wizard SPA at ``/``. This is
+    what the studio docker image runs; an existing agent app can instead ``include_router`` just
+    the router. FastAPI is imported lazily here, exactly like the router, so the headless core
+    stays framework-free."""
+    from fastapi import FastAPI
+    from fastapi.responses import HTMLResponse
+
+    app = FastAPI(title="nmem-studio")
+    app.include_router(make_studio_router(get_runtime, config_dir=config_dir,
+                                          store_secrets=store_secrets, start_agent=start_agent))
+    cache: dict = {}
+
+    @app.get("/", response_class=HTMLResponse)
+    async def index():
+        if "html" not in cache:
+            cache["html"] = studio_index_html()
+        return cache["html"]
+
+    return app
+
+
 def _clean_error(e: Exception) -> str:
     """A user-facing error string that never leaks an Authorization header / api_key.
     httpx errors can carry the request; keep only the status + provider message."""

@@ -61,6 +61,7 @@ _LAZY = {
     "build_experiential_sink": ("nmem.agent_core.actuation", "build_experiential_sink"),
     "make_ops_router": ("nmem.agent_core.ops", "make_ops_router"),
     "make_studio_router": ("nmem.agent_core.studio", "make_studio_router"),
+    "create_studio_app": ("nmem.agent_core.studio", "create_studio_app"),
     "SymbolGoalStore": ("nmem.agent_core.goal_store", "SymbolGoalStore"),
     "CAPABILITIES": ("nmem.agent_core.capabilities", "CAPABILITIES"),
     "Capability": ("nmem.agent_core.capabilities", "Capability"),

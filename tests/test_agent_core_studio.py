@@ -8,13 +8,27 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from nmem.agent_core.studio import make_studio_router
+from nmem.agent_core.studio import create_studio_app, make_studio_router
 
 
 def _client(**kw):
     app = FastAPI()
     app.include_router(make_studio_router(**kw))
     return TestClient(app)
+
+
+def test_studio_app_serves_wizard_and_router(tmp_path):
+    # the docker image runs create_studio_app: the SPA at / and the router under /studio.
+    c = TestClient(create_studio_app(config_dir=str(tmp_path)))
+    home = c.get("/")
+    assert home.status_code == 200 and "text/html" in home.headers["content-type"]
+    body = home.text
+    assert "nmem-studio" in body
+    # the productionised SPA fetches the live catalog (no inlined data) and posts to the router
+    assert "fetch('/studio/catalog')" in body
+    for path in ("/studio/test-llm", "/studio/list-models", "/studio/create"):
+        assert path in body
+    assert c.get("/studio/catalog").status_code == 200
 
 
 def test_catalog_exposes_map_presets_and_groups():
