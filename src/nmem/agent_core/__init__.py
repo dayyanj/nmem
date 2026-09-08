@@ -28,8 +28,11 @@ them. Agents without `nmem_sym`/`nmem_act` installed can still `import nmem`.
 - `SymbolGoalStore` (goal_store) — maps nmem-sym `symbol_goals` to nmem-act's `GoalStore`.
 - recall consumer (recall) — subscribes to autonomy's `memory.surfaced` and injects it.
 
+- `PeerExchange` / `PeerExchangeSink` (peer) — agent-to-agent messaging over
+  nmem-exchange; inbound challenges run the agent's injected `on_challenge` cognition.
+
 **Roadmap (extract validate-then-thin from michelle, michelle stays live)**
-- peer glue: the standard nmem-exchange handler (michelle service/peer).
+- the experiential outcome sink (record_action_outcome + honest discharge + merit memory).
 - adapters: a DB-engine helper + a reference actuator executor scaffold.
 - an optional thin HTTP helper (health + admin) for agents that want one.
 """
@@ -47,6 +50,8 @@ _LAZY = {
     "CommsLoop": ("nmem.agent_core.comms", "CommsLoop"),
     "ChannelSink": ("nmem.agent_core.comms", "ChannelSink"),
     "Utterance": ("nmem.agent_core.comms", "Utterance"),
+    "PeerExchange": ("nmem.agent_core.peer", "PeerExchange"),
+    "PeerExchangeSink": ("nmem.agent_core.peer", "PeerExchangeSink"),
     "SymbolGoalStore": ("nmem.agent_core.goal_store", "SymbolGoalStore"),
 }
 
