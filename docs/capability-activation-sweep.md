@@ -290,6 +290,17 @@ already proven on a sibling agent (obligations→DJ-AI) or belongs to a differen
 exercise has been swept.**
 
 ## Flag dependency map (what each enabled flag REQUIRES)
+
+> **⚙️ MACHINE-READABLE SOURCE OF TRUTH:** this map is now code —
+> `nmem/src/nmem/agent_core/capabilities.py` (`CAPABILITIES` + `validate`/`check_env`, commit a4e049d).
+> `AgentRuntime.start()` runs `check_env()` and WARNS on any flag ON with a required flag OFF (it would
+> silently no-op); `strict_capabilities=True` escalates to raise. `requires` = hard flag→flag deps
+> (validated); `substrate` = non-flag prereqs (LLM endpoint / host sink / data / a running loop / a
+> matching id — advisory). The table below is the human-readable mirror — keep it in sync with the code,
+> which is authoritative. Validated against michelle's live merged env → 0 issues (dependency-complete).
+> **NB the enabled set is the MERGED process env (all EnvironmentFiles), not one file** — michelle's base
+> flags live in `michelle.env`, her opt-ins in `capabilities.env`.
+
 Captured as we go — prerequisites (other flags), external substrate, and any host-side wiring.
 **This map (in the doc) is the ONLY place to record deps.** ⚠️ Do NOT put inline `#` comments on
 ENABLED lines in `capabilities.env` — env-file parsing keeps everything after `=` as the value, so
