@@ -24,6 +24,11 @@ services:
       POSTGRES_PORT: "5432"
       POSTGRES_USER: nmem
       POSTGRES_PASSWORD: nmem
+      NMEM_AGENT_DB: agent_nmem            # fixed single-agent DB (so viz knows the URL up-front)
+      # live cognition → the bundled nmem-viz hub (agent mode streams deltas to its /ingest)
+      NMEM_SYM_VIZ_ENABLED: "1"
+      NMEM_VIZ_INGEST_URL: http://viz:5174/ingest
+      NMEM_VIZ_PUBLIC_URL: "http://localhost:${VIZ_HOST_PORT:-5174}/"
       # network access to a HOST-run LLM (e.g. local vLLM/Ollama) from inside the container:
       # point the wizard at http://host.docker.internal:PORT/v1
     extra_hosts:
@@ -48,6 +53,26 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+
+  # nmem-viz — the live 3D "brain": full graph snapshot from the agent DB + live deltas the
+  # agent streams to /ingest. Restart-loops until the agent DB exists (created on first Create),
+  # which is fine — viz only matters once there's an agent.
+  viz:
+    build:
+      context: ../../../nmem-viz
+      dockerfile: Dockerfile
+    image: nmem-viz:latest
+    restart: unless-stopped
+    ports:
+      - "${VIZ_HOST_PORT:-5174}:5174"
+    environment:
+      NMEM_VIZ_DATABASE_URL: postgresql://nmem:nmem@postgres:5432/agent_nmem
+      NMEM_VIZ_AGENT_ID: appliance
+      NMEM_VIZ_TITLE: "nmem agent · brain"
+      NMEM_VIZ_HTTP_PORT: "5174"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   redis:
     image: redis:7-alpine

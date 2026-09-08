@@ -121,6 +121,15 @@ def test_agent_dashboard_html_wires_ops():
         assert path in html
     assert "setInterval(refresh" in html      # live auto-refresh of health
     assert "/chat" in html and "sendChat" in html   # the grounded chat panel (Step 5)
+    assert "vizlink" in html                   # the nmem-viz "brain" link (Step 5b)
+
+
+def test_init_viz_is_noop_without_config(monkeypatch):
+    # the viz bridge is additive: with no NMEM_VIZ_INGEST_URL it never attaches (returns None)
+    # before touching the runtime, so it's safe to call unconditionally at boot.
+    from nmem.agent_core.viz import init_viz
+    monkeypatch.delenv("NMEM_VIZ_INGEST_URL", raising=False)
+    assert init_viz(object()) is None
 
 
 if __name__ == "__main__":

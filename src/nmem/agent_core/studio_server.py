@@ -77,28 +77,34 @@ def store_secrets(secrets: dict) -> None:
         _merge_env_file(os.path.join(d, "secrets.env"), secrets)
 
 
+def _agent_db_name() -> str:
+    """The appliance runs ONE agent, so its database has a FIXED name (``NMEM_AGENT_DB``,
+    default ``agent_nmem``) — independent of the agent's chosen id. That lets the bundled
+    nmem-viz service know the DB URL at compose time (the id is only picked in the wizard)."""
+    return os.environ.get("NMEM_AGENT_DB", "agent_nmem")
+
+
 def _agent_dsn(agent_id: str) -> str:
     """The async DSN for this agent's own database, from the appliance's Postgres env
-    (POSTGRES_HOST/PORT/USER/PASSWORD) + a per-agent DB name. This is what build_memory reads
-    via the ``<AGENT>_DB_DSN_ASYNC`` env key that render_agent_yaml wrote into agent.yaml."""
+    (POSTGRES_HOST/PORT/USER/PASSWORD) + the fixed appliance DB name. This is what build_memory
+    reads via the ``<AGENT>_DB_DSN_ASYNC`` env key that render_agent_yaml wrote into agent.yaml."""
     host = os.environ.get("POSTGRES_HOST", "postgres")
     port = os.environ.get("POSTGRES_PORT", "5432")
     user = os.environ.get("POSTGRES_USER", "nmem")
     pw = os.environ.get("POSTGRES_PASSWORD", "nmem")
-    db = f"{agent_id}_nmem"
-    return f"postgresql+asyncpg://{user}:{pw}@{host}:{port}/{db}"
+    return f"postgresql+asyncpg://{user}:{pw}@{host}:{port}/{_agent_db_name()}"
 
 
 async def provision_db(agent_id: str) -> str:
-    """CREATE DATABASE <agent>_nmem if absent (tables self-provision on first agent boot via
-    build_memory/build_symbol_graph). Idempotent. Returns the created DB name."""
+    """CREATE the appliance DB if absent (tables self-provision on first agent boot via
+    build_memory/build_symbol_graph). Idempotent. Returns the DB name."""
     import asyncpg
 
     host = os.environ.get("POSTGRES_HOST", "postgres")
     port = int(os.environ.get("POSTGRES_PORT", "5432"))
     user = os.environ.get("POSTGRES_USER", "nmem")
     pw = os.environ.get("POSTGRES_PASSWORD", "nmem")
-    db = f"{agent_id}_nmem"
+    db = _agent_db_name()
     conn = await asyncpg.connect(host=host, port=port, user=user, password=pw, database="postgres")
     try:
         exists = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", db)
@@ -174,17 +180,27 @@ def build_agent_app():
         else Persona(agent_id=config.get("db", {}).get("config_key", "agent"))
 
     runtime = AgentRuntime(config, persona)            # pure thinker; add executors via a custom image
+    viz = {"bridge": None}
 
     @asynccontextmanager
     async def lifespan(app):
         await runtime.start()                          # on uvicorn's loop → connections bound correctly
         log.info("[studio] agent %s up: %s", runtime.agent_id, runtime.status)
+        from nmem.agent_core.viz import init_viz       # live deltas → nmem-viz /ingest (if configured)
+        viz["bridge"] = init_viz(runtime)
         yield
+        if viz["bridge"] is not None:
+            await viz["bridge"].close()
         await runtime.stop()
 
+    def _health_extras():
+        return {"agent_id": runtime.agent_id,
+                "viz": bool(os.environ.get("NMEM_VIZ_INGEST_URL")),
+                "viz_url": os.environ.get("NMEM_VIZ_PUBLIC_URL", "")}
+
     app = FastAPI(title=f"nmem agent · {runtime.agent_id}", lifespan=lifespan)
-    # expose the agent id in /health so the dashboard can name what it's looking at
-    app.include_router(make_ops_router(lambda: runtime, extra_health=lambda: {"agent_id": runtime.agent_id}))
+    # /health carries the agent id (dashboard title) + whether/where the viz hub is reachable
+    app.include_router(make_ops_router(lambda: runtime, extra_health=_health_extras))
 
     dashboard = agent_dashboard_html()
 

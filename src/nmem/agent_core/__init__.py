@@ -76,6 +76,8 @@ _LAZY = {
     "converse": ("nmem.agent_core.chat", "converse"),
     "build_context": ("nmem.agent_core.chat", "build_context"),
     "system_prompt": ("nmem.agent_core.chat", "system_prompt"),
+    "init_viz": ("nmem.agent_core.viz", "init_viz"),
+    "VizBridge": ("nmem.agent_core.viz", "VizBridge"),
 }
 
 __all__ = list(_LAZY) + ["recall", "chat"]
