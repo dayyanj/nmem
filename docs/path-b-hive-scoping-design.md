@@ -60,13 +60,19 @@ nmem-sym to take two DSNs; note it as a future option, not the first cut.)
 
 ## 3. B-i — Agency scoping (the bounded half)
 
-### 3.1 Schema (needs explicit approval + a deliberate migration)
-Add `owner_agent TEXT` (nullable; **NULL = shared/legacy**, preserving today's behavior) + a
-supporting index to the agency tables:
-`symbol_goals`, `symbol_concerns`, `symbol_pending_utterances`, `symbol_obligations`,
-`symbol_requestors`, `symbol_episodes`.
-(Verify the live table list at build time — the schema has moved with 1.0. `symbol_failures.agent_id`
-is the naming/þindex template.) Index: `(owner_agent, status)` where the hot queries filter both.
+### 3.1 Schema — **APPROVED + MIGRATION WRITTEN (2026-09-08, refinery-migration session)**
+Founder-approved. Landed as **`nmem-sym/src/nmem_sym/migrations/017_owner_agent_agency_scope.sql`**:
+`owner_agent TEXT` (nullable; **NULL = shared/legacy** = today's behavior) on the agency tables + a
+partial `(owner_agent, status)` index on `symbol_goals` (the hot `get_actionable_goals` path).
+**Defensive** (`ALTER TABLE IF EXISTS … ADD COLUMN IF NOT EXISTS`) since agency tables are
+feature-gated — validated in a rollback txn: alters `symbol_goals`/`concerns`/`episodes`, **no-ops**
+the absent `pending_utterances`/`obligations`/`requestors` (spwig_refinery has 5 of the 6).
+Auto-applies on the next nmem-sym `connect()` per DB (refinery restart → spwig_refinery; sales_head →
+sales_head_ai), migration-tracked in `schema_migrations` (project `nmem-sym`). **For agent_core:** the
+column exists on connect BEFORE any query, and nothing passes `owner_agent` until `shared_world`, so
+the `SymbolGoalStore(owner_agent=…)` filter + owner-scoped `recover_orphaned` can land any time.
+**TODO (paired, minor):** sync `schema.sql` agency defs with `owner_agent` for the fresh-manual-install
+path (numbered migrations already cover every real DB).
 
 ### 3.2 The `SymbolBridge(agent_id=…)` seam
 Thread an optional `agent_id` into the bridge and every **agency** read/write:
@@ -178,6 +184,21 @@ Two `SymbolBridge`es (agents A, B) on ONE DB:
 - Only the **graph-keeper** runs dreamstate (B's contributor runtime does not fire it).
 - Run it under **codex adversarial reproduction** too (try to make A see B's agency) — the dual-review
   pattern that's caught the real defects so far.
+
+**Written (2026-09-08), split to match §10.1 ownership — both gated on a real PG (`NMEM_TEST_PG_DSN`):**
+- **agency half → `nmem/tests/test_hive_agency_scope.py`** (refinery-migration session): the sharp edge —
+  owner-scoped `actionable`/`claim` + the destructive `recover_orphaned` (A's recovery must NOT reset B's
+  in-flight goals). **GREEN ✅ (3/3, 2026-09-08).** B-i **Phase 1** landed on the LIVE libs (additive/
+  default-off): `nmem-sym/goals.py` `get_actionable_goals`/`mark_goal_pursuing` gained `owner_agent`, and
+  `agent_core/goal_store.py` `SymbolGoalStore(owner_agent=…)` threads it + scopes `claim`/`release`/
+  `recover_orphaned`. Live-safety verified: refinery `/health` 200 + nmem_sym imports clean + 0 tracebacks;
+  sales_head 200. Uses distinctive owners + self-cleans. TODO (Phase 2, for real hive use): extend with the
+  concern/pending/episode isolation once the `SymbolBridge(agent_id=…)` seam + `create_goal` owner-stamping
+  land — see §3.2/§3.4 (not yet built).
+- **keeper/HiveConfig half → `nmem/tests/test_agent_core_hive.py`** (nmem-core session): single-keeper
+  advisory lock (dedicated connection, 2nd can't acquire while 1st holds, failover) + `HiveConfig` presets.
+
+The **gate is green** ⇒ sales_head may go `shared_world`, and not before.
 
 This is the acceptance gate: sales_head does not go `shared_world` until it passes.
 
@@ -413,3 +434,35 @@ Revised order (supersedes §10.7 step order, same owners):
 The keeper is still a real decision for the refinery↔DJ-AI graph (§4.3 OPEN): DJ-AI stays keeper for now;
 the lock just makes it un-bypassable. Guards unchanged (additive/default-off; DJ-AI frozen; migration
 explicit+approved; acceptance test + codex before anything behavioral).
+
+---
+
+## 13. nmem-core — B-i Phase 1 independently verified (2026-09-08)
+
+Picked up your §3.1 (migration approved+written) + §7 (agency half landed on the live libs). Confirmed
+from the agent_core side — the codex-style dual check this doc runs on:
+
+- **No cross-session regression.** Your edit to `agent_core/goal_store.py` (my §10.1 file) matches the
+  frozen §12.4 signature **verbatim** (`SymbolGoalStore(pool, *, source_type="drive_intent",
+  owner_agent=None)`), and my full agent_core suite is **37 passed / 1 skipped** on the current tree — the
+  keeper/HiveConfig half and the actor layer are unaffected.
+- **Agency acceptance re-run green, fresh schema.** Re-provisioned a clean nmem-sym schema on a throwaway
+  Postgres and ran `test_hive_agency_scope.py` → **3/3**, including
+  `test_recover_orphaned_never_touches_another_agents_goals` (the once-table-wide line). The `owner_agent`
+  filter + scoped `recover_orphaned` are correct; `owner_agent=None` reproduces today's behavior.
+
+**One agent_core wiring note for Phase 2 (so nobody wires it prematurely).** The runtime builds the
+pursuit store as `SymbolGoalStore(self.graph.pool, source_type=…)` with **no** `owner_agent` today — correct
+and signature-compatible. It must stay unscoped **until** `create_goal` owner-stamping lands (§3.2/§3.4,
+your Phase 2): scoping the pursuit store to `owner_agent=hive.agent_id` *before* goals are stamped on
+creation would make a `shared_world` agent's `actionable` match **zero** goals (NULL-owner rows don't equal
+`:me`). So the agent_core Phase-2 slice is exactly: `_start_pursuit` passes `owner_agent=hive.agent_id` when
+`hive.is_shared_world`, landing **in lockstep** with your create-stamping. It's a one-liner, held until then.
+
+**Minor (Phase 2 polish, non-blocking):** `SymbolGoalStore.resolve()` isn't owner-scoped (it calls
+`resolve_goal(pool, id, …)`). Safe in practice because `claim` is strictly owner-scoped, so an agent only
+holds ids it owns — but for defense-in-depth, scope `resolve` too when the create-stamping lands.
+
+**Commit ownership:** `goal_store.py` + `test_hive_agency_scope.py` are your in-flight B-i unit (paired
+with nmem-sym `goals.py` + migration 017 in the sibling repo) — I've left them for you to land as one
+cross-repo commit rather than preempt it; verified-green on my side, ready when you are.
