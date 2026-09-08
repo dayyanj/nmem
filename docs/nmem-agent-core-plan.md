@@ -120,13 +120,15 @@ a config, not a copy):**
 </details>
 
 **Group 3 — optional sugar** (nice, not needed):
-- **E. DB-engine helper.** Graduate michelle's small standalone SQLAlchemy engine (`db.py`) as
-  `build_engine(dsn)` + `get_session`. Low value / low risk.
-- **F. Optional thin HTTP ops router.** michelle's `/health` + `/admin/{consolidate,dreamstate,nightly,
-  seed_recall,probe_recipes}` are generic (operate on `runtime.mem/graph/bridge`). Offer
-  `agent_core.make_ops_router(runtime)` an HTTP agent can mount. **Must stay optional** (lazy-import
-  FastAPI) so the headless core never drags in a web framework — a voice/CLI agent ignores it.
-- **G. Prompt-assembly helpers.** `build_memory_context` (tiered recall → prompt block) is generic and
+- ✅ **F. Optional thin HTTP ops router — DONE 2026-09-08 (nmem a559916, michelle f708f8d).**
+  `agent_core.ops.make_ops_router(get_runtime, extra_health=...)` → /health + /admin/{consolidate,
+  nightly,dreamstate,probe_recipes,seed_recall}, FastAPI lazy-imported (headless core stays
+  framework-free), runtime late-bound. michelle mounts it (server.py −~110 LOC); only `_health_extras`
+  + /peer/challenge stay local. Validated: /health parity, /admin/probe_recipes ok, 0 tracebacks. This
+  is the observability + validation harness every new agent now gets for free.
+- ☐ **E. DB-engine helper.** Graduate michelle's small standalone SQLAlchemy engine (`db.py`) as
+  `build_engine(dsn)` + `get_session`. Low value / low risk. Opportunistic.
+- ☐ **G. Prompt-assembly helpers.** `build_memory_context` (tiered recall → prompt block) is generic and
   could graduate; `build_system_prompt` is persona+channel-specific and stays. I/O-adjacent, low priority.
 
 **The floor — never graduates** (always the agent's own): the executor's actual work (michelle's
