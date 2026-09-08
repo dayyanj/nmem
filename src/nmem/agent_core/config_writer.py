@@ -80,9 +80,19 @@ def render_agent_yaml(
     sg.setdefault("enabled", True)
     sg.setdefault("domain", f"{agent_id}-cognition")
 
+    # The agent's reasoning brain (what AgentRuntime.build_backend reads from backends.brain).
+    # Note `url` not `base_url` — that's the key build_backend expects. The key is NEVER written:
+    # api_key_env names the env var it is read from at boot (kept in secrets, not agent.yaml).
+    brain = {"provider": llm_clean.get("provider", "openai"), "url": llm_clean.get("base_url"),
+             "model": llm_clean.get("model"), "family": llm_clean.get("family", "generic")}
+    if llm_clean.get("api_key_env"):
+        brain["api_key_env"] = llm_clean["api_key_env"]
+    brain = {k: v for k, v in brain.items() if v is not None}
+
     doc = {
         "db": {"env_key": env_key, "config_key": agent_id},
         "databases": {agent_id: {"url": db_url}},
+        "backends": {"brain": brain},
         "nmem": {
             "embedding": emb,
             "llm": llm_clean,
@@ -125,7 +135,7 @@ def build_agent_files(spec: dict) -> dict:
         persona = Persona.from_dict({**persona, "agent_id": persona.get("agent_id", agent_id)})
     llm = dict(spec.get("llm") or {})
     key = llm.pop("api_key", "")
-    key_env = llm.pop("api_key_env", "")
+    key_env = llm.get("api_key_env", "")   # a NAME, not a secret — stays in agent.yaml (backends.brain)
 
     return {
         "capabilities.env": render_capabilities_env(

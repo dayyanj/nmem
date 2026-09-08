@@ -1,0 +1,60 @@
+# nmem-studio single-agent appliance.
+#
+#   docker compose up          # first boot: open http://localhost:8080 → the setup wizard
+#                              # after you Create an agent, the container restarts into it
+#
+# The LLM is EXTERNAL (you point the wizard at your own endpoint / key — local vLLM/Ollama,
+# or a hosted API). Everything else — the studio, Postgres+pgvector, and the bundled
+# all-MiniLM embedder — runs in here. State lives in named volumes, so the agent survives
+# `compose down` and comes back up in agent mode.
+services:
+  studio:
+    build:
+      context: ../../..            # the apps/ monorepo root (reaches the sibling nmem-* libs)
+      dockerfile: nmem/docker/studio/Dockerfile
+    image: nmem-studio:latest
+    restart: unless-stopped        # the create→boot seam restarts the container into agent mode
+    ports:
+      - "8080:8080"
+    environment:
+      STUDIO_DATA_DIR: /data
+      STUDIO_PORT: "8080"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: nmem
+      POSTGRES_PASSWORD: nmem
+      # network access to a HOST-run LLM (e.g. local vLLM/Ollama) from inside the container:
+      # point the wizard at http://host.docker.internal:PORT/v1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - agent_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nmem
+      POSTGRES_PASSWORD: nmem
+      POSTGRES_DB: postgres         # the appliance CREATEs the per-agent DB itself
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nmem"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+volumes:
+  agent_data:
+  pg_data:
+  redis_data:

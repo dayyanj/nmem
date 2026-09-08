@@ -211,7 +211,11 @@ def build_backend(config: dict, role: str = "brain"):
     b = config.get("backends", {}).get(role, {})
     provider = os.environ.get("MICHELLE_LLM_PROVIDER") or b.get("provider", "openai")
     model = os.environ.get("MICHELLE_LLM_MODEL") or b.get("model")
-    api_key = os.environ.get("MICHELLE_LLM_API_KEY") or b.get("api_key", "")
+    # key resolution, secret-safe: explicit env > api_key in config (discouraged) > the env var
+    # NAMED by api_key_env (how the studio keeps hosted keys out of agent.yaml). Empty = keyless
+    # (a local vLLM/Ollama endpoint), which is fine.
+    api_key = (os.environ.get("MICHELLE_LLM_API_KEY") or b.get("api_key", "")
+               or (os.environ.get(b["api_key_env"], "") if b.get("api_key_env") else ""))
     family = os.environ.get("MICHELLE_LLM_FAMILY") or b.get("family", "generic")
 
     if provider == "anthropic":

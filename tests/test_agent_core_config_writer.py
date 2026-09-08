@@ -56,10 +56,22 @@ def test_preset_env_validates():
 def test_agent_yaml_excludes_secrets():
     y = render_agent_yaml(agent_id="scout",
                           llm={"provider": "anthropic", "base_url": "https://api.anthropic.com/v1",
-                               "model": "claude", "api_key": "sk-SECRET"})
-    assert "sk-SECRET" not in y and "api_key" not in y
+                               "model": "claude", "api_key": "sk-SECRET", "api_key_env": "ANTHROPIC_API_KEY"})
+    assert "sk-SECRET" not in y             # the key value is never written
     assert "scout-cognition" in y            # default domain
     assert "SCOUT_DB_DSN_ASYNC" in y         # env-key reference, not a literal DSN
+
+
+def test_agent_yaml_configures_the_brain():
+    import yaml
+    doc = yaml.safe_load(render_agent_yaml(
+        agent_id="scout",
+        llm={"provider": "openai", "base_url": "http://vllm:8000/v1", "model": "gemma",
+             "family": "gemma", "api_key": "sk-SECRET", "api_key_env": "SCOUT_LLM_TOKEN"}))
+    brain = doc["backends"]["brain"]         # what AgentRuntime.build_backend reads
+    assert brain["url"] == "http://vllm:8000/v1" and brain["model"] == "gemma"
+    assert brain["family"] == "gemma" and brain["api_key_env"] == "SCOUT_LLM_TOKEN"
+    assert "api_key" not in brain            # the NAME is written, never the key value
 
 
 def test_split_secrets():

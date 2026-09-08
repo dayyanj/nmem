@@ -1,0 +1,24 @@
+# Build-context filter for the studio image (BuildKit reads <dockerfile>.dockerignore).
+# The context is the apps/ monorepo root; scope it down to just the four nmem-* library
+# sources so the daemon isn't shipped every sibling repo, venv, and .git.
+*
+!nmem
+!nmem-sym
+!nmem-act
+!nmem-exchange
+
+# prune heavy / irrelevant bits from the included libraries (last-match-wins)
+**/.git
+**/.venv
+**/venv
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/node_modules
+**/.pytest_cache
+**/.mypy_cache
+nmem/docs
+nmem/tests
+nmem-sym/tests
+nmem-act/tests
+nmem-exchange/tests
