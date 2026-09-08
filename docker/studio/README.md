@@ -19,7 +19,7 @@ cd nmem/docker/studio
 docker compose up --build        # first run builds the image (installs CPU torch + the embedder)
 ```
 
-Then open <http://localhost:8080>.
+Then open <http://localhost:8080>. (If 8080 is taken: `STUDIO_HOST_PORT=18080 docker compose up`.)
 
 The **LLM is external** — you bring your own endpoint and key:
 

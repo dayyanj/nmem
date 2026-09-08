@@ -15,7 +15,8 @@ services:
     image: nmem-studio:latest
     restart: unless-stopped        # the create→boot seam restarts the container into agent mode
     ports:
-      - "8080:8080"
+      # override the host port if 8080 is taken:  STUDIO_HOST_PORT=18080 docker compose up
+      - "${STUDIO_HOST_PORT:-8080}:8080"
     environment:
       STUDIO_DATA_DIR: /data
       STUDIO_PORT: "8080"
