@@ -192,6 +192,21 @@ def build_agent_app():
     async def home():
         return dashboard
 
+    @app.post("/chat")
+    async def chat(req: dict):
+        """Hold one grounded conversation turn (agent_core.chat.converse). Body: {message,
+        history?:[{role,content}]}. The chat page keeps history; the agent's memory grounds
+        every turn regardless."""
+        msg = (req or {}).get("message", "").strip()
+        if not msg:
+            return {"ok": False, "error": "message required"}
+        try:
+            reply = await runtime.converse(msg, history=(req or {}).get("history") or [])
+            return {"ok": True, "reply": reply}
+        except Exception as e:  # noqa: BLE001
+            log.warning("[studio] chat failed: %s", e, exc_info=True)
+            return {"ok": False, "error": str(e)}
+
     return app, runtime
 
 

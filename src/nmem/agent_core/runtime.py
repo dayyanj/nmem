@@ -110,6 +110,12 @@ class AgentRuntime:
         await self._wire_cognition()
         return self.status
 
+    async def converse(self, message: str, **kw):
+        """Hold one memory-grounded conversation turn with this agent (see
+        ``nmem.agent_core.chat.converse``). The reusable core behind any chat UI."""
+        from nmem.agent_core.chat import converse
+        return await converse(self, message, **kw)
+
     async def stop(self) -> None:
         """Tear the mind down cleanly (idempotent). Cancel loops, stop consolidation,
         close memory + graph."""

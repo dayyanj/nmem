@@ -73,9 +73,12 @@ _LAZY = {
     "build_agent_files": ("nmem.agent_core.config_writer", "build_agent_files"),
     "write_agent": ("nmem.agent_core.config_writer", "write_agent"),
     "render_capabilities_env": ("nmem.agent_core.config_writer", "render_capabilities_env"),
+    "converse": ("nmem.agent_core.chat", "converse"),
+    "build_context": ("nmem.agent_core.chat", "build_context"),
+    "system_prompt": ("nmem.agent_core.chat", "system_prompt"),
 }
 
-__all__ = list(_LAZY) + ["recall"]
+__all__ = list(_LAZY) + ["recall", "chat"]
 
 
 def __getattr__(name):

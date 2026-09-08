@@ -120,6 +120,7 @@ def test_agent_dashboard_html_wires_ops():
                  "/admin/probe_recipes", "/admin/seed_recall"):
         assert path in html
     assert "setInterval(refresh" in html      # live auto-refresh of health
+    assert "/chat" in html and "sendChat" in html   # the grounded chat panel (Step 5)
 
 
 if __name__ == "__main__":
