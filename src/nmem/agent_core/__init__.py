@@ -32,9 +32,12 @@ them. Agents without `nmem_sym`/`nmem_act` installed can still `import nmem`.
   nmem-exchange; inbound challenges run the agent's injected `on_challenge` cognition.
 - `build_experiential_sink` (actuation) — the act->learn outcome sink (episode +
   procedure reward + honest discharge + merit finding memory) for any acting agent.
+- `make_ops_router` (ops) — OPTIONAL FastAPI router (lazy-imported): /health +
+  /admin/{consolidate,nightly,dreamstate,probe_recipes,seed_recall}. An HTTP agent
+  mounts it for instant observability; a voice/CLI agent ignores it.
 
 **Roadmap (extract validate-then-thin from michelle, michelle stays live)**
-- a DB-engine helper (Group 1E) + an optional thin HTTP ops helper (Group 3F).
+- a DB-engine helper (Group 1E) + prompt-assembly helpers (Group 3G) — opportunistic.
 """
 from __future__ import annotations
 
@@ -53,6 +56,7 @@ _LAZY = {
     "PeerExchange": ("nmem.agent_core.peer", "PeerExchange"),
     "PeerExchangeSink": ("nmem.agent_core.peer", "PeerExchangeSink"),
     "build_experiential_sink": ("nmem.agent_core.actuation", "build_experiential_sink"),
+    "make_ops_router": ("nmem.agent_core.ops", "make_ops_router"),
     "SymbolGoalStore": ("nmem.agent_core.goal_store", "SymbolGoalStore"),
 }
 

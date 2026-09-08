@@ -72,6 +72,10 @@ class AgentRuntime:
         self._pursue_task = None
         self.status: dict = {"enabled": False}
 
+    @property
+    def agent_id(self) -> str:
+        return self._persona.agent_id
+
     # ── lifecycle ─────────────────────────────────────────────────
     async def start(self) -> dict:
         """Bring the mind up: memory + graph + backend + persona + cognition + loops.
