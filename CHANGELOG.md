@@ -3,6 +3,54 @@
 All notable changes to nmem are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.0] — 2026-09-08
+
+**First stable release.** nmem's public API and on-disk schema are now stable —
+breaking changes bump the major version from here — and the package is promoted from
+Alpha to Production/Stable. This release rolls up everything since 0.11.0: a headless
+agent runtime, a hardened skills loop, self-engineering, the capability-activation
+sweep, and two additive schema steps.
+
+### Added
+
+- **`nmem.agent_core` — a headless cognitive runtime.** A new agent is now *config +
+  persona + (executor) + host I/O*, with no hand-rolled cognition. `AgentRuntime` owns
+  the whole boot→run→shutdown lifecycle (memory + symbol graph + backend + persona
+  seeding + the drive / pursuit / consolidation / recall / comms loops); `Persona` +
+  `seed_persona` carry identity as data; `build_memory` / `build_symbol_graph` /
+  `build_backend` are the order-safe bootstrap; `CommsLoop` / `ChannelSink` and
+  `PeerExchange` give channel-agnostic communication; `SymbolGoalStore` and the recall
+  consumer are proven adapters. Opt-in and lazily imported, so `import nmem` never pulls
+  the nmem-sym / nmem-act cycle. Proven by extraction from a live agent and shipped with a
+  four-file `examples/minimal_agent/`.
+- **Skills capture→surface→apply loop (hardened).** Native LLM canonicalization of skill
+  keys, canonical-key dedup that coalesces paraphrases of one lesson, salience-ranked
+  `find()`, and `skill.chronic` escalation at milestones — the loop that lets an agent
+  stop repeating its mistakes.
+- **Self-engineering** — context recipes (advisory prompt fragments distilled from proven
+  skills, behind an acceptance gate + host veto + staleness decay) and propose-only
+  sub-agent specs. **Capability-activation sweep** — drives, autonomy, prediction,
+  concern-persistence, and commitment-detection land as opt-in, default-off capabilities.
+
+### Changed
+
+- **`Development Status` → Production/Stable.**
+
+### Schema
+
+- **v4** — `nmem_journal_entries.entry_type` widened `VARCHAR(30)` → `VARCHAR(100)`.
+- **v5** — `nmem_skills.canonical_key VARCHAR(200)` added (nullable) + partial index,
+  backing canonical-key dedup.
+- `CURRENT_SCHEMA_VERSION = 5`. All 0.9→1.0 schema deltas are additive and
+  forward-compatible: an agent on an older nmem keeps reading and writing the shared
+  tables unchanged.
+
+### Compatibility
+
+- Default-off / additive throughout. Adopting 1.0.0 alongside agents still on 0.9–0.11 on
+  a **shared database** is safe — every new capability stays inert until enabled in that
+  agent's `capabilities.env`.
+
 ## [0.11.0] — 2026-08-19
 
 **Theme: self-engineering — nmem distills its own context and proposes its own

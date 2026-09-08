@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nmem"
-version = "0.11.0"
+version = "1.0.0"
 description = "Cognitive memory for AI agents — hierarchical, self-refining, and framework-agnostic"
 readme = "README.md"
 license = "MIT"
@@ -17,7 +17,7 @@ keywords = [
     "hierarchical-memory", "vector-search", "agent-memory",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",

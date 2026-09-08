@@ -47,9 +47,11 @@ class AgentRuntime:
         backend: Any | None = None,
         mem: Any | None = None,
         graph: Any | None = None,
+        strict_capabilities: bool = False,
     ) -> None:
         self._config = config
         self._persona = persona
+        self._strict_caps = strict_capabilities
         self._build_executor = build_executor
         self._build_proposal = build_proposal
         self._comms_sink = comms_sink
@@ -76,11 +78,27 @@ class AgentRuntime:
     def agent_id(self) -> str:
         return self._persona.agent_id
 
+    def _check_capabilities(self) -> None:
+        """Fail-fast on an invalid capability combo (a flag ON while a required flag is
+        OFF → it would silently no-op). Warns loudly by default; raises if the runtime
+        was built with strict_capabilities=True."""
+        from nmem.agent_core.capabilities import check_env
+        issues = check_env()
+        if not issues:
+            return
+        for i in issues:
+            log.warning("[runtime] capability dependency unmet: %s", i.message)
+        if self._strict_caps:
+            raise ValueError(
+                "invalid capability combination: "
+                + "; ".join(i.message for i in issues))
+
     # ── lifecycle ─────────────────────────────────────────────────
     async def start(self) -> dict:
         """Bring the mind up: memory + graph + backend + persona + cognition + loops.
         mem/graph/backend passed to the constructor are used as-is; anything not passed
         is built here."""
+        self._check_capabilities()
         if self.mem is None:
             self.mem = await build_memory(self._config)
         if self.graph is None:

@@ -7,6 +7,8 @@
 
 **Cognitive memory for AI agents**: hierarchical, self-refining, and framework-agnostic.
 
+**Status: 1.0 — stable.** The public API and on-disk schema are stable; breaking changes bump the major version. See the [changelog](CHANGELOG.md).
+
 nmem gives your agents a brain that learns. Not just storage and retrieval, but active cognition — automatic promotion, belief revision, nightly retrospectives, social learning across agents, and token-tracked prompt injection.
 
 > **We're actively looking for contributors.** nmem is intentionally built as a community-driven project. Code, docs, ideas, bug reports, independent benchmarks, and adversarial testing are all welcome. See [Contributing](#contributing) below.

@@ -58,6 +58,10 @@ _LAZY = {
     "build_experiential_sink": ("nmem.agent_core.actuation", "build_experiential_sink"),
     "make_ops_router": ("nmem.agent_core.ops", "make_ops_router"),
     "SymbolGoalStore": ("nmem.agent_core.goal_store", "SymbolGoalStore"),
+    "CAPABILITIES": ("nmem.agent_core.capabilities", "CAPABILITIES"),
+    "Capability": ("nmem.agent_core.capabilities", "Capability"),
+    "validate_capabilities": ("nmem.agent_core.capabilities", "validate"),
+    "check_capability_env": ("nmem.agent_core.capabilities", "check_env"),
 }
 
 __all__ = list(_LAZY) + ["recall"]
