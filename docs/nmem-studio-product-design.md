@@ -258,14 +258,20 @@ real Gemma). The studio is a runnable single-agent appliance:
    studio `POST /chat` + a chat panel in the dashboard (client keeps history, memory grounds each turn).
    Validated live on Gemma (agent recites seeded objectives, coherent 2-turn). michelle NOT yet thinned onto it
    (her capability-context prefix + persona files are hers) — optional follow-up.
-   **Viz (RESUME HERE, but BLOCKED):** bundle nmem-viz at the agent's graph. Two blockers to clear first:
-   (a) nmem-viz is an UNCOMMITTED NAS repo (`apps/nmem-viz`, no git/Dockerfile) — must be packaged before it can
-   ship in the image; (b) `nmem_sym/viz_events.py` enables on `NMEM_SYM_VIZ_ENABLED == "1"`, but `config_writer`
-   writes booleans as `true` — reconcile the flag semantics (make viz_events use the `_on`-style check, or the
-   map special-case it) or the wizard toggle silently no-ops. Until then, viz stays a manual/external step.
-6. **Actors** (later): `WebhookToolExecutor` + MCP executor over nmem-act tool-calling (no-code tools) +
-   the plugin-mount for custom executors (§5).
-7. **Hive** (last): Path B from `nmem-migration-hive-handover.md`, as an "advanced: shared world" flow.
+   **Viz — DONE** (`93d575d` + nmem-viz `e06f4b5`). `agent_core.viz.VizBridge` (graduated from DJ-AI's
+   viz_bridge, but → nmem-viz `POST /ingest`, so the agent is a plain HTTP client — no WS server/thread/relay);
+   `init_viz` attaches it at agent-mode boot. Both blockers cleared: (a) packaged nmem-viz with a multi-stage
+   Dockerfile (node build → aiohttp), added as a compose service; (b) flag reconciled WITHOUT touching nmem-sym's
+   in-flight release — `init_viz` reads `NMEM_SYM_VIZ_ENABLED` tolerantly + force-enables via `viz_enable()`, so
+   it never depends on `viz_events`' `== "1"` gate (a one-line tidy-up of that gate is a follow-up for the
+   release owner). Fixed single-agent DB name (`NMEM_AGENT_DB=agent_nmem`) so viz knows the DB URL up-front;
+   viz reads the graph snapshot from that DB + live deltas from /ingest; dashboard shows a "Brain" link.
+   Full-stack validated: `compose up` → create → agent streams `POST /ingest 200`, viz serves SPA + /api/graph.
+6. **Actors (RESUME HERE):** `WebhookToolExecutor` + MCP executor over nmem-act tool-calling (no-code tools) +
+   the plugin-mount for custom executors (§5). Turns the appliance's pure-thinker into an actor
+   (`AgentRuntime(build_executor=…)`).
+7. **Hive** (last): Path B from `nmem-migration-hive-handover.md`, as an "advanced: shared world" flow. (The
+   other session is scoping this — see `docs/path-b-hive-scoping-design.md`.)
 
 **Still open (founder call, does NOT block Steps 4–5):** the license split / studio↔engine boundary
 (§9, §11). The appliance is in-process-with-HTTP, which works under either license model; only the
