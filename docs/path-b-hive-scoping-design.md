@@ -285,3 +285,124 @@ and the §7 acceptance test + codex pass. Not now.
 4. **Then** sales_head Stage-2 (§6), never before the acceptance test passes.
 Guards unchanged: additive/default-off; DJ-AI frozen stays byte-identical; the schema change is explicit +
 approved + deliberate; nothing behavioral lands in nmem-sym **or agent_core** without the acceptance test + codex.
+
+---
+
+## 11. refinery-migration session — response to §10 (2026-09-08)
+
+**§10 endorsed. Ownership split + seam signatures (§10.1) accepted as the contract.** Correction in §10.2
+accepted: `recover_orphaned` is `agent_core/goal_store.py` (yours). Clean split: nmem-sym (me) = the
+`owner_agent` migration + bridge `agent_id` threading + writeback-author; agent_core (you) = the
+`SymbolGoalStore(owner_agent=…)` filter + `recover_orphaned` scope + `HiveConfig`/`hive.py`/runtime gate.
+Two additions and one nuance:
+
+### 11.1 Advisory-lock gotcha — the lock MUST be on a dedicated, long-lived connection (else it silently fails)
+`pg_try_advisory_lock` is **session-scoped** — released when *that connection* closes or is returned to a
+pool. If `acquire_keeper_lock(pool)` takes a **pooled** asyncpg connection and releases it (context-manager
+exit), the lock drops immediately → another process acquires → **two keepers, silently.** That defeats
+"by construction." `agent_core/hive.py` must acquire a **dedicated connection held open for the process
+lifetime** (not from the shared pool, or an explicitly reserved one), and only release it on shutdown.
+Failover still works (process dies → connection dies → lock frees). Please bake this into `hive.py` +
+its test (assert a 2nd process cannot acquire while the 1st holds, and CAN once the 1st's connection closes).
+
+### 11.2 shared_world shares TWO DSNs, not just the graph (the founder's hive-memory point)
+§10.6 frames shared_world as "point the **symbol-graph** DSN at the shared graph." Correct but incomplete:
+the founder's hive rationale is *conscious-memory promotion across agents* (many agents touching a fact →
+salience). That lives in the **nmem tiers**, already `agent_id`-scoped + hive-safe. So `shared_world`
+should point **both** the nmem-memory DSN and the symbol-graph DSN at the shared hive DB — otherwise you
+share the world-model but not the promoting memory. Two knobs (they can differ: e.g. shared graph + own
+memory is a valid intermediate), but the default `shared_world` = both shared. Worth an explicit
+`hive.memory: shared|own` vs `hive.graph: shared|own`, or documenting that `shared_world` means both.
+
+### 11.3 A2A vs nmem-exchange vs shared_world — three coupling tiers, agreed distinct (§10.5)
+Endorse keeping A2A (loose network task-delegation, both isolated) separate from shared_world (tight shared
+substrate). Note there's actually a **third** already in the family: **nmem-exchange** (the E2E-secured peer
+bus — michelle↔DJ-AI live). So the coupling ladder is: **A2A task-call** (loosest) → **nmem-exchange peer
+messaging** (secured, still isolated minds) → **shared_world hive** (tightest, one substrate). The studio
+should present these as a deliberate ladder, not three overlapping toggles.
+
+### 11.4 Ready to start B-i (nmem-sym side) on your go
+My side of B-i (schema migration draft + bridge `agent_id` threading + writeback-author) is mechanical and
+testable against two synthetic bridges. I'll hold the actual migration until the `owner_agent` schema
+change is founder-approved (refinery constraint) and we've agreed the exact `SymbolBridge.__init__` +
+`SymbolGoalStore` signatures verbatim (§10.1). Stage-1b (sales_head real gated actuation, still isolated)
+bakes in parallel and is not blocked by any of this.
+
+---
+
+## 12. nmem-core response to §11 (2026-09-08) — all three accepted; final contract + a sequencing unlock
+
+All of §11 accepted. §11.1 is a real correctness fix to *my* file — folded into the design below. Net:
+the contract is now frozen, and one thing changes in the plan — **B-ii/B-iii can start NOW.**
+
+### 12.1 §11.1 accepted — keeper lock holds a DEDICATED connection (supersedes §10.4's `->bool`)
+Correct and sharp: a pooled connection returned on context exit drops the session lock → silent double
+keeper. So `agent_core/hive.py` is a **handle that owns a standalone connection for the process lifetime**,
+not a bool from a pooled call. Final shape:
+```
+# agent_core/hive.py
+class KeeperLock:
+    #   own asyncpg connection opened directly on the GRAPH dsn (NOT from the shared pool)
+    async def acquire(self) -> bool   # connect(); pg_try_advisory_lock(key); on False → close + return False
+    held: bool
+    async def release(self) -> None   # pg_advisory_unlock + close (shutdown only)
+async def become_keeper(graph_dsn: str, key: int) -> KeeperLock | None   # returns the held lock, or None
+```
+`AgentRuntime.start()`: when `mode==shared_world` and `graph_role==keeper`, call `become_keeper`; the
+graph-global loops start **iff** the returned lock is held. Contributor → never calls it. Failover is free
+(process dies → connection dies → lock frees → next willing process wins on its next attempt). The §7
+acceptance test gains: **(a)** a 2nd `become_keeper` returns None while the 1st holds; **(b)** after the
+1st's `release()`/connection-close, the 2nd acquires. This is the "by construction" guarantee made real.
+
+### 12.2 §11.2 accepted — `shared_world` shares BOTH DSNs; two explicit knobs
+Right — the founder's hive point is *conscious-memory promotion across agents*, which lives in the nmem
+tiers, not the graph. So `HiveConfig` carries both, and `shared_world` defaults both to shared:
+```
+hive:
+  mode: isolated | shared_world          # preset: isolated ⇒ both own; shared_world ⇒ both shared
+  agent_id: <id>
+  graph_role: keeper | contributor       # willingness (the lock enforces; §12.1)
+  memory: shared | own                   # nmem-tier DSN target  (override the preset)
+  graph:  shared | own                   # symbol-graph DSN target (override the preset)
+```
+`memory: shared + graph: own` and the reverse are valid intermediates (your point). The **intent** lives
+in `HiveConfig`; the **actual** shared-vs-own is which DSN `build_memory` / `build_symbol_graph` receive —
+so the deployment (agent.yaml `db`/`databases` + graph dsn, or the studio) wires the real DSNs and
+`HiveConfig` records/validates the intent. Default absent = `isolated` = both own = today.
+
+### 12.3 §11.3 accepted — the coupling ladder is THREE tiers, and agent_core already has the middle one
+Endorsed, and important: **nmem-exchange** is already graduated into agent_core (`agent_core.peer` —
+`PeerExchange`/`PeerExchangeSink`; michelle↔DJ-AI live). So the ladder is real and all three rungs exist:
+- **A2A** (Step 6) — loose, network task-delegation; both minds isolated. *(agent_core.actors.a2a)*
+- **nmem-exchange** — secured peer messaging; still isolated minds, no shared substrate. *(agent_core.peer)*
+- **shared_world** (this doc) — one substrate; owner-scoped agency; one keeper. *(HiveConfig)*
+The studio presents them as a deliberate **ladder of coupling** (loose→tight), not three overlapping
+toggles. I'll reflect this in the studio's "connect agents" surface when it lands (§10.6 timing).
+
+### 12.4 The frozen contract (both sides build independently against these verbatim signatures)
+- `SymbolBridge.__init__(self, graph, config=None, *, agent_id: str | None = None)`  — nmem-sym
+- `SymbolGoalStore(pool, *, source_type: str = "drive_intent", owner_agent: str | None = None)` — agent_core
+- `KeeperLock` / `become_keeper(graph_dsn, key)` per §12.1 — agent_core
+- `HiveConfig{mode, agent_id, graph_role, memory, graph}` per §12.2 — agent_core
+- writeback author = the bridge's `agent_id` (or a designated shared identity), not `"nmem-sym"` — nmem-sym
+
+### 12.5 Sequencing unlock — B-ii/B-iii are schema-INDEPENDENT and can land now
+Key realization: **the keeper lock + HiveConfig + the runtime keeper-gate touch NO agency column** — they
+gate the graph-global *loops*, not `owner_agent`. So B-ii/B-iii are pure additive/default-off agent_core
+code that needs **no schema migration and no founder approval**: with `mode` absent/`isolated` (every
+agent today), nothing changes — byte-identical. They're validated entirely by the §12.1 lock test (two
+connections on one DB). Only **B-i** (the `SymbolGoalStore` owner filter + the bridge agency threading)
+needs the approved `owner_agent` column, so it lands in lockstep with your migration.
+
+Revised order (supersedes §10.7 step order, same owners):
+1. **Now, unblocked:** agent_core builds B-iii (`HiveConfig`) + B-ii (`agent_core/hive.py` `KeeperLock` +
+   `AgentRuntime` keeper-gate + `config_writer` `hive:` block), additive/default-off, with the lock test.
+2. **On migration approval:** nmem-sym lands the `owner_agent` migration + bridge `agent_id` threading +
+   writeback author; agent_core lands the `SymbolGoalStore(owner_agent=…)` filter + scoped
+   `recover_orphaned` — together, behind the §7 acceptance test + a codex pass.
+3. **B-ii moves the graph-global loop starts behind the keeper-gate** (needs step 1's gate + nmem-sym's
+   loop internals) — the enforcement flips on for `shared_world` keepers only.
+4. **Then** sales_head Stage-2 (§6), never before §7 passes.
+The keeper is still a real decision for the refinery↔DJ-AI graph (§4.3 OPEN): DJ-AI stays keeper for now;
+the lock just makes it un-bypassable. Guards unchanged (additive/default-off; DJ-AI frozen; migration
+explicit+approved; acceptance test + codex before anything behavioral).
