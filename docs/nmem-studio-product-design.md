@@ -1,7 +1,24 @@
 # nmem-studio — product design
 
-**Status:** design/vision, 2026-09-08. **Owner:** founder. **Not started** (no code). Written from the
-same session that built agent-core; captures the product shape discussed so it's ready to pick up.
+**Status:** design/vision, 2026-09-08. **Owner:** founder. Written from the same session that built
+agent-core; captures the product shape discussed so it's ready to pick up.
+
+**Foundations BUILT (2026-09-08, backend only — no web UI yet):**
+- **Capability map + validator** (`agent_core.capabilities`, commit a4e049d): machine-readable
+  `flag→requires` map; `AgentRuntime` fail-fasts on a bad combo. The studio's dependency-enforcement layer.
+- **Catalog + presets** (805bb05): `catalog()` renders pills from the live pydantic `Field` descriptions
+  (anti-drift); `PRESETS` (Memory/Reflective/Full-cognition) = the "basic" view.
+- **Config writer** (`agent_core.config_writer`, 0e8385c): `build_agent_files(spec)` →
+  correct-by-construction `capabilities.env` (dependency-complete, no inline-#, booleans, defaults
+  omitted, implied value-constraints auto-written) + non-secret `agent.yaml` (keys stripped) +
+  `persona.yaml` + `secrets` (env-var→value, stored out of band). `Persona.from_dict/to_dict` = persona
+  as data. This IS the wizard→config backend + the mechanical env-rule enforcement.
+- **Entry-UI mockup**: a working wizard grounded in the real catalog (dependency-enforced pills, presets,
+  provider-aware Models step with a server-side "Test connection", live `capabilities.env` preview). Not
+  in the repo; published as an inspectable artifact during design.
+
+Remaining is the web layer + the `/studio/test-llm` & `/studio/list-models` backend endpoints + first-boot
+image, per §10 phasing. Provider setup + connection-test design captured in §5-bis below.
 **Companions:** `nmem-agent-core-plan.md` (the runtime), `nmem-migration-hive-handover.md` (env rules +
 hive), `capability-activation-sweep.md` (the flag surface + dependency map).
 
@@ -107,6 +124,33 @@ executor" — it's three tiers, and the UI covers the first two:
 Product framing: **"tool-calling actors are no-code; custom actuators use a documented plugin mount."**
 This is built on machinery we already have and turns "the UI can't do actors" into "the UI does most
 actors end-to-end."
+
+## 5-bis. Model providers + connection test (setup & validate from the UI)
+
+The Models step is provider-aware: a dropdown of presets (Local vLLM/Ollama, OpenAI, Anthropic/Claude,
+Moonshot/Kimi, OpenRouter, DeepSeek, Groq, Together, Custom) pre-fills `base_url` + dialect and reveals a
+key field only when the provider needs one. A provider preset is data: `{label, base_url, dialect,
+key_env, sample_models}`.
+
+**The connection test is SERVER-SIDE, and the key never touches the browser.** The browser can't call
+`api.openai.com` / `api.anthropic.com` directly (CORS), and mustn't hold the key. So:
+- The wizard POSTs `{provider, base_url, model, key}` to the studio backend (`POST /studio/test-llm`).
+- The backend **stores the key as a secret** (its secret store / env, referenced from `agent.yaml` only by
+  var name — never the literal), then runs the test **itself**: constructs `agent_core.backend`
+  (`OpenAICompatibleBackend` / `AnthropicBackend`, the very client the agent will use, honouring the
+  dialect) and makes a one-token chat call. Returns `{ok, model, latency_ms, error}` — never the key back.
+- `POST /studio/list-models` (server-side `GET {base}/models`) powers the "fetch available" model picker.
+- Testing the real chat path (not just `/models`) validates dialect quirks (Claude `thinking`, Qwen
+  `reasoning_effort`), so green means "the agent can actually talk to it," not "the host pinged."
+
+**Consumer subscriptions (ChatGPT Plus / Claude Max / etc.) — PARKED (deliberate, not an oversight).** A
+subscription backs the chat *app*, not a programmatic chat endpoint; the only sanctioned programmatic path
+is the coding-agent CLIs (Codex on Plus, Claude Code on Max), which are agentic harnesses (inject their own
+prompt/tools) and are rate-limited for interactive use — a poor fit for an always-on agent's continuous
+cognition, plus ToS greyness for headless 24/7 use. The cheap path for a constantly-thinking agent is
+**local models** (zero marginal cost, no limits), already the studio default. A `CLIBackend` that shells
+out to `claude -p` / `codex exec` behind the `chat()` interface is feasible as a *personal/local* adapter
+only, never a product feature.
 
 ## 6. Starter personas / templates
 Ship 2–3 editable templates (the blank persona is the real friction, not the toggles):
