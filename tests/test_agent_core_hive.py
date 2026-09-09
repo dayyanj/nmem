@@ -39,52 +39,112 @@ def test_keeper_key_is_deterministic_across_processes():
     assert -(2**63) <= k < 2**63                          # fits a Postgres bigint
 
 
-def test_graph_global_cycles_gated_on_keeper_state():
-    """B-ii step-3 (graph-global half): ``runs_graph_global`` decides whether THIS process runs the
-    clustering + dreamstate cycles — it's the value fed to BridgeConfig cluster_on_full_cycle /
-    dreamstate_on_nightly. Solo/isolated ⇒ always (unchanged); shared_world ⇒ keeper-only. Tested
-    on the property directly (it reads only hive + is_keeper) so no DB/boot is needed."""
+class _FakeLock:
+    """Stand-in for KeeperLock: alive()/verify() honor a settable flag (default healthy)."""
+    def __init__(self, alive=True):
+        self.held = alive
+        self._alive = alive
+    def alive(self):
+        return self._alive
+    async def verify(self):
+        self.held = self._alive
+        return self._alive
+
+
+def test_runs_graph_global_is_tied_to_live_lock_possession():
+    """B-ii step-3: ``runs_graph_global`` is the per-cycle keeper gate (fed to the bridge callable).
+    Isolated ⇒ always True (solo appliance = today). shared_world ⇒ True ONLY while we hold a LIVE lock
+    — NOT a stale is_keeper flag — so a keeper whose lock connection dies de-authorizes immediately,
+    which is what stops two keepers after a session loss (codex P1). No DB/boot needed."""
     from nmem.agent_core.runtime import AgentRuntime
 
-    def _rt(mode, is_keeper):
-        rt = AgentRuntime.__new__(AgentRuntime)      # bypass __init__: gate reads only these two
+    def _rt(mode, lock):
+        rt = AgentRuntime.__new__(AgentRuntime)
         rt.hive = HiveConfig.from_dict({"mode": mode, "agent_id": "scout",
-                                        "graph_role": "keeper" if is_keeper else "contributor"})
-        rt.is_keeper = is_keeper
+                                        "graph_role": "keeper" if lock else "contributor"})
+        rt._keeper_lock = lock
         return rt
 
-    assert _rt("isolated", False).runs_graph_global is True     # solo appliance = today, no change
-    assert _rt("shared_world", True).runs_graph_global is True  # elected keeper runs them
-    assert _rt("shared_world", False).runs_graph_global is False  # contributor SUPPRESSED (the point)
+    assert _rt("isolated", None).runs_graph_global is True              # solo = today, no lock needed
+    assert _rt("shared_world", _FakeLock(alive=True)).runs_graph_global is True    # holds a live lock
+    assert _rt("shared_world", None).runs_graph_global is False         # contributor, no lock
+    assert _rt("shared_world", _FakeLock(alive=False)).runs_graph_global is False  # lock conn died → de-authorized
 
 
-def test_keeper_retry_loop_takes_over_when_lock_frees(monkeypatch):
-    """Live failover (tick A): a willing contributor that lost the boot election retries the lock and,
-    on acquiring it, flips is_keeper — so the D1 callable (lambda: runs_graph_global) starts returning
-    True and the already-registered graph-global hooks resume, no restart. Patches become_keeper (the
-    loop imports it at call time) so no live PG is needed; the lock is still held on the first poll."""
+def test_keeper_watch_loop_takes_over_when_lock_frees(monkeypatch):
+    """Live failover (tick A): a willing process that doesn't hold the lock re-acquires it via the watch
+    tick; on acquire, runs_graph_global flips True (the bridge callable then re-activates the dormant
+    hooks, no restart). Patched become_keeper (imported at call time) so no live PG is needed."""
+    import asyncio
     from nmem.agent_core.runtime import AgentRuntime
 
     rt = AgentRuntime.__new__(AgentRuntime)
     rt.is_keeper = False
     rt._keeper_lock = None
+    rt.status = {"keeper": False}
+    rt.hive = HiveConfig.from_dict({"mode": "shared_world", "agent_id": "s", "graph_role": "keeper"})
     rt._keeper_dsn, rt._keeper_key = "postgresql://x/graph", 123
 
-    class _Lock:  # stand-in for KeeperLock
-        held = True
-
     calls = {"n": 0}
-
     async def fake_become(dsn, key):
         calls["n"] += 1
-        return None if calls["n"] < 2 else _Lock()   # still held on 1st poll, freed by the 2nd
+        return None if calls["n"] < 2 else _FakeLock(alive=True)   # held on 1st poll, freed by the 2nd
 
     monkeypatch.setattr("nmem.agent_core.hive.become_keeper", fake_become)
 
+    async def go():
+        task = asyncio.ensure_future(rt._keeper_watch_loop(0.001))
+        for _ in range(200):
+            if rt.is_keeper:
+                break
+            await asyncio.sleep(0.005)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(asyncio.wait_for(go(), timeout=3))
+    assert rt.is_keeper is True and rt._keeper_lock is not None      # took over live
+    assert rt.status["keeper"] is True                              # published status updated (P2)
+    assert rt.runs_graph_global is True                             # now authorized
+
+
+def test_keeper_watch_loop_revokes_authority_when_its_lock_dies(monkeypatch):
+    """codex P1: a keeper whose dedicated session dies (verify() False) must REVOKE its own authority
+    so it + any taker aren't both running global maintenance. Here re-acquire also fails (lock taken),
+    so it ends up a de-authorized contributor — runs_graph_global False, status corrected."""
     import asyncio
-    asyncio.run(asyncio.wait_for(rt._keeper_retry_loop(0.001), timeout=2))
-    assert rt.is_keeper is True and rt._keeper_lock is not None   # took over live
-    assert calls["n"] == 2                                        # retried until the lock freed
+    from nmem.agent_core.runtime import AgentRuntime
+
+    rt = AgentRuntime.__new__(AgentRuntime)
+    rt.is_keeper = True
+    rt._keeper_lock = _FakeLock(alive=False)     # our lock's connection has died
+    rt.status = {"keeper": True}
+    rt.hive = HiveConfig.from_dict({"mode": "shared_world", "agent_id": "s", "graph_role": "keeper"})
+    rt._keeper_dsn, rt._keeper_key = "postgresql://x/graph", 123
+
+    async def fake_become(dsn, key):
+        return None                              # someone else holds the freed lock now
+
+    monkeypatch.setattr("nmem.agent_core.hive.become_keeper", fake_become)
+
+    async def go():
+        task = asyncio.ensure_future(rt._keeper_watch_loop(0.001))
+        for _ in range(200):
+            if not rt.is_keeper:
+                break
+            await asyncio.sleep(0.005)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(asyncio.wait_for(go(), timeout=3))
+    assert rt.is_keeper is False and rt._keeper_lock is None        # revoked
+    assert rt.status["keeper"] is False                            # no stale /health role (P2)
+    assert rt.runs_graph_global is False                           # global maintenance halted here
 
 
 @pytest.mark.skipif(not os.environ.get("NMEM_TEST_PG_DSN"),

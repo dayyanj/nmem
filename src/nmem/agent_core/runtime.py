@@ -73,7 +73,7 @@ class AgentRuntime:
         self._consol_task = None
         self._drive_task = None
         self._pursue_task = None
-        self._keeper_retry_task = None
+        self._keeper_watch_task = None
         self._keeper_dsn = self._keeper_key = None
         self.status: dict = {"enabled": False}
 
@@ -96,8 +96,19 @@ class AgentRuntime:
         (and dreamstate's post-hooks: schema induction, analogy, self-model concept clustering).
         These operate on the WHOLE shared graph, so exactly one process per graph may run them.
         Solo/isolated agents own their graph outright → always run them (byte-identical to today);
-        under shared_world only the elected keeper does. B-ii step-3 (graph-global half)."""
-        return (not self.hive.is_shared_world) or self.is_keeper
+        under shared_world authority is tied to ACTUAL live lock possession — ``_keeper_lock.alive()``,
+        not the ``is_keeper`` status mirror — so a keeper whose lock connection dies de-authorizes
+        immediately (before the watch tick flips the flag), which is what prevents two keepers running
+        global maintenance after a lock-session loss (codex 2026-09-09 P1). B-ii step-3."""
+        if not self.hive.is_shared_world:
+            return True
+        return self._keeper_lock is not None and self._keeper_lock.alive()
+
+    def _set_keeper(self, flag: bool) -> None:
+        """Update keeper state + the PUBLISHED status in lockstep (so /health never reports a stale
+        role after a live takeover/revoke — codex 2026-09-09 P2)."""
+        self.is_keeper = flag
+        self.status["keeper"] = flag
 
     @property
     def agent_id(self) -> str:
@@ -174,14 +185,14 @@ class AgentRuntime:
     async def stop(self) -> None:
         """Tear the mind down cleanly (idempotent). Cancel loops, release the keeper lock,
         stop consolidation, close memory + graph."""
-        # Cancel the retry tick FIRST — else it could re-acquire the lock we're about to release.
-        if self._keeper_retry_task is not None:
-            self._keeper_retry_task.cancel()
+        # Cancel the watch tick FIRST — else it could re-acquire the lock we're about to release.
+        if self._keeper_watch_task is not None:
+            self._keeper_watch_task.cancel()
             try:
-                await self._keeper_retry_task
+                await self._keeper_watch_task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
-            self._keeper_retry_task = None
+            self._keeper_watch_task = None
         if self._keeper_lock is not None:
             try:
                 await self._keeper_lock.release()   # frees the graph-keeper role for another process
@@ -289,12 +300,13 @@ class AgentRuntime:
         # Loop #3: goal pursuit — only if the agent gave us hands + a proposal builder.
         pursuit_on = self._start_pursuit()
 
-        # Loop #4: keeper failover — a WILLING contributor (graph_role=keeper) that lost the boot
-        # election retries the lock so it can take over live if the keeper dies (see _keeper_retry_loop).
-        if self.hive.wants_keeper and not self.is_keeper:
+        # Loop #4: keeper watch — every WILLING process (graph_role=keeper) runs it, the elected keeper
+        # to self-check its lock liveness and contributors to take over live if it dies (see
+        # _keeper_watch_loop). A pure contributor (graph_role=contributor) never runs it → no change.
+        if self.hive.wants_keeper:
             retry = float(self._config.get("hive", {}).get("keeper_retry_seconds", 30))
-            self._keeper_retry_task = asyncio.create_task(self._keeper_retry_loop(retry))
-            log.info("[runtime] keeper-retry loop started (willing contributor, every %ss)", retry)
+            self._keeper_watch_task = asyncio.create_task(self._keeper_watch_loop(retry))
+            log.info("[runtime] keeper-watch loop started (willing process, every %ss)", retry)
 
         self.status = {
             "enabled": True, "plugins": plugins, "prediction": pred_on,
@@ -409,24 +421,31 @@ class AgentRuntime:
                 log.warning("[runtime] pursuit cycle failed", exc_info=True)
             await asyncio.sleep(interval)
 
-    async def _keeper_retry_loop(self, interval: float) -> None:
-        """Live keeper failover for a WILLING contributor that lost the boot election. Without this,
-        ``is_keeper`` is set once at start and the D1 callable never changes → a dead keeper's freed
-        lock is never re-acquired and graph-global maintenance pauses until a restart (codex 2026-09-09).
-        Retry the advisory lock; on acquire, flip ``is_keeper`` — the bridge's in-hook ``is_keeper()``
-        then activates the (already-registered) graph-global hooks on the next cycle, no restart."""
+    async def _keeper_watch_loop(self, interval: float) -> None:
+        """Keeper liveness + live failover for any WILLING process (graph_role=keeper). Each tick:
+        (1) if we hold the lock, ``verify()`` it still lives — a keeper whose dedicated PG session died
+            while the process survives must REVOKE its own authority (PG already released the lock), or
+            it + whoever takes over would both run global maintenance = split-brain (codex 2026-09-09 P1);
+        (2) if we don't hold it (lost it, or lost the boot election), try to (re)acquire — on success the
+            bridge's in-hook ``is_keeper()`` activates the already-registered graph-global hooks next
+            cycle, no restart. Runs on the keeper too (to self-check), not just contributors."""
         from nmem.agent_core.hive import become_keeper
         while True:
             try:
-                await asyncio.sleep(interval)        # sleep-first: we only start this having lost at boot
-                if self.is_keeper or self._keeper_dsn is None:
+                await asyncio.sleep(interval)
+                if self._keeper_dsn is None:
                     return
-                lock = await become_keeper(self._keeper_dsn, self._keeper_key)
-                if lock is not None:
-                    self._keeper_lock, self.is_keeper = lock, True
-                    log.info("[runtime] keeper failover: acquired the freed lock — graph-global cycles resume")
-                    return
+                if self._keeper_lock is not None and not await self._keeper_lock.verify():
+                    self._keeper_lock = None
+                    self._set_keeper(False)
+                    log.warning("[runtime] keeper lock lost (session died) — revoked authority; global cycles halt")
+                if self._keeper_lock is None:           # never had it, or just lost it → compete for the freed lock
+                    lock = await become_keeper(self._keeper_dsn, self._keeper_key)
+                    if lock is not None:
+                        self._keeper_lock = lock
+                        self._set_keeper(True)
+                        log.info("[runtime] keeper acquired (boot loss/failover) — graph-global cycles authorized")
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
-                log.warning("[runtime] keeper retry failed", exc_info=True)
+                log.warning("[runtime] keeper watch failed", exc_info=True)

@@ -111,6 +111,25 @@ class KeeperLock:
         await conn.close()
         return False
 
+    def alive(self) -> bool:
+        """Cheap + synchronous: do we still hold a live connection? asyncpg flips ``is_closed()`` on a
+        closed/failed conn, so this catches a dropped lock without a round-trip — used as the per-cycle
+        keeper gate. A *silent* network partition that ``is_closed()`` misses is caught by ``verify()``."""
+        return self.held and self._conn is not None and not self._conn.is_closed()
+
+    async def verify(self) -> bool:
+        """Authoritative liveness: actually exercise the lock connection (catches silent drops the local
+        ``is_closed()`` flag misses). On ANY failure the lock is considered lost → ``held`` goes False so
+        ``alive()`` immediately de-authorizes. Used by the keeper's watch tick, not per-cycle."""
+        if not self.held or self._conn is None:
+            return False
+        try:
+            await self._conn.execute("SELECT 1")
+        except Exception:  # noqa: BLE001 — any failure = lock/session gone
+            self.held = False
+            return False
+        return not self._conn.is_closed()
+
     async def release(self) -> None:
         """Unlock + close the dedicated connection (call on shutdown). Idempotent."""
         conn, self._conn, self.held = self._conn, None, False
