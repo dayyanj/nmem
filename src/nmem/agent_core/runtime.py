@@ -89,6 +89,15 @@ class AgentRuntime:
         self._keeper_lock = None
 
     @property
+    def runs_graph_global(self) -> bool:
+        """Whether THIS process runs the graph-global cognitive cycles — clustering + dreamstate
+        (and dreamstate's post-hooks: schema induction, analogy, self-model concept clustering).
+        These operate on the WHOLE shared graph, so exactly one process per graph may run them.
+        Solo/isolated agents own their graph outright → always run them (byte-identical to today);
+        under shared_world only the elected keeper does. B-ii step-3 (graph-global half)."""
+        return (not self.hive.is_shared_world) or self.is_keeper
+
+    @property
     def agent_id(self) -> str:
         return self._persona.agent_id
 
@@ -130,8 +139,9 @@ class AgentRuntime:
         keeper``) tries the advisory lock on the SHARED graph DB; exactly one wins. The winner's
         ``is_keeper`` authorizes the graph-global loops; everyone else is a contributor. Isolated
         agents and contributors never try → no behavior change. Election failure ⇒ contributor
-        (never fatal). NOTE: wiring the specific loop starts behind ``is_keeper`` is the
-        nmem-sym-coordinated step (docs/path-b-hive-scoping-design.md §12.5 step 3)."""
+        (never fatal). The graph-global cycles are gated on this in ``_wire_cognition`` via
+        ``runs_graph_global`` (the two BridgeConfig flags); the remaining open item is the per-agent
+        goal lifecycle that rides dreamstate (docs/path-b-hive-scoping-design.md §12.5 step 3)."""
         if not self.hive.wants_keeper or self.graph is None:
             return
         from nmem.agent_core.hive import become_keeper, keeper_key
@@ -150,7 +160,7 @@ class AgentRuntime:
         self.is_keeper = self._keeper_lock is not None
         log.info("[runtime] hive=shared_world graph_role=%s keeper=%s (graph-global loops %s)",
                  self.hive.graph_role, self.is_keeper,
-                 "authorized" if self.is_keeper else "suppressed [step-3 gate]")
+                 "authorized" if self.is_keeper else "suppressed (contributor)")
 
     async def converse(self, message: str, **kw):
         """Hold one memory-grounded conversation turn with this agent (see
@@ -214,13 +224,23 @@ class AgentRuntime:
 
         from nmem_sym import BridgeConfig, SymbolBridge, config as sym_config
         s = sym_config.settings
+        # B-ii step-3 (graph-global half): the clustering + dreamstate cycles run on exactly one
+        # process per shared graph. nmem-sym already gates them on these two BridgeConfig flags
+        # (bridge.py cluster_on_full_cycle / dreamstate_on_nightly); we source them from keeper
+        # state. Solo/isolated ⇒ True (unchanged); shared_world ⇒ keeper-only. (The per-agent goal
+        # lifecycle that currently rides dreamstate is the still-open design half — see hive doc.)
+        run_global = self.runs_graph_global
         self.bridge = SymbolBridge(graph, BridgeConfig(
             drives_enabled=s.drives_enabled, emotion_enabled=s.emotion_enabled,
             temporal_awareness_enabled=s.temporal_awareness_enabled,
             schemas_enabled=s.schemas_enabled, analogy_enabled=s.analogy_enabled,
             self_model_enabled=s.self_model_enabled, procedures_enabled=s.procedures_enabled,
             goals_enabled=s.goals_enabled, extract_max_parallel=s.extract_max_parallel,
+            cluster_on_full_cycle=run_global, dreamstate_on_nightly=run_global,
         ), agent_id=self.hive.agent_id)   # B-i: owner-stamp this agent's agency writes (None=isolated)
+        if self.hive.is_shared_world:
+            log.info("[runtime] graph-global cycles %s (keeper=%s)",
+                     "ON" if run_global else "SUPPRESSED (contributor)", self.is_keeper)
         self.bridge.connect(mem)
 
         self._wire_goal_enrichment()

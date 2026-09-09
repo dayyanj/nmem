@@ -423,13 +423,24 @@ Revised order (supersedes §10.7 step order, same owners):
    keeper before the cognition loops keyed on the shared graph's **DB name** (not per-agent domain),
    exposes `is_keeper` + `status[hive|keeper]`, releases on stop; `config_writer` writes the `hive:` block.
    Validated vs real Postgres: one keeper across two agents on one graph DB, contributor never tries,
-   isolated never elects, lock failover proven. **The keeper flag is live; what remains for B-ii is step 3
-   below — nmem-sym reading `is_keeper` to actually suppress the graph-global loops in a contributor.**
+   isolated never elects, lock failover proven. **The keeper flag is live, and the graph-global half of
+   step 3 is now landed too (see the correction on step 3 below).**
 2. **On migration approval:** nmem-sym lands the `owner_agent` migration + bridge `agent_id` threading +
    writeback author; agent_core lands the `SymbolGoalStore(owner_agent=…)` filter + scoped
    `recover_orphaned` — together, behind the §7 acceptance test + a codex pass.
-3. **B-ii moves the graph-global loop starts behind the keeper-gate** (needs step 1's gate + nmem-sym's
-   loop internals) — the enforcement flips on for `shared_world` keepers only.
+3. **B-ii keeper-gates the graph-global loops.** **CORRECTION (nmem-core, 2026-09-09): the graph-global
+   half needed NO nmem-sym change and is DONE in agent_core** (nmem `<pending-commit>`). nmem-sym already
+   gates clustering + dreamstate on two `BridgeConfig` flags (`cluster_on_full_cycle` /
+   `dreamstate_on_nightly`, honored at `bridge.py:538/544`); the runtime just never sourced them from keeper
+   state. `AgentRuntime.runs_graph_global` = `(not shared_world) or is_keeper` now feeds both flags in
+   `_wire_cognition`: solo/isolated ⇒ True (byte-identical to today), `shared_world` contributor ⇒ False
+   (clustering + dreamstate + all its post-hooks suppressed), keeper ⇒ True. Unit-tested
+   (`test_graph_global_cycles_gated_on_keeper_state`); full agent_core suite 54 passed / 1 skipped; codex pass
+   pending on the diff. **STILL OPEN — the per-agent half (real design, not a flag):** a `shared_world`
+   contributor with dreamstate suppressed also stops running *its own* goal lifecycle (evaluation / impasse /
+   decompose ride `_dreamstate_goals`). That per-agent portion must be lifted out of the keeper-gated
+   dreamstate into a per-agent tick (or run a lightweight per-agent goal pass on contributors) — this is the
+   §4-keeper-split design item (doc "STILL OPEN — DESIGN-NEEDED" below), and it stays cross-repo/other-session.
 4. **Then** sales_head Stage-2 (§6), never before §7 passes.
 The keeper is still a real decision for the refinery↔DJ-AI graph (§4.3 OPEN): DJ-AI stays keeper for now;
 the lock just makes it un-bypassable. Guards unchanged (additive/default-off; DJ-AI frozen; migration

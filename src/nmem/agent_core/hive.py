@@ -16,8 +16,11 @@ standalone** connection on the graph DB and holds it for the process lifetime, r
 ``release()`` (or process death → connection death → automatic failover, no split-brain). A pooled
 connection here would silently drop the lock and produce two keepers.
 
-This module gates NOTHING by itself — it hands the runtime ``is_keeper``. Moving the specific
-graph-global loop starts behind that flag is the nmem-sym-coordinated step (§12.5 step 3).
+This module gates NOTHING by itself — it hands the runtime ``is_keeper``. The runtime then gates
+the graph-global cycles (clustering + dreamstate) on it in ``AgentRuntime._wire_cognition`` via the
+existing ``cluster_on_full_cycle`` / ``dreamstate_on_nightly`` BridgeConfig flags — no nmem-sym change
+needed. The only remaining §12.5-step-3 work is the per-agent goal lifecycle that currently rides the
+(now keeper-only) dreamstate cycle — that's a real design item, not a missing flag.
 """
 from __future__ import annotations
 

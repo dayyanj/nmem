@@ -39,6 +39,25 @@ def test_keeper_key_is_deterministic_across_processes():
     assert -(2**63) <= k < 2**63                          # fits a Postgres bigint
 
 
+def test_graph_global_cycles_gated_on_keeper_state():
+    """B-ii step-3 (graph-global half): ``runs_graph_global`` decides whether THIS process runs the
+    clustering + dreamstate cycles — it's the value fed to BridgeConfig cluster_on_full_cycle /
+    dreamstate_on_nightly. Solo/isolated ⇒ always (unchanged); shared_world ⇒ keeper-only. Tested
+    on the property directly (it reads only hive + is_keeper) so no DB/boot is needed."""
+    from nmem.agent_core.runtime import AgentRuntime
+
+    def _rt(mode, is_keeper):
+        rt = AgentRuntime.__new__(AgentRuntime)      # bypass __init__: gate reads only these two
+        rt.hive = HiveConfig.from_dict({"mode": mode, "agent_id": "scout",
+                                        "graph_role": "keeper" if is_keeper else "contributor"})
+        rt.is_keeper = is_keeper
+        return rt
+
+    assert _rt("isolated", False).runs_graph_global is True     # solo appliance = today, no change
+    assert _rt("shared_world", True).runs_graph_global is True  # elected keeper runs them
+    assert _rt("shared_world", False).runs_graph_global is False  # contributor SUPPRESSED (the point)
+
+
 @pytest.mark.skipif(not os.environ.get("NMEM_TEST_PG_DSN"),
                     reason="needs a Postgres (set NMEM_TEST_PG_DSN)")
 def test_single_keeper_by_construction_and_failover():
