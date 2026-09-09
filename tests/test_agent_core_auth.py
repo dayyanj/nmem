@@ -46,6 +46,16 @@ def test_enabled_gate_blocks_then_login_grants(tmp_path, monkeypatch):
     assert c.get("/studio/catalog").status_code == 401
 
 
+def test_status_returns_csrf_when_authenticated(tmp_path, monkeypatch):
+    # codex P1: a reloaded page keeps the cookie but loses window.__CSRF; /auth/status must hand the
+    # session's csrf back to the (cookie-bearing) client so it can recover without a 403 dead-end.
+    c = _app(tmp_path, monkeypatch, STUDIO_AUTH_PASSWORD="s3cret")
+    assert "csrf" not in c.get("/auth/status").json()          # no session → no token
+    login_csrf = c.post("/auth/login", json={"user": "admin", "password": "s3cret"}).json()["csrf"]
+    st = c.get("/auth/status").json()
+    assert st["authenticated"] is True and st.get("csrf") == login_csrf   # recoverable on reload
+
+
 def test_open_paths_never_gated(tmp_path, monkeypatch):
     c = _app(tmp_path, monkeypatch, STUDIO_AUTH_PASSWORD="s3cret")
     assert c.get("/").status_code == 200            # the SPA shell must load to show its login screen

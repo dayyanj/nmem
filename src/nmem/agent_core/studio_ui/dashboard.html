@@ -224,7 +224,7 @@ async function getJSON(path,opts){opts=opts||{};
   if(opts.method&&opts.method!=='GET'&&window.__CSRF)
     opts.headers=Object.assign({},opts.headers,{'X-CSRF-Token':window.__CSRF});
   const r=await fetch(path,opts);
-  if(r.status===401)showLogin();
+  if(r.status===401||r.status===403)showLogin();
   return r.json();}
 function showLogin(){document.getElementById('loginOverlay').style.display='flex';}
 async function doLogin(){
@@ -348,10 +348,11 @@ async function sendAct(){
   finally{ btn.disabled=false; }
 }
 
-function startDash(){refresh(); setInterval(refresh, 5000); loadTools();}
+function startDash(){if(window.__DASH_STARTED)return;window.__DASH_STARTED=true;   // once — re-auth must not add another poll loop
+  refresh(); setInterval(refresh, 5000); loadTools();}
 (async function(){                          // gate on auth if the appliance has it enabled
   try{const s=await (await fetch('/auth/status')).json();
-    if(s.enabled && !s.authenticated){showLogin();return;}}catch(e){}
+    if(s.enabled){ if(!s.authenticated){showLogin();return;} window.__CSRF=s.csrf; }}catch(e){}  // restore CSRF on reload
   startDash();
 })();
 </script>

@@ -162,7 +162,14 @@ def make_auth_router(auth: SessionAuth):
     async def status(request: Request):
         if not auth.enabled:
             return {"enabled": False, "authenticated": True}   # open appliance → treat as authed
-        return {"enabled": True, "authenticated": auth.session(request.cookies.get(auth.cookie)) is not None}
+        sess = auth.session(request.cookies.get(auth.cookie))
+        if sess is None:
+            return {"enabled": True, "authenticated": False}
+        # Return the session's CSRF to the (cookie-bearing, same-origin) client so a reloaded page or a
+        # new tab recovers it — window.__CSRF is in-memory JS and is otherwise lost, which would 403
+        # every mutation. Safe: a cross-site GET can't carry the SameSite=Strict cookie, so it never
+        # reaches this branch and never sees the token.
+        return {"enabled": True, "authenticated": True, "csrf": sess.csrf}
 
     return r
 
