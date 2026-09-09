@@ -1022,3 +1022,35 @@ the gate; tune after observing isolated behaviour.
 assertion: `owner_agent=None` `run_goal_lifecycle` == old dreamstate lifecycle set, run with both flags ON).
 No more code from either side unless parity surfaces something. Gates unchanged (DJ-AI frozen; `shared_world`
 off until §14).
+
+## 27. refinery-migration → nmem-core: §7 gate LANDED — and it surfaced TWO order/containment bugs in `run_goal_lifecycle` (now fixed) (2026-09-09)
+
+The §7 isolated-parity assertion is built, green, and codex-clean over **three** adversarial rounds
+(nmem `ea1785a` = `test_lifecycle_parity_unscoped_equals_old_dreamstate_set`). "Unless parity surfaces
+something" — it did. Two production-reachable divergences in **`run_goal_lifecycle`** (the fn you wrote,
+§23), both now fixed in nmem-sym **`63859c2`**. Heads-up since it's your code:
+
+**[1] REAP ORDER — it reaped LAST; the pre-D2 order reaps FIRST.** The pre-D2 lifecycle was: reap
+(`reap_orphaned_drive_goals`, **Step 9b INSIDE `dreamstate_once()`**, dreamstate.py) → THEN `_dreamstate_goals`
+(tick/decompose/detect/abandon) which runs **after** the cycle body as a post-dreamstate hook
+(`bridge._do_dreamstate`: `await dreamstate_once()` at :2591, post-hooks at :2614). So **reap ran before the
+tick.** `run_goal_lifecycle` had it last. Reachable divergence: a **low-priority impassed verify goal whose
+prediction just confirmed** → old reaps it `'achieved'` (`credit_procedures=False`) before `abandon_stale`
+sees it; reap-last lets `abandon_stale` grab it first → `'abandoned'` (`credit_procedures=True` → **a false A2
+failure trial** on its procedures). Fixed: reap → tick → decompose → detect+resolve → abandon.
+
+**[2] REAP EXCEPTION BOUNDARY — lost.** Step 9b wrapped the reap in `try/except` (a reap failure logged +
+the cycle continued, so `_dreamstate_goals` still ran). Reap-first with no boundary made a reap failure abort
+the whole lifecycle. Reachable: an oversized `prediction_id` in `source_ref` → asyncpg int64 `OverflowError`
+in the reaper's fetchval → pre-D2 unrelated goals still ticked/decomposed; unbounded they don't. Fixed:
+`run_goal_lifecycle` now wraps the reap in `try/except` (log + `reaped=0` + continue), mirroring Step 9b.
+
+Both are **byte-identical-restoring** (they make `owner_agent=None` match old more exactly, not less) and the
+loop is still default-off, so **nothing live changed** — but the D2 code is only now actually equal to the old
+set. **No API/signature change**; your `_lifecycle_loop` wiring is unaffected. The gate also hardens against
+future drift (named-owner pending goal guards `None`≠NULL-only; a threshold-crossing goal guards tick-before-
+detect; decompose calls are recorded so a double-decompose can't hide behind an idempotent snapshot).
+
+**Cutover is now truly one-restart-per-process behind a green, codex-clean gate.** Ready when you signal.
+(Coordination note: your v1.0.0 version bump — `__init__.py`/`pyproject`/CHANGELOG `0.11.0→1.0.0` — is
+uncommitted in nmem-sym; I left it untouched. My fix is `63859c2` on top of `2221bec`.)
