@@ -36,6 +36,8 @@ if TYPE_CHECKING:  # avoid runtime import cycles; the functions are duck-typed
 # commitments/loops → goals → self-model → internal state → relevant).
 _SECTION_ORDER = (
     "identity",
+    "narrative",
+    "immediate",
     "warnings",
     "recent",
     "open_loops",
@@ -186,6 +188,8 @@ def assemble_continuity(
     max_tokens: int,
     k_open_loops: int,
     curiosity_total: int | None = None,
+    narrative: dict | None = None,
+    checkpoint: dict | None = None,
 ) -> ContinuityResult:
     """Assemble the wake snapshot from already-gathered inputs. Pure — no I/O.
 
@@ -210,9 +214,11 @@ def assemble_continuity(
     # is what bounds the result.
     soft = {
         "identity": int(max_chars * 0.12),
+        "narrative": int(max_chars * 0.20),
+        "immediate": int(max_chars * 0.12),
         "warnings": int(max_chars * 0.15),
         "recent": int(max_chars * 0.15),
-        "open_loops": int(max_chars * 0.35),
+        "open_loops": int(max_chars * 0.30),
         "goals": int(max_chars * 0.10),
         "self_model": int(max_chars * 0.12),
         "internal_state": int(max_chars * 0.10),
@@ -258,6 +264,42 @@ def assemble_continuity(
     #    stays decoupled from agent_core).
     if identity:
         _emit("identity", "### Who I am", [identity.strip()])
+
+    # 1b. Autobiographical narrative — the durable "what has been happening to
+    #     me" (written by dreamstate, re-grounded from episodes).
+    has_narrative = False
+    if narrative and (narrative.get("current_period") or "").strip():
+        lines = [narrative["current_period"].strip()]
+        traj = (narrative.get("longer_trajectory") or "").strip()
+        if traj:
+            lines.append(traj)
+        # Temporal qualification: a current-period narrative written weeks ago
+        # must not read as current. Stamp the grounding date and mark it
+        # historical once it is older than the period it describes.
+        label = "### Where I've been"
+        grounded = _as_utc(narrative.get("grounded_at"))
+        if grounded is not None:
+            date_str = grounded.strftime("%Y-%m-%d")
+            if (now - grounded).days > 21:
+                label = f"### Where I've been (historical — last updated {date_str})"
+            else:
+                label = f"### Where I've been (as of {date_str})"
+        has_narrative = _emit("narrative", label, lines) > 0
+
+    # 1c. Immediate continuity — "where I left off", for resuming across a gap.
+    has_checkpoint = False
+    if checkpoint:
+        ck_lines = []
+        if checkpoint.get("interrupted_work"):
+            ck_lines.append(f"- Was in the middle of: {checkpoint['interrupted_work']}")
+        if checkpoint.get("last_action"):
+            ck_lines.append(f"- Last action: {checkpoint['last_action']}")
+        if checkpoint.get("last_interaction_summary"):
+            ck_lines.append(f"- Last interaction: {checkpoint['last_interaction_summary']}")
+        if checkpoint.get("expected_next_action"):
+            ck_lines.append(f"- Expected next: {checkpoint['expected_next_action']}")
+        if ck_lines:
+            has_checkpoint = _emit("immediate", "### Picking up from", ck_lines) > 0
 
     # 2. Warnings — governance red-lines, surfaced regardless of stimulus.
     warnings = [
@@ -338,4 +380,6 @@ def assemble_continuity(
         n_goals=n_goals,
         has_self_model=has_self_model,
         has_drive_state=has_drive_state,
+        has_narrative=has_narrative,
+        has_checkpoint=has_checkpoint,
     )

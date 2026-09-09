@@ -433,3 +433,5 @@ class ContinuityResult:
 
     has_self_model: bool = False
     has_drive_state: bool = False
+    has_narrative: bool = False
+    has_checkpoint: bool = False

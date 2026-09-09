@@ -1521,6 +1521,153 @@ class Consolidator:
             elif verdict == "contradicts":
                 row.grounding = "disputed"
 
+    # ── Autobiographical narrative (continuity layer) ─────────────────────
+    # Synthetic writers that are not "agents" whose life-story we narrate.
+    _NARRATIVE_EXCLUDE = frozenset({"consolidator", "nmem-sym", "system"})
+    _NARRATIVE_MIN_RECENT = 3         # skip agents with too little recent activity
+    _NARRATIVE_MAX_AGENTS = 20        # bound nightly LLM cost
+    _NARRATIVE_RECENT_DAYS = 14
+    _NARRATIVE_TRAJ_DAYS = 120
+    _NARRATIVE_CP_MAX = 1000          # char caps → bounded, explicit compression
+    _NARRATIVE_TRAJ_MAX = 1000
+    _NARRATIVE_MAX_TOKENS = 500
+    _NARRATIVE_SYSTEM = (
+        "You are writing an agent's first-person autobiographical narrative for "
+        "its own continuity — what it has been doing and how its focus has "
+        "evolved. Ground EVERY statement ONLY in the provided episodes; never "
+        "invent events. Be concise. Return JSON with two keys: "
+        '"current_period" (2-4 sentences on the last couple of weeks) and '
+        '"longer_trajectory" (1-3 sentences on the broader arc, or null if the '
+        "older episodes do not support one). Write as 'I'."
+    )
+
+    def _narrative_scope_cond(self):
+        """Project-scope filter for narrative source episodes, matching the scope
+        the narrative is written under: a None (unscoped) instance sources only
+        global episodes; a scoped instance sources its scope + global. Keeps a
+        shared DB from summarizing another project's activity as this one's."""
+        scope = self._config.project_scope
+        if scope is None:
+            return JournalEntryModel.project_scope.is_(None)
+        from sqlalchemy import or_
+        return or_(
+            JournalEntryModel.project_scope == scope,
+            JournalEntryModel.project_scope.is_(None),
+        )
+
+    async def run_narrative_synthesis(self) -> None:
+        """Nightly step: reconstruct each active agent's autobiographical
+        narrative from RAW EPISODIC memory (never from the prior narrative),
+        grounded to source ids. Append-only re-grounding is what keeps the
+        recursive-compression / confabulation failure mode out of the design.
+
+        Registered via ``register_nightly_step`` so it runs every nightly cycle,
+        independently of synthesis success, and a failure for one agent never
+        aborts the rest.
+        """
+        since = datetime.utcnow() - timedelta(days=self._NARRATIVE_RECENT_DAYS)
+        async with self._db.session() as session:
+            rows = (
+                await session.execute(
+                    select(JournalEntryModel.agent_id, func.count().label("c"))
+                    .where(
+                        JournalEntryModel.created_at >= since,
+                        self._narrative_scope_cond(),
+                    )
+                    .group_by(JournalEntryModel.agent_id)
+                    .order_by(func.count().desc())
+                )
+            ).all()
+        agents = [
+            a for a, c in rows
+            if a not in self._NARRATIVE_EXCLUDE and c >= self._NARRATIVE_MIN_RECENT
+        ][: self._NARRATIVE_MAX_AGENTS]
+        for agent_id in agents:
+            try:
+                await self._write_agent_narrative(agent_id)
+            except Exception as e:
+                logger.warning(
+                    "Narrative synthesis failed for %s: %s", agent_id, e, exc_info=True
+                )
+
+    async def _write_agent_narrative(self, agent_id: str) -> None:
+        from nmem.continuity_store import write_narrative
+        from nmem.token_stats import record_llm_usage
+
+        recent_cutoff = datetime.utcnow() - timedelta(days=self._NARRATIVE_RECENT_DAYS)
+        traj_cutoff = datetime.utcnow() - timedelta(days=self._NARRATIVE_TRAJ_DAYS)
+        async with self._db.session() as session:
+            recent = (
+                await session.execute(
+                    select(
+                        JournalEntryModel.id, JournalEntryModel.title,
+                        JournalEntryModel.content, JournalEntryModel.created_at,
+                    )
+                    .where(
+                        JournalEntryModel.agent_id == agent_id,
+                        JournalEntryModel.created_at >= recent_cutoff,
+                        self._narrative_scope_cond(),
+                    )
+                    .order_by(JournalEntryModel.created_at.desc())
+                    .limit(25)
+                )
+            ).all()
+            older = (
+                await session.execute(
+                    select(JournalEntryModel.id, JournalEntryModel.title)
+                    .where(
+                        JournalEntryModel.agent_id == agent_id,
+                        JournalEntryModel.created_at < recent_cutoff,
+                        JournalEntryModel.created_at >= traj_cutoff,
+                        JournalEntryModel.importance >= 6,
+                        self._narrative_scope_cond(),
+                    )
+                    .order_by(JournalEntryModel.importance.desc())
+                    .limit(15)
+                )
+            ).all()
+
+        if not recent:
+            return
+
+        # Ground strictly in each episode's OWN journal content. A promoted entry
+        # carries a lossy stub — we deliberately do NOT resolve its LTM pointer:
+        # LTM rows are mutable (title-keyed upsert, dedup merges), so the current
+        # LTM content may no longer be this episode's record. For a narrative
+        # whose whole value is trustworthy provenance, correct attribution beats
+        # richer-but-possibly-misattributed content.
+        recent_lines = [
+            f"[{r.id}] ({r.created_at:%Y-%m-%d}) {r.title}: {(r.content or '')[:200]}"
+            for r in recent
+        ]
+        older_lines = [f"[{r.id}] {r.title}" for r in older]
+        context = (
+            f"RECENT EPISODES (last {self._NARRATIVE_RECENT_DAYS} days):\n"
+            + "\n".join(recent_lines)
+            + "\n\nOLDER SIGNIFICANT EPISODES:\n"
+            + ("\n".join(older_lines) or "(none)")
+        )
+
+        result = await self._llm.complete_json(
+            self._NARRATIVE_SYSTEM, context,
+            max_tokens=self._NARRATIVE_MAX_TOKENS, temperature=0.3, timeout=30.0,
+        )
+        await record_llm_usage(self._db, "narrative", self._NARRATIVE_MAX_TOKENS)
+        if not isinstance(result, dict):
+            return  # noop/failed LLM → skip (no empty narrative written)
+        current = (result.get("current_period") or "").strip()[: self._NARRATIVE_CP_MAX]
+        if not current:
+            return
+        trajectory = (result.get("longer_trajectory") or "").strip()[: self._NARRATIVE_TRAJ_MAX] or None
+
+        provenance = [r.id for r in recent] + [r.id for r in older]
+        token_len = (len(current) + (len(trajectory) if trajectory else 0)) // 4
+        await write_narrative(
+            self._db, agent_id, self._config.project_scope,
+            current_period=current, longer_trajectory=trajectory,
+            provenance=provenance, token_len=token_len, full_reconstruction=True,
+        )
+
     async def _write_retrospective_synthesis(
         self, touched: list[tuple[int, str, str]], now: datetime,
     ) -> None:

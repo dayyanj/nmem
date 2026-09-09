@@ -33,6 +33,8 @@ CLEANUP_TABLES = [
     "nmem_memory_conflicts",
     "nmem_curiosity_signals",
     "nmem_commitments",
+    "nmem_narrative_self",
+    "nmem_continuity_checkpoint",
     "nmem_delegations",
     "nmem_performance_scores",
     "nmem_scheduled_followups",

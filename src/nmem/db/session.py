@@ -27,7 +27,7 @@ from nmem.db.models import Base, HAS_PGVECTOR
 logger = logging.getLogger(__name__)
 
 # Current schema version. Bump when adding migrations to _migrate_schema.
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 
 class DatabaseManager:
@@ -284,6 +284,49 @@ class DatabaseManager:
                 "ON nmem_skills (canonical_key, project_scope) "
                 "WHERE status = 'active' AND canonical_key IS NOT NULL",
                 "v5: partial index for skill canonical-key dedup",
+            )
+
+        if version < 6:
+            # Continuity layer: the durable per-agent autobiographical narrative
+            # (append/versioned, grounded to source episodes) + the immediate
+            # "where I left off" checkpoint. Both agent_id-scoped — they ride the
+            # conscious-memory hive and never touch nmem-sym agency tables.
+            await _run(
+                "CREATE TABLE IF NOT EXISTS nmem_narrative_self ("
+                "id SERIAL PRIMARY KEY, "
+                "agent_id VARCHAR(200) NOT NULL, "
+                "current_period TEXT NOT NULL, "
+                "longer_trajectory TEXT, "
+                "provenance JSONB NOT NULL DEFAULT '[]'::jsonb, "
+                "token_len INTEGER NOT NULL DEFAULT 0, "
+                "version INTEGER NOT NULL DEFAULT 1, "
+                "grounded_at TIMESTAMPTZ NOT NULL DEFAULT now(), "
+                "last_full_reconstruction_at TIMESTAMPTZ, "
+                "project_scope VARCHAR(300), "
+                "created_at TIMESTAMP NOT NULL DEFAULT now())",
+                "v6: create nmem_narrative_self",
+            )
+            await _run(
+                "CREATE INDEX IF NOT EXISTS ix_nmem_narrative_self_agent "
+                "ON nmem_narrative_self (agent_id, version)",
+                "v6: index narrative_self by agent+version",
+            )
+            await _run(
+                "CREATE TABLE IF NOT EXISTS nmem_continuity_checkpoint ("
+                "id SERIAL PRIMARY KEY, "
+                "agent_id VARCHAR(200) NOT NULL, "
+                "last_interaction_summary TEXT, "
+                "last_action TEXT, "
+                "interrupted_work TEXT, "
+                "expected_next_action TEXT, "
+                "project_scope VARCHAR(300), "
+                "updated_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+                "v6: create nmem_continuity_checkpoint",
+            )
+            await _run(
+                "CREATE INDEX IF NOT EXISTS ix_nmem_continuity_checkpoint_agent "
+                "ON nmem_continuity_checkpoint (agent_id, project_scope)",
+                "v6: index continuity_checkpoint by agent+scope",
             )
 
         # Bump schema version in its own session

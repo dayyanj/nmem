@@ -140,6 +140,11 @@ class MemorySystem:
         self._prompt._self_engineer = self._self_engineer   # enable recipe injection
         self._consolidator.register_nightly_step(
             "context_recipes", self._self_engineer.run_nightly)
+        # Per-agent autobiographical narrative — re-grounded from raw episodes
+        # each nightly cycle (continuity layer). Per-agent, so it never needs the
+        # graph-keeper lock and never touches nmem-sym agency tables.
+        self._consolidator.register_nightly_step(
+            "agent_narrative", self._consolidator.run_narrative_synthesis)
 
     # ── Properties ───────────────────────────────────────────────────────
 
@@ -334,12 +339,37 @@ class MemorySystem:
             Number of working memory slots flushed.
         """
         flushed = 0
+        session_summary: str | None = None
         if flush_to_journal:
+            # Capture THIS session's working-memory content before the flush
+            # clears it — so the checkpoint reflects exactly this session, not
+            # whatever journal.add deduplicated to or a newer unrelated entry.
+            try:
+                slots = await self._working.get(session_id, agent_id)
+                if slots:
+                    session_summary = " | ".join(
+                        f"{s.slot}: {s.content}" for s in slots if s.content
+                    ).strip()[:300] or None
+            except Exception as e:
+                logger.warning("end_session summary capture skipped: %s", e, exc_info=True)
             flushed = await self._working.flush_to_journal(
                 session_id, agent_id, self._journal
             )
         else:
             await self._working.clear(session_id, agent_id)
+
+        # Record a best-effort "where I left off" checkpoint so the next wake can
+        # resume (survives process death). Only when we actually flushed this
+        # session's content; never let it break end_session or clobber an
+        # explicit summary with nothing.
+        if flush_to_journal and flushed and session_summary:
+            try:
+                await self.save_continuity_checkpoint(
+                    agent_id, last_interaction_summary=session_summary
+                )
+            except Exception as e:
+                logger.warning("end_session checkpoint skipped: %s", e, exc_info=True)
+
         return flushed
 
     # ── Cross-tier Search ────────────────────────────────────────────────
@@ -931,6 +961,7 @@ class MemorySystem:
         """
         from datetime import datetime, timezone
 
+        from nmem import continuity_store as _continuity_store
         from nmem.continuity import applicable_policies, assemble_continuity
 
         now = datetime.now(timezone.utc)
@@ -964,6 +995,10 @@ class MemorySystem:
                 min_composite=0.0, limit=curiosity_fetch
             ),
             "curiosity_total": self._cognitive.count_pending_curiosity(min_composite=0.0),
+            # Durable continuity artifacts (schema v6): the re-grounded narrative
+            # and the "where I left off" checkpoint.
+            "narrative": _continuity_store.latest_narrative(self._db, agent_id, scope),
+            "checkpoint": _continuity_store.get_checkpoint(self._db, agent_id, scope),
         }
         if query:
             coros["relevant"] = self.search(
@@ -998,6 +1033,9 @@ class MemorySystem:
         # length) unless we truly got a number.
         ct = data.get("curiosity_total")
         curiosity_total = ct if isinstance(ct, int) else None
+        # The gather's []-on-failure fallback must not reach the dict-typed lanes.
+        narrative = data.get("narrative") if isinstance(data.get("narrative"), dict) else None
+        checkpoint = data.get("checkpoint") if isinstance(data.get("checkpoint"), dict) else None
 
         return assemble_continuity(
             agent_id=agent_id,
@@ -1012,12 +1050,42 @@ class MemorySystem:
             max_tokens=max_tokens,
             k_open_loops=k_open_loops,
             curiosity_total=curiosity_total,
+            narrative=narrative,
+            checkpoint=checkpoint,
         )
 
     async def continuity(self, agent_id: str = "default", **kwargs: Any) -> ContinuityResult:
         """Alias for :meth:`wake` — reads more naturally at a call site that is
         asking "what is my continuity state" rather than "wake me up"."""
         return await self.wake(agent_id, **kwargs)
+
+    async def save_continuity_checkpoint(
+        self,
+        agent_id: str,
+        *,
+        last_interaction_summary: str | None = None,
+        last_action: str | None = None,
+        interrupted_work: str | None = None,
+        expected_next_action: str | None = None,
+    ) -> None:
+        """Upsert the agent's immediate-continuity checkpoint ("where I left
+        off"). Scoped to the instance's project. Only non-None fields are
+        applied, so callers can update one field without clobbering the rest."""
+        from nmem.continuity_store import save_checkpoint
+
+        await save_checkpoint(
+            self._db, agent_id, self._config.project_scope,
+            last_interaction_summary=last_interaction_summary,
+            last_action=last_action,
+            interrupted_work=interrupted_work,
+            expected_next_action=expected_next_action,
+        )
+
+    async def get_continuity_checkpoint(self, agent_id: str) -> dict | None:
+        """The agent's immediate-continuity checkpoint, if any."""
+        from nmem.continuity_store import get_checkpoint
+
+        return await get_checkpoint(self._db, agent_id, self._config.project_scope)
 
     # ── Event System ─────────────────────────────────────────────────────
 

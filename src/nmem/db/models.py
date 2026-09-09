@@ -505,6 +505,64 @@ class CommitmentModel(Base):
     )
 
 
+class NarrativeSelfModel(Base):
+    """Per-agent autobiographical narrative — the durable "what has been
+    happening to me" a wake snapshot needs and that cannot be re-derived cheaply
+    per turn.
+
+    Append/versioned so drift is auditable: each row is a *reconstruction*, with
+    `provenance` back to the source episode ids it was grounded in. The writer
+    reconstructs from raw episodic memory (not from the prior narrative) to keep
+    the recursive-compression failure mode (Gap 2) out of the design.
+    """
+
+    __tablename__ = "nmem_narrative_self"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String(200))
+    current_period: Mapped[str] = mapped_column(Text)
+    longer_trajectory: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Source journal/LTM ids each reconstruction was grounded in (JSONB on PG).
+    provenance: Mapped[list] = mapped_column(default=list)
+    token_len: Mapped[int] = mapped_column(Integer, default=0)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    grounded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now())
+    last_full_reconstruction_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    project_scope: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_nmem_narrative_self_agent", "agent_id", "version"),
+    )
+
+
+class ContinuityCheckpointModel(Base):
+    """Per-agent immediate-continuity checkpoint — the "where I left off" written
+    transactionally at session end so a wake survives process death.
+
+    One upserted row per (agent_id, project_scope); the upsert is done in code so
+    a NULL scope behaves correctly (a unique index would treat NULLs as distinct).
+    """
+
+    __tablename__ = "nmem_continuity_checkpoint"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String(200))
+    last_interaction_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    interrupted_work: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expected_next_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    project_scope: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        Index("ix_nmem_continuity_checkpoint_agent", "agent_id", "project_scope"),
+    )
+
+
 # ── Skills (conscious record of "a process that worked / one that didn't") ──
 
 
