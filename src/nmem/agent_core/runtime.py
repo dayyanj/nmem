@@ -35,6 +35,36 @@ from nmem.agent_core.persona import Persona, seed_persona
 log = logging.getLogger(__name__)
 
 
+def install_continuity_provider(mem, bridge) -> bool:
+    """Wire a SymbolBridge's ``continuity_inputs()`` into ``mem.wake()``'s
+    continuity provider, so the wake snapshot surfaces the agent's goals /
+    self-model / drive-state from the live bridge.
+
+    Generic runtime glue (every AgentRuntime-based agent gets it), kept as a
+    standalone function so it is unit-testable without a full runtime. Guarded
+    and fail-open: returns False (no-op) when either side predates the continuity
+    layer, and never raises into startup.
+    """
+    reg = getattr(mem, "register_continuity_provider", None)
+    if reg is None or not hasattr(bridge, "continuity_inputs"):
+        return False
+    try:
+        from nmem.types import SymContinuityInputs
+
+        async def _continuity_provider(agent_id):
+            d = await bridge.continuity_inputs()
+            return SymContinuityInputs(
+                self_model_summary=d.get("self_model_summary"),
+                drive_state_prose=d.get("drive_state_prose"),
+                active_goals=tuple(d.get("active_goals") or ()),
+            )
+
+        reg(_continuity_provider)
+        return True
+    except Exception:  # noqa: BLE001 — wiring must never break startup
+        return False
+
+
 class AgentRuntime:
     def __init__(
         self,
@@ -267,6 +297,8 @@ class AgentRuntime:
             log.info("[runtime] graph-global cycles %s (keeper=%s, live-gated)",
                      "ON" if self.runs_graph_global else "SUPPRESSED (contributor)", self.is_keeper)
         self.bridge.connect(mem)
+        if install_continuity_provider(mem, self.bridge):
+            log.info("[runtime] continuity provider wired (wake <- bridge)")
 
         self._wire_goal_enrichment()
         if self._build_executor is not None:

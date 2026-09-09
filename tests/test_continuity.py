@@ -235,6 +235,49 @@ def test_total_counts_backlog_independent_of_fetched_candidates():
     assert "+123 more unresolved, not shown" in r.content or "more unresolved" in r.content
 
 
+# ── Runtime wiring: install_continuity_provider (generic agent_core glue) ─────
+
+
+@pytest.mark.asyncio
+async def test_install_continuity_provider_wires_and_wraps():
+    from nmem.agent_core.runtime import install_continuity_provider
+
+    class FakeMem:
+        def __init__(self):
+            self.provider = None
+
+        def register_continuity_provider(self, p):
+            self.provider = p
+
+    class FakeBridge:
+        async def continuity_inputs(self):
+            return {"self_model_summary": "strong at synthesis",
+                    "drive_state_prose": "a contradiction is pulling attention",
+                    "active_goals": ["ship the seam", "close the loop"]}
+
+    mem = FakeMem()
+    assert install_continuity_provider(mem, FakeBridge()) is True
+    assert mem.provider is not None
+    si = await mem.provider("michelle")
+    assert isinstance(si, SymContinuityInputs)
+    assert si.active_goals == ("ship the seam", "close the loop")  # list → tuple
+    assert si.self_model_summary == "strong at synthesis"
+    assert si.drive_state_prose == "a contradiction is pulling attention"
+
+
+def test_install_continuity_provider_noop_without_support():
+    from nmem.agent_core.runtime import install_continuity_provider
+
+    class MemWithReg:
+        def register_continuity_provider(self, p):
+            raise AssertionError("should not be called")
+
+    # mem lacks register_continuity_provider → no-op
+    assert install_continuity_provider(object(), object()) is False
+    # bridge lacks continuity_inputs → no-op (reg never invoked)
+    assert install_continuity_provider(MemWithReg(), object()) is False
+
+
 # ── Integration: through MemorySystem.wake() (needs Postgres) ─────────────────
 
 
