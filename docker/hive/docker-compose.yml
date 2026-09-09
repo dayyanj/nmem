@@ -1,0 +1,106 @@
+# nmem-hive — several appliance agents sharing ONE symbol-graph world-model.
+#
+#   docker compose up          # brings up the shared DB, viz, and 3 agent appliances
+#
+# Each agent is a full nmem-studio appliance (same image as docker/studio/), but they all point
+# NMEM_AGENT_DB at the SAME database (hive_world) on the SAME Postgres — so they share one graph +
+# memory. Each keeps its OWN goals/drives/pursuit (owner_agent-scoped), and exactly one is the
+# graph KEEPER that runs the heavy graph-global maintenance (clustering / dreamstate). The keeper is
+# elected by a Postgres advisory lock (agent_core.hive), so it's enforced, not just configured:
+# even if you mark two members "keeper" in their wizard, only one wins the lock; if it dies, a
+# willing contributor takes over live.
+#
+# First run: open each member's wizard (ports below), and Create it as a **Hive member**
+# (Step 05 → mode = "Hive member"; pick "Keeper" for ONE, "Contributor" for the rest). After Create
+# each restarts into agent mode and joins the shared world-model.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nmem
+      POSTGRES_PASSWORD: nmem
+      POSTGRES_DB: postgres          # the members CREATE the shared hive DB (hive_world) themselves
+    volumes:
+      - hive_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nmem"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # nmem-viz — the shared hive "brain": the whole graph with every member's contributions.
+  viz:
+    image: nmem-viz:latest             # build once from ../../../nmem-viz (see docker/studio)
+    restart: unless-stopped
+    ports:
+      - "${STUDIO_BIND:-127.0.0.1}:${VIZ_HOST_PORT:-5174}:5174"
+    environment:
+      NMEM_VIZ_DATABASE_URL: postgresql://nmem:nmem@postgres:5432/hive_world
+      NMEM_VIZ_AGENT_ID: hive
+      NMEM_VIZ_TITLE: "nmem hive · shared brain"
+      NMEM_VIZ_HTTP_PORT: "5174"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── members ── every appliance shares NMEM_AGENT_DB=hive_world; distinct data volume + wizard port.
+  # (The appliance image is built by docker/studio; `image:` reuses it — build that first, or add a
+  #  build: block here pointing at the same Dockerfile.)
+  keeper:
+    image: nmem-studio:latest
+    restart: unless-stopped
+    ports:
+      - "${STUDIO_BIND:-127.0.0.1}:8080:8080"        # wizard: http://localhost:8080 → create as Keeper
+    environment: &member_env
+      STUDIO_DATA_DIR: /data
+      STUDIO_PORT: "8080"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: nmem
+      POSTGRES_PASSWORD: nmem
+      NMEM_AGENT_DB: hive_world                       # ← the SHARED hive DB (identical across members)
+      NMEM_SYM_VIZ_ENABLED: "1"
+      NMEM_VIZ_INGEST_URL: http://viz:5174/ingest
+      NMEM_VIZ_PUBLIC_URL: "http://localhost:${VIZ_HOST_PORT:-5174}/"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"           # reach a host-run LLM from inside the container
+    volumes:
+      - keeper_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  member-a:
+    image: nmem-studio:latest
+    restart: unless-stopped
+    ports:
+      - "${STUDIO_BIND:-127.0.0.1}:8081:8080"        # wizard: http://localhost:8081 → create as Contributor
+    environment: *member_env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - member_a_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  member-b:
+    image: nmem-studio:latest
+    restart: unless-stopped
+    ports:
+      - "${STUDIO_BIND:-127.0.0.1}:8082:8080"        # wizard: http://localhost:8082 → create as Contributor
+    environment: *member_env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - member_b_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  hive_pg:
+  keeper_data:
+  member_a_data:
+  member_b_data:

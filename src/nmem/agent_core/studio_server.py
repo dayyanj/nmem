@@ -115,7 +115,10 @@ def _agent_dsn(agent_id: str) -> str:
 
 async def provision_db(agent_id: str) -> str:
     """CREATE the appliance DB if absent (tables self-provision on first agent boot via
-    build_memory/build_symbol_graph). Idempotent. Returns the DB name."""
+    build_memory/build_symbol_graph). Idempotent AND concurrency-safe: in a hive, N members share
+    ONE ``NMEM_AGENT_DB`` and may provision it simultaneously — the check-then-CREATE is racy, so a
+    concurrent ``CREATE DATABASE`` losing to another member (DuplicateDatabaseError) is success, not
+    failure. Returns the DB name."""
     import asyncpg
 
     host = os.environ.get("POSTGRES_HOST", "postgres")
@@ -127,8 +130,11 @@ async def provision_db(agent_id: str) -> str:
     try:
         exists = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", db)
         if not exists:
-            await conn.execute(f'CREATE DATABASE "{db}"')          # cannot run in a txn; asyncpg autocommits
-            log.info("[studio] provisioned database %s", db)
+            try:
+                await conn.execute(f'CREATE DATABASE "{db}"')      # cannot run in a txn; asyncpg autocommits
+                log.info("[studio] provisioned database %s", db)
+            except asyncpg.exceptions.DuplicateDatabaseError:
+                log.info("[studio] database %s already created by a concurrent hive member", db)
     finally:
         await conn.close()
     # pgvector: the extension is created per-DB by the nmem bootstrap; ensure it here too.

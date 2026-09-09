@@ -239,6 +239,45 @@ def test_secrets_env_is_shell_safe(tmp_path, monkeypatch):
     assert env["OTHER"] == "has 'quotes' and spaces"
 
 
+def test_provision_db_tolerates_concurrent_hive_member_create(monkeypatch):
+    # A hive shares ONE NMEM_AGENT_DB; members race to CREATE it on first boot. The loser's
+    # DuplicateDatabaseError must be SWALLOWED (success), not raised — else that member fails to start.
+    import asyncio
+    import sys
+    import types
+
+    from nmem.agent_core import studio_server as S
+
+    class DupErr(Exception):
+        pass
+
+    calls = {"create": 0}
+
+    class _Conn:
+        async def fetchval(self, *a, **k):
+            return None                                    # DB not present yet (both members see this)
+
+        async def execute(self, sql, *a, **k):
+            if sql.strip().upper().startswith("CREATE DATABASE"):
+                calls["create"] += 1
+                raise DupErr()                             # another member won the race
+
+        async def close(self):
+            pass
+
+    async def _connect(*a, **k):
+        return _Conn()
+
+    fake = types.SimpleNamespace(
+        connect=_connect,
+        exceptions=types.SimpleNamespace(DuplicateDatabaseError=DupErr))
+    monkeypatch.setitem(sys.modules, "asyncpg", fake)
+    monkeypatch.setenv("NMEM_AGENT_DB", "hive_world")
+
+    db = asyncio.run(S.provision_db("member-a"))           # must NOT raise
+    assert db == "hive_world" and calls["create"] == 1
+
+
 def test_test_llm_bad_spec_is_reported_not_raised():
     # no model → a clean ok:false, and nothing that looks like a key echoed back
     r = _client().post("/studio/test-llm", json={"provider": "openai", "api_key": "sk-XYZ"})
