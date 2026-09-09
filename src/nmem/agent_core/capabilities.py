@@ -46,6 +46,16 @@ def _c(flag, group, requires=(), substrate="", summary=""):
 # ── The map ────────────────────────────────────────────────────────────────────
 # Grouped for the UI. Only flag→flag deps go in `requires`; everything a flag-set can't
 # see (LLM endpoint, host sink, data, a running loop, a matching id) goes in `substrate`.
+#
+# CURATION (why not every nmem-sym `*_enabled` field is here): this map is the wizard's user-facing
+# surface, and the env model is ENABLE-ONLY (we write the ON flags; a default omitted). So we surface
+# the meaningful *default-OFF* capabilities and DELIBERATELY omit:
+#   - default-TRUE internal shapes/tuning (the hypothesis shapes abductive/mechanistic/exception/
+#     analogical_completion/competition, prediction_novelty_gate, prediction_dreamstate,
+#     hypotheses_enabled, trace_persist, retention) — on by construction; the enable-only env can't
+#     express "turn this OFF", and they're not decisions a builder should make in the wizard;
+#   - sensory_context_enabled — needs an external sensory DB (sensory_db_dsn); niche, out of scope for
+#     the text-agent appliance. Set it by hand if you wire a sensory backend.
 _CAPS = [
     # drives
     _c("NMEM_SYM_DRIVES_ENABLED", "drives",
@@ -117,12 +127,20 @@ _CAPS = [
     _c("NMEM_SYM_EXTRACT_AUTOPROMOTE_EDGE_TYPES_ENABLED", "graph",
        substrate="dreamstate cycle running (reuses the proposals/canonical ledger)",
        summary="Promote frequently-proposed edge types into the domain vocabulary."),
+    _c("NMEM_SYM_EXTRACT_MULTI_TURN_ENABLED", "graph", substrate="vllm_backends",
+       summary="Chunked multi-turn extraction so large source documents aren't truncated."),
+    _c("NMEM_SYM_DREAMSTATE_GAIN_BUDGET_ENABLED", "graph",
+       substrate="dreamstate cycle running",
+       summary="Track each offline op's rolling yield and skip low-return ones (compute self-regulation)."),
     # prediction + hypothesis shapes
     _c("NMEM_SYM_PREDICTION_ENABLED", "prediction",
        summary="Prediction plugin wired into dreamstate."),
     _c("NMEM_SYM_PREDICTION_GROUNDING_LLM_ENABLED", "prediction",
        requires=["NMEM_SYM_PREDICTION_ENABLED"], substrate="vllm_backends",
        summary="LLM-ground predictions."),
+    _c("NMEM_SYM_PREDICTION_LLM_REASONING_ENABLED", "prediction",
+       requires=["NMEM_SYM_PREDICTION_ENABLED"], substrate="vllm_backends",
+       summary="LLM-mediated causal reasoning when generating predictions (deeper, costlier)."),
     _c("NMEM_SYM_HYPOTHESIS_POSTERIOR_ENABLED", "prediction",
        substrate="benefits from graph causal density", summary="Posterior-weighted hypotheses."),
     _c("NMEM_SYM_HYPOTHESIS_COUNTERFACTUAL_ENABLED", "prediction",

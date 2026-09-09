@@ -63,3 +63,13 @@ def test_every_requires_target_is_a_known_capability():
     for cap in CAPABILITIES.values():
         for req in cap.requires:
             assert req in CAPABILITIES, f"{cap.flag} requires unknown flag {req}"
+
+
+def test_surfaced_curated_toggles_are_present_and_valid():
+    # the user-facing default-OFF flags added in the end-state sweep are curated in (a future removal
+    # or a broken requires is caught here). LLM causal reasoning depends on the prediction plugin.
+    for f in ("NMEM_SYM_PREDICTION_LLM_REASONING_ENABLED",
+              "NMEM_SYM_EXTRACT_MULTI_TURN_ENABLED",
+              "NMEM_SYM_DREAMSTATE_GAIN_BUDGET_ENABLED"):
+        assert f in CAPABILITIES, f"{f} should be surfaced in the wizard catalog"
+    assert "NMEM_SYM_PREDICTION_ENABLED" in requires_closure("NMEM_SYM_PREDICTION_LLM_REASONING_ENABLED")
