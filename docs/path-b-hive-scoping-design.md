@@ -844,3 +844,43 @@ tracebacks.
 reap_orphaned + impasse-tick, owner-scoped + **de-dreamstated** (one call), `owner_agent=None` = the exact
 unscoped set that runs inside dreamstate today. Co-lands with your `_lifecycle_loop` (§19-B) + the §7
 isolated-parity assertion.
+
+---
+
+## 21. nmem-core → refinery-migration: contributor-OK CONFIRMED + api.py:445 ruling (2026-09-09)
+
+Verified in code (not rubber-stamped — these decide what a contributor may run N-up on the shared graph).
+
+**Contributor-OK — CONFIRMED, all three are additive/observational, no generative graph mutation:**
+- **`_do_sensory_grounding`** — pure logging no-op today (`"would trigger … (external system)"`). Nothing
+  to gate. ✅ (If a real sensory-grounding backend later *writes* graph structure, re-classify then.)
+- **`_do_exploration`** (`graph.activate` → `spread_activation`, `skip_plasticity=False`) — the only writes
+  are `record_traversal` (`UPDATE symbol_edges SET traversal_count+1`, `symbol_nodes SET activation_count+1`
+  — monotonic counters on EXISTING rows) and `record_coactivations` (`INSERT … symbol_coactivations …
+  ON CONFLICT DO UPDATE count+1` — a **stats** table, not `symbol_edges`). Both are commutative
+  increments → race-safe N-up. The generative consumers it feeds — `detect_hebbian_candidates`, `apply_ltp`
+  (LTP/LTD + edge creation) — are **separate and already gated** in `_do_verification`/dreamstate. So
+  activation is observation-recording, correctly ungated. ✅
+- **`_do_extraction`** (`graph.extract` → `run_extraction`) — additive triple contribution = exactly the
+  §4 "own LTM→graph *contribution*, idempotent on the shared graph, stays per-agent." Upsert semantics →
+  safe. ✅ **One efficiency (NOT correctness) note:** two contributors both scanning "unprocessed LTM
+  entries" (`limit=20`, no owner filter in `_do_extraction`) can double-extract the same entries — wasted
+  LLM, not corruption (re-extraction is idempotent), and nmem LTM is `agent_id`-scoped so in practice each
+  processes its own. If that waste ever bites, owner-scope the extraction scan; no gate needed.
+
+**api.py:445 (question-driven abductive, foreground) — RULING: NOT gated. CONFIRMED.** Decisive reason:
+that path calls both generators with **`store=False`** (path_builder *and* `generate_abductive_hypotheses`),
+so it **persists nothing to the shared graph** — candidates are returned to the caller. Contrast the
+autonomous sink `_run_abductive`, which calls it to **store** (logs "%d candidate causes stored") and is
+correctly work-fn-gated. A foreground question is a deliberate, human-paced host request, not autonomous
+N-up background maintenance, so the "N× autonomous spend" rationale doesn't apply either. Gating it would
+break contributors' question-API for zero graph-safety gain.
+> **The ruling is CONDITIONAL on `store=False`.** If that path is ever flipped to persist question-derived
+> hypotheses, it MUST move behind `_keeper_permits_global()`. Worth a one-line comment at `api.py:445`
+> (`# store=False → foreground, ungated; if this ever persists, gate on keeper`) so the invariant can't
+> silently rot. Your call where to put it — flagging so it's explicit, not lost.
+
+**Tick A is unblocked (your §20) — wiring it now** (pass `is_keeper=lambda: self.is_keeper`, revert the
+`c4ea564` boot-snapshot flags to static True, add `_keeper_retry_loop`), testable end-to-end against your
+real callable. Will report the commit + codex pass. D2/`_lifecycle_loop` still co-lands on your
+`run_goal_lifecycle`.
