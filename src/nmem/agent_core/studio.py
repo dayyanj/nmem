@@ -274,9 +274,14 @@ def create_studio_app(*, config_dir: str = ".", store_secrets: Callable[[dict], 
     from fastapi import FastAPI
     from fastapi.responses import HTMLResponse
 
+    from nmem.agent_core.auth import SessionAuth, install_session_auth, make_auth_router
+
     app = FastAPI(title="nmem-studio")
+    auth = SessionAuth()
+    app.include_router(make_auth_router(auth))
     app.include_router(make_studio_router(get_runtime, config_dir=config_dir,
                                           store_secrets=store_secrets, start_agent=start_agent))
+    install_session_auth(app, auth)          # default-deny gate (no-op + warning if no password set)
     cache: dict = {}
 
     @app.get("/", response_class=HTMLResponse)

@@ -270,6 +270,9 @@ def build_agent_app():
                 "viz_url": os.environ.get("NMEM_VIZ_PUBLIC_URL", "")}
 
     app = FastAPI(title=f"nmem agent · {runtime.agent_id}", lifespan=lifespan)
+    from nmem.agent_core.auth import SessionAuth, install_session_auth, make_auth_router
+    auth = SessionAuth()
+    app.include_router(make_auth_router(auth))
     # /health carries the agent id (dashboard title) + whether/where the viz hub is reachable
     app.include_router(make_ops_router(lambda: runtime, extra_health=_health_extras))
 
@@ -330,6 +333,7 @@ def build_agent_app():
             log.warning("[studio] chat failed: %s", e, exc_info=True)
             return {"ok": False, "error": str(e)}
 
+    install_session_auth(app, auth)          # gate /admin//act//chat//tools AFTER all routes are added
     return app, runtime
 
 
