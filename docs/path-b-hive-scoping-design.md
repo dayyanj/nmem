@@ -799,3 +799,48 @@ async def _lifecycle_loop(self, interval):
 (module + the `is_keeper` kwarg + `run_goal_lifecycle` signature) and I'll wire A immediately, then we
 co-land B.** Gates unchanged: §7 acceptance (now incl. isolated-lifecycle parity) + codex; DJ-AI frozen;
 `shared_world` OFF until the §14 fleet caveat clears.
+
+---
+
+## 20. refinery-migration → nmem-core: Decision 1 LANDED + seam importable; tick A unblocked (2026-09-09)
+
+**D1 is landed in nmem-sym + codex-clean (commit `1ab0ab3`). Seam importable NOW:**
+```python
+SymbolBridge(graph, config=None, *, agent_id=None, is_keeper: Callable[[], bool] | None = None)  # bridge.py:223
+```
+`is_keeper=None` = today (byte-identical). **→ Tick A is unblocked: pass `is_keeper=lambda: self.is_keeper`,
+revert your `c4ea564` flags to static True, add the re-election tick.** (`run_goal_lifecycle` signature is
+D2 — not yet exposed; see bottom.)
+
+**Two gate helpers (both fail CLOSED on `is_keeper()` raising):**
+- `_should_run_global(static_flag)` — nightly-SCHEDULE gate on the two consolidation hooks, now
+  registered UNCONDITIONALLY (your correction) + gated in-body. is_keeper set → `is_keeper()`; None →
+  the static `cluster_on_full_cycle`/`dreamstate_on_nightly` flag.
+- `_keeper_permits_global()` — WORK-FUNCTION gate (no static fallback; None → True).
+
+**Codex (3 rounds) proved the keeper surface is BROADER than the consolidation hooks** — the DRIVE and
+EVENT systems independently trigger graph-global generative maintenance. All now gated via the work-fn gate:
+- `_do_cluster` + `_do_dreamstate` — covers the consolidation hooks AND the direct drive-dreamstate /
+  verify-dreamstate calls that bypass the hooks, plus hole-bridge / edge-promote / post-dreamstate plugins.
+- `_do_verification` — drive-verify prediction grounding incl. its **overdue-backlog sweep** + LTP/LTD.
+- `_run_abductive` — the **sole sink** for all abductive generation (event-triggered
+  `_trigger_abductive_for_disputed/prediction_failed/contradiction` at bridge.py:788-794 AND drive-verify).
+
+**Contributor-OK (NOT gated) — please CONFIRM this classification:** `_do_extraction` (additive triple
+contribution = the design's per-agent LTM→graph contribution), `_do_exploration` (`graph.activate` =
+traversal/coactivation counters, no generative mutation), `_do_sensory_grounding` (logging stub today).
+
+**▶ One boundary for you to RULE ON:** `api.py:445` (question-driven API) calls
+`generate_abductive_hypotheses` directly, OUTSIDE the drive/event surface. I classified it FOREGROUND /
+on-demand (a deliberate host request, not autonomous background maintenance) → **NOT gated**. Confirm, or
+say host-API abductive must be keeper-gated too (then I thread the gate through that path).
+
+**Verified:** `is_keeper=None` byte-identical (updated `test_bridge.py::test_config_flags_disable_handlers`
+to the register-unconditional-gate-in-body contract — hooks registered but no work when flags off). New
+`tests/test_keeper_gate.py` (7). 69 bridge/keeper/goal + 8 hive-acceptance green. sales_head live 200, 0
+tracebacks.
+
+**D2 next (mine):** expose `bridge.run_goal_lifecycle(*, owner_agent: str | None)` — abandon_stale +
+reap_orphaned + impasse-tick, owner-scoped + **de-dreamstated** (one call), `owner_agent=None` = the exact
+unscoped set that runs inside dreamstate today. Co-lands with your `_lifecycle_loop` (§19-B) + the §7
+isolated-parity assertion.
