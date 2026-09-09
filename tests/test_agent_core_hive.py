@@ -200,5 +200,61 @@ def test_single_keeper_by_construction_and_failover():
     asyncio.run(go())
 
 
+@pytest.mark.skipif(not os.environ.get("NMEM_TEST_PG_DSN"),
+                    reason="needs a Postgres + the bundled embedder (set NMEM_TEST_PG_DSN)")
+def test_two_member_shared_world_hive_elects_one_keeper():
+    """END-TO-END live proof: two AgentRuntimes as shared_world members on ONE graph (the test DSN).
+    Both mark graph_role=keeper, yet the advisory lock elects EXACTLY ONE; the keeper runs graph-global,
+    the contributor does not; both attach with DISTINCT owner identities; stopping both frees the lock
+    (failover-ready). Boots the real runtime (build_memory needs the bundled all-MiniLM embedder).
+    Verified live on dj-ai (2026-09-09) against a throwaway pgvector: alpha keeper / beta contributor."""
+    from nmem.agent_core import AgentRuntime, Persona
+
+    dsn = os.environ["NMEM_TEST_PG_DSN"]
+    async_dsn = dsn if "+asyncpg" in dsn else dsn.replace("postgresql://", "postgresql+asyncpg://", 1)
+    dbname = dsn.rsplit("/", 1)[-1].split("?")[0]
+
+    def cfg(aid):                                            # both members' graph → the SAME db
+        return {"db": {"config_key": aid}, "databases": {aid: {"url": async_dsn}},
+                "backends": {"brain": {"provider": "openai", "url": "http://stub/v1", "model": "stub"}},
+                "nmem": {"embedding": {"provider": "sentence-transformers",
+                                       "model": "all-MiniLM-L6-v2", "dimensions": 384},
+                         "llm": {}, "belief": {"default_trust": 0.5},
+                         "policy": {"writers": ["system", aid]}},
+                "symbol_graph": {"enabled": True, "domain": "hive-proof"},
+                "hive": {"mode": "shared_world", "graph_role": "keeper", "agent_id": aid}}
+
+    class _StubBackend:                                     # no LLM exercised by the hive behaviors
+        pass
+
+    def persona(aid):
+        return Persona(agent_id=aid, objectives=[("learn", "Build a model of the domain.")],
+                       world_entities="the domain")
+
+    async def go():
+        a = AgentRuntime(cfg("alpha"), persona("alpha"), backend=_StubBackend())
+        b = AgentRuntime(cfg("beta"), persona("beta"), backend=_StubBackend())
+        await a.start()                                     # first boot provisions the shared schema
+        await b.start()                                     # second contends for the same keeper lock
+        try:
+            keepers = [r for r in (a, b) if r.is_keeper]
+            assert len(keepers) == 1, f"expected EXACTLY ONE keeper, got {len(keepers)}"
+            winner = keepers[0]
+            loser = b if winner is a else a
+            assert winner.runs_graph_global is True         # keeper runs graph-global
+            assert loser.runs_graph_global is False         # contributor is live-suppressed
+            assert a.status["hive"] == "shared_world" and b.status["hive"] == "shared_world"
+            assert a.hive.agent_id != b.hive.agent_id       # distinct owner identities on one graph
+        finally:
+            await a.stop()
+            await b.stop()
+        # both stopped → the keeper's advisory lock was released; a fresh contender can acquire it
+        relock = await become_keeper(dsn, keeper_key(dbname))
+        assert relock is not None                           # freed → failover-ready
+        await relock.release()
+
+    asyncio.run(go())
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
