@@ -51,6 +51,11 @@ def _curiosity_composite(
     return min(1.0, base + recurrence * _CURIOSITY_RECURRENCE_WEIGHT)
 
 
+# Sentinel: "do not filter curiosity by project at all" (legacy global reads
+# when an engine was constructed without a config).
+_NO_SCOPE = object()
+
+
 class CognitiveEngine:
     """Cognitive capabilities for agent memory."""
 
@@ -59,10 +64,24 @@ class CognitiveEngine:
         db: DatabaseManager,
         embedding: EmbeddingProvider,
         llm: LLMProvider,
+        config=None,
     ):
         self._db = db
         self._embedding = embedding
         self._llm = llm
+        # Optional NmemConfig — gives curiosity the same instance project-scope
+        # contract as commitments (emit stamps it, reads default to it).
+        self._config = config
+
+    def _resolve_curiosity_scope(self, project_scope):
+        """Resolve the read-scope sentinel: ``...`` = this engine's configured
+        project scope (``None`` → ``IS NULL``); a concrete value (incl. ``None``)
+        is honored as-is; with no config and no explicit scope, do not filter."""
+        if project_scope is not ...:
+            return project_scope
+        if self._config is not None:
+            return self._config.project_scope
+        return _NO_SCOPE
 
     async def find_similar_experience(
         self,
@@ -263,12 +282,22 @@ class CognitiveEngine:
         from sqlalchemy import select
         from nmem.db.models import CuriositySignalModel
 
+        # Stamp the engine's configured project scope so reads can scope to it
+        # (the same instance contract as commitments).
+        scope = self._config.project_scope if self._config is not None else None
+        scope_cond = (
+            CuriositySignalModel.project_scope.is_(None)
+            if scope is None
+            else CuriositySignalModel.project_scope == scope
+        )
+
         async with self._db.session() as session:
             # Dedup: does a live (pending) signal for the same problem already
             # exist? Keyed by (trigger_type, entity) when an entity is given,
-            # else by (trigger_type, summary). Re-emitting the same problem
-            # should sharpen one signal — accumulating recurrence — rather than
-            # spawn duplicates that each only ever decay.
+            # else by (trigger_type, summary), and scoped to this project so the
+            # same problem in two projects stays two signals. Re-emitting the
+            # same problem should sharpen one signal — accumulating recurrence —
+            # rather than spawn duplicates that each only ever decay.
             if entity_type and entity_id:
                 match = (
                     CuriositySignalModel.entity_type == entity_type,
@@ -283,6 +312,7 @@ class CognitiveEngine:
                     .where(
                         CuriositySignalModel.status == "pending",
                         CuriositySignalModel.trigger_type == trigger_type,
+                        scope_cond,
                         *match,
                     )
                     .order_by(CuriositySignalModel.composite_score.desc())
@@ -344,6 +374,7 @@ class CognitiveEngine:
                 composite_score=composite,
                 entity_type=entity_type,
                 entity_id=entity_id,
+                project_scope=scope,
             )
             session.add(record)
             await session.flush()
@@ -365,11 +396,51 @@ class CognitiveEngine:
                 created_at=record.created_at,
             )
 
+    def _curiosity_scope_conditions(self, project_scope):
+        """Build the pending-status + project-scope filter shared by the list and
+        count queries so they always describe the same backlog. See
+        ``_resolve_curiosity_scope`` for the ``project_scope`` contract."""
+        from nmem.db.models import CuriositySignalModel
+
+        resolved = self._resolve_curiosity_scope(project_scope)
+        conds = [CuriositySignalModel.status == "pending"]
+        if resolved is not _NO_SCOPE:
+            conds.append(
+                CuriositySignalModel.project_scope.is_(None)
+                if resolved is None
+                else CuriositySignalModel.project_scope == resolved
+            )
+        return conds
+
+    async def count_pending_curiosity(
+        self, *, min_composite: float = 0.0, project_scope=...,
+    ) -> int:
+        """Total pending curiosity signals at or above ``min_composite``.
+
+        Independent of any ranking fetch limit, so callers (e.g. the wake
+        snapshot's omission notice) can report the true backlog size rather than
+        just what a bounded fetch returned. See ``_curiosity_scope_conditions``
+        for the ``project_scope`` contract.
+        """
+        from sqlalchemy import func, select
+        from nmem.db.models import CuriositySignalModel
+
+        conds = self._curiosity_scope_conditions(project_scope)
+        conds.append(CuriositySignalModel.composite_score >= min_composite)
+        async with self._db.session() as session:
+            total = (
+                await session.execute(
+                    select(func.count(CuriositySignalModel.id)).where(*conds)
+                )
+            ).scalar()
+            return int(total or 0)
+
     async def list_pending_curiosity(
         self,
         *,
         min_composite: float = 0.0,
         limit: int = 20,
+        project_scope=...,
     ) -> list[CuriositySignalInfo]:
         """List pending curiosity signals, strongest first.
 
@@ -381,14 +452,13 @@ class CognitiveEngine:
         from sqlalchemy import select
         from nmem.db.models import CuriositySignalModel
 
+        conds = self._curiosity_scope_conditions(project_scope)
+        conds.append(CuriositySignalModel.composite_score >= min_composite)
         async with self._db.session() as session:
             rows = (
                 await session.execute(
                     select(CuriositySignalModel)
-                    .where(
-                        CuriositySignalModel.status == "pending",
-                        CuriositySignalModel.composite_score >= min_composite,
-                    )
+                    .where(*conds)
                     .order_by(CuriositySignalModel.composite_score.desc())
                     .limit(limit)
                 )

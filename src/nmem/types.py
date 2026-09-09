@@ -358,3 +358,78 @@ class BriefingResult:
 
     recognition_breakdown: dict[str, int] = field(default_factory=dict)
     """Count per recognition level, e.g. {"KNOWN": 5, "FAMILIAR": 3}."""
+
+
+# ── Continuity / Wake ────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class SymContinuityInputs:
+    """Read-only cognitive inputs projected from nmem-sym for the wake snapshot.
+
+    The nmem-sym bridge plugs a provider that returns this (see
+    ``MemorySystem.register_continuity_provider``). It is deliberately small and
+    all-prose: drive state is surfaced as its *consequence*, never as raw
+    scalars (a numeric dashboard invites the LLM to perform its internal state
+    rather than act on it). Every field is optional so an isolated / sym-less
+    agent degrades cleanly to memory-only continuity.
+    """
+
+    self_model_summary: str | None = None
+    """One or two sentences of durable self-knowledge (capabilities/limitations)."""
+
+    drive_state_prose: str | None = None
+    """Current internal state as a consequence, e.g. "an unresolved contradiction
+    between A and B is pulling attention" — NOT numbers."""
+
+    active_goals: tuple[str, ...] = ()
+    """Short labels of the agent's own currently-actionable goals."""
+
+
+@dataclass(frozen=True, slots=True)
+class OpenLoop:
+    """One unresolved thread in the unified open-loop view.
+
+    Ranks commitments (prospective obligations) and curiosity signals (epistemic
+    gaps) on one salience scale so the highest-tension threads — regardless of
+    kind — surface in the wake state.
+    """
+
+    kind: str  # "commitment" | "curiosity"
+    salience: float  # 0..1, higher = more pressing
+    text: str  # one-line rendering for the prompt
+    due: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuityResult:
+    """Structured return from MemorySystem.wake() / .continuity().
+
+    Unlike a query-driven briefing, this is assembled fresh every call and is
+    present even with no stimulus (the "Morning." case) — it answers "where am I
+    right now" rather than "what is relevant to this query".
+    """
+
+    content: str
+    """Formatted continuity snapshot, within token budget."""
+
+    token_estimate: int
+    """Approximate token count of the content."""
+
+    sections: tuple[str, ...] = ()
+    """Names of the sections that made it into the snapshot, in order."""
+
+    n_commitments: int = 0
+    """Open commitments considered."""
+
+    n_open_loops_shown: int = 0
+    """Unified open loops rendered (after the top-k cut)."""
+
+    n_open_loops_total: int = 0
+    """Unified open loops available before the cut (shows what was dropped)."""
+
+    n_goals: int = 0
+    """Active goals surfaced from the sym seam."""
+
+    has_self_model: bool = False
+    has_drive_state: bool = False

@@ -37,7 +37,7 @@ from nmem.tiers.policy import PolicyTier
 from nmem.prompt import PromptBuilder
 from nmem.cognitive import CognitiveEngine
 from nmem.consolidation import Consolidator
-from nmem.types import BriefingResult, SearchResult
+from nmem.types import BriefingResult, ContinuityResult, SearchResult, SymContinuityInputs
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ class MemorySystem:
         # can render. See self._skills assignment further down.
 
         # Initialize cognitive engine
-        self._cognitive = CognitiveEngine(self._db, self._embedding, self._llm)
+        self._cognitive = CognitiveEngine(self._db, self._embedding, self._llm, self._config)
 
         # Initialize knowledge link engine
         from nmem.links import KnowledgeLinkEngine
@@ -883,6 +883,141 @@ class MemorySystem:
                 "UNCERTAIN": n_uncertain,
             },
         )
+
+    # ── Continuity / Wake ────────────────────────────────────────────────
+
+    def register_continuity_provider(
+        self, provider: Callable[[str], Awaitable[SymContinuityInputs | None]]
+    ) -> None:
+        """Register the read-only nmem-sym seam for the wake snapshot.
+
+        ``provider`` is an async callable ``(agent_id) -> SymContinuityInputs |
+        None`` — the nmem-sym bridge plugs its read-only ``continuity_inputs()``
+        here so ``wake()`` can surface self-model / drive state / goals without
+        nmem taking a hard dependency on nmem-sym. Optional: with no provider,
+        continuity degrades cleanly to memory-only.
+        """
+        self._continuity_provider = provider
+
+    async def wake(
+        self,
+        agent_id: str = "default",
+        *,
+        query: str | None = None,
+        max_tokens: int = 1500,
+        identity: str | None = None,
+        sym_inputs: SymContinuityInputs | None = None,
+        k_open_loops: int = 7,
+    ) -> ContinuityResult:
+        """Assemble a *living* continuity snapshot: "where am I right now".
+
+        Unlike ``briefing()`` this needs no query — it answers the reorientation
+        problem (a session opening with "Morning.") by projecting the agent's
+        current commitments, open loops, recent trajectory, and (via the sym
+        seam) goals / self-model / internal state. Assembled fresh every call;
+        nothing is cached, so each activation sees the most recent state.
+
+        Args:
+            agent_id: Agent to reorient.
+            query: Optional stimulus; when present, adds a query-relevant lane.
+            max_tokens: Approximate token budget for the snapshot.
+            identity: Self-kernel line supplied by the runtime's persona.
+            sym_inputs: Pre-fetched sym seam inputs; when omitted, a registered
+                continuity provider is consulted.
+            k_open_loops: Hard cap on unified open loops entering the snapshot.
+
+        Returns:
+            ContinuityResult with the formatted snapshot and structured counts.
+        """
+        from datetime import datetime, timezone
+
+        from nmem.continuity import applicable_policies, assemble_continuity
+
+        now = datetime.now(timezone.utc)
+        # Every lane uses the instance's configured scope — continuity is the
+        # agent's *own* current state, so there is no per-call scope override
+        # (which the commitment/curiosity read APIs could not honor anyway).
+        scope = self._config.project_scope
+
+        # ── Gather live source-of-truth state in parallel ───────────────
+        # Note: commitments/curiosity read APIs are project/instance-scoped, not
+        # agent-scoped — correct for a per-agent MemorySystem (the pilot). Multi
+        # agent scoping is a Phase-4 concern (see continuity-layer-design §5).
+        # Fetch curiosity candidates sized to the cap so k_open_loops > default
+        # is satisfiable and the reported total is accurate for realistic
+        # single-agent backlogs.
+        curiosity_fetch = max(100, k_open_loops * 4)
+        # Journal (recent + query recall) uses the tier's native project-scope
+        # behavior, identical to briefing(): a set scope matches "scope OR
+        # global"; a None (unscoped) instance sees all of the agent's entries.
+        # Commitments and curiosity apply the stricter IS NULL / == contract.
+        # Normalizing None-scope semantics across tiers is a library-wide concern
+        # tracked separately (see continuity-layer-design §5).
+        coros: dict[str, Any] = {
+            "policies": self._policy.list(),
+            "recent": self._journal.recent(agent_id, days=7, limit=6, project_scope=scope),
+            "commitments": self._commitments.list("open"),
+            # Curiosity reads default to the engine's configured project scope
+            # (same NmemConfig instance), so the snapshot and the independent
+            # backlog count describe the same scoped set — not another project's.
+            "curiosity": self._cognitive.list_pending_curiosity(
+                min_composite=0.0, limit=curiosity_fetch
+            ),
+            "curiosity_total": self._cognitive.count_pending_curiosity(min_composite=0.0),
+        }
+        if query:
+            coros["relevant"] = self.search(
+                agent_id, query, top_k=6, bump_access=False,
+                project_scope=scope,
+            )
+
+        keys = list(coros.keys())
+        results_raw = await asyncio.gather(*coros.values(), return_exceptions=True)
+        data: dict[str, Any] = {}
+        for k, v in zip(keys, results_raw):
+            if isinstance(v, Exception):
+                logger.warning("Continuity source '%s' failed: %s", k, v, exc_info=True)
+                data[k] = []
+            else:
+                data[k] = v
+
+        # ── Sym seam (read-only, fail-open) ─────────────────────────────
+        if sym_inputs is None:
+            provider = getattr(self, "_continuity_provider", None)
+            if provider is not None:
+                try:
+                    sym_inputs = await provider(agent_id)
+                except Exception as e:  # never let the seam break reorientation
+                    logger.warning(
+                        "Continuity sym provider failed: %s", e, exc_info=True
+                    )
+                    sym_inputs = None
+
+        # curiosity_total is an int on success; the generic []-on-failure
+        # fallback would break the count, so coerce back to None (→ use fetched
+        # length) unless we truly got a number.
+        ct = data.get("curiosity_total")
+        curiosity_total = ct if isinstance(ct, int) else None
+
+        return assemble_continuity(
+            agent_id=agent_id,
+            now=now,
+            identity=identity,
+            recent=data["recent"],
+            commitments=data["commitments"],
+            curiosity=data["curiosity"],
+            policies=applicable_policies(data["policies"], agent_id),
+            relevant=data.get("relevant", []),
+            sym=sym_inputs,
+            max_tokens=max_tokens,
+            k_open_loops=k_open_loops,
+            curiosity_total=curiosity_total,
+        )
+
+    async def continuity(self, agent_id: str = "default", **kwargs: Any) -> ContinuityResult:
+        """Alias for :meth:`wake` — reads more naturally at a call site that is
+        asking "what is my continuity state" rather than "wake me up"."""
+        return await self.wake(agent_id, **kwargs)
 
     # ── Event System ─────────────────────────────────────────────────────
 

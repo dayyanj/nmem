@@ -1,0 +1,341 @@
+"""Continuity / wake-snapshot assembly.
+
+Continuity is a *projection across* the existing tiers + the nmem-sym seam, not a
+seventh storage tier. This module holds the pure, DB-free logic — salience
+ranking, the unified open-loop merge, and token-budgeted section assembly — so it
+can be unit-tested without a database. ``MemorySystem.wake()`` does the async
+gather and hands the results here.
+
+Two ideas do the load-bearing work:
+
+* **Unified open loops** — commitments (prospective obligations) and curiosity
+  signals (epistemic gaps) are ranked on one salience scale. The most pressing
+  unresolved threads surface regardless of kind, with a hard ``k`` so the wake
+  state stays a snapshot, not a graveyard of everything ever half-finished.
+* **Drive state as prose, never numbers** — internal state arrives from the sym
+  seam already rendered as a consequence; this module only places it.
+
+The snapshot is assembled fresh every call (nothing here caches) and is present
+even with an empty query — that is what makes continuity *living* rather than a
+post-dreamstate refresh.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any, Sequence
+
+from nmem.types import ContinuityResult, OpenLoop, SymContinuityInputs
+
+if TYPE_CHECKING:  # avoid runtime import cycles; the functions are duck-typed
+    from nmem.commitments import CommitmentInfo
+    from nmem.types import CuriositySignalInfo
+
+
+# Priority order of lanes in the snapshot (design: identity → trajectory →
+# commitments/loops → goals → self-model → internal state → relevant).
+_SECTION_ORDER = (
+    "identity",
+    "warnings",
+    "recent",
+    "open_loops",
+    "goals",
+    "self_model",
+    "internal_state",
+    "relevant",
+)
+
+# Commitments are prospective obligations to others; even a low-"importance" one
+# should not sink below curiosity noise. Floor its salience so it stays visible.
+_COMMITMENT_SALIENCE_FLOOR = 0.4
+
+_WARNING_KEYWORDS = frozenset(
+    {"never", "do not", "avoid", "warning", "critical", "must not", "forbidden"}
+)
+
+
+def _as_utc(dt: datetime | None) -> datetime | None:
+    """Coerce a possibly-naive datetime to tz-aware UTC (mixed tz-awareness in
+    the DB layer would otherwise raise on subtraction)."""
+    if dt is None:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _clamp01(x: float) -> float:
+    return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
+
+
+def _deadline_urgency(deadline: datetime | None, now: datetime) -> float:
+    """Deadline pressure on 0..1: overdue > imminent > soon > distant > none."""
+    if deadline is None:
+        return 0.3  # a standing obligation with no deadline still has some pull
+    hours = (deadline - now).total_seconds() / 3600.0
+    if hours < 0:
+        return 1.0  # overdue — most pressing
+    if hours <= 48:
+        return 0.8
+    if hours <= 168:
+        return 0.5
+    return 0.2
+
+
+def commitment_salience(commitment: Any, now: datetime) -> float:
+    """Salience of an open commitment on 0..1.
+
+    A blend of importance (the model's native 0..1 scale — see the commitment
+    detector's ``"importance": number 0..1``) and deadline urgency, so both
+    dimensions move the ranking and neither saturates the other: a max-importance
+    obligation still sorts by how soon it is due. Floored so a prospective
+    obligation never sinks below curiosity noise.
+    """
+    imp = _clamp01(getattr(commitment, "importance", 1.0))
+    urgency = _deadline_urgency(_as_utc(getattr(commitment, "deadline", None)), now)
+    return _clamp01(max(_COMMITMENT_SALIENCE_FLOOR, 0.5 * imp + 0.5 * urgency))
+
+
+def _render_commitment(commitment: Any, now: datetime) -> str:
+    desc = (getattr(commitment, "description", "") or "").strip()
+    requester = getattr(commitment, "requester", None)
+    parts = [f"[commitment] {desc}"]
+    if requester:
+        parts.append(f"(to {requester})")
+    deadline = _as_utc(getattr(commitment, "deadline", None))
+    if deadline is not None:
+        overdue = deadline < now
+        parts.append(
+            f"— {'OVERDUE' if overdue else 'due'} {deadline.strftime('%Y-%m-%d')}"
+        )
+    return " ".join(parts)
+
+
+def _render_curiosity(signal: Any) -> str:
+    trigger = (getattr(signal, "trigger_type", "") or "open").strip()
+    summary = (getattr(signal, "summary", "") or "").strip()
+    return f"[{trigger}] {summary}"
+
+
+def merge_open_loops(
+    commitments: Sequence[Any],
+    curiosity: Sequence[Any],
+    now: datetime,
+    k: int,
+) -> tuple[list[OpenLoop], int]:
+    """Merge commitments + curiosity into one salience-ranked list.
+
+    Returns ``(top_k, total)`` — the top-k loops for the wake state and the total
+    available before the cut, so callers can report what was dropped rather than
+    silently truncating.
+    """
+    loops: list[OpenLoop] = []
+    for c in commitments:
+        loops.append(
+            OpenLoop(
+                kind="commitment",
+                salience=commitment_salience(c, now),
+                text=_render_commitment(c, now),
+                due=_as_utc(getattr(c, "deadline", None)),
+            )
+        )
+    for s in curiosity:
+        loops.append(
+            OpenLoop(
+                kind="curiosity",
+                salience=_clamp01(float(getattr(s, "composite_score", 0.0) or 0.0)),
+                text=_render_curiosity(s),
+                due=None,
+            )
+        )
+    # Stable, deterministic order: salience desc, then commitments before
+    # curiosity at a tie (prospective obligations first), then text.
+    loops.sort(key=lambda l: (-l.salience, 0 if l.kind == "commitment" else 1, l.text))
+    total = len(loops)
+    if k >= 0:
+        loops = loops[:k]
+    return loops, total
+
+
+def _is_warning(text: str) -> bool:
+    lower = text.lower()
+    return any(kw in lower for kw in _WARNING_KEYWORDS)
+
+
+def applicable_policies(policies: Sequence[Any], agent_id: str) -> list[Any]:
+    """Keep only policies that apply to this agent — ``global`` or
+    ``agent:{agent_id}`` — mirroring ``PolicyTier.build_prompt``.
+
+    ``PolicyTier.list()`` returns every policy regardless of scope; surfacing a
+    foreign agent's or an entity-scoped rule as this agent's *standing warning*
+    would hand it inapplicable instructions and crowd out its real ones.
+    """
+    allowed = {"global", f"agent:{agent_id}"}
+    return [p for p in policies if getattr(p, "scope", "global") in allowed]
+
+
+def assemble_continuity(
+    *,
+    agent_id: str,
+    now: datetime,
+    identity: str | None,
+    recent: Sequence[Any],
+    commitments: Sequence[Any],
+    curiosity: Sequence[Any],
+    policies: Sequence[Any],
+    relevant: Sequence[Any],
+    sym: SymContinuityInputs | None,
+    max_tokens: int,
+    k_open_loops: int,
+    curiosity_total: int | None = None,
+) -> ContinuityResult:
+    """Assemble the wake snapshot from already-gathered inputs. Pure — no I/O.
+
+    All sequences hold duck-typed objects: ``recent`` → JournalEntry (.title,
+    .entry_type), ``commitments`` → CommitmentInfo, ``curiosity`` →
+    CuriositySignalInfo, ``policies`` → PolicyEntry (.key, .content), ``relevant``
+    → SearchResult (.content, .title).
+
+    ``curiosity_total`` is the true pending-curiosity backlog size (counted
+    independently of the bounded candidate fetch); when omitted it falls back to
+    the length of the fetched ``curiosity`` list.
+    """
+    max_chars = max(1, max_tokens * 4)  # honor small budgets; no silent floor
+    header_prefix = f"## Continuity — {agent_id}\n\n"
+    sections: list[str] = []
+    section_names: list[str] = []
+    used = len(header_prefix)  # global running budget, incl. header + separators
+
+    # Per-section SOFT ceilings so no single lane hogs the snapshot. The HARD cap
+    # is the global ``used <= max_chars`` invariant enforced in ``_emit`` — the
+    # ceilings may sum past 100% precisely because the global cap, not their sum,
+    # is what bounds the result.
+    soft = {
+        "identity": int(max_chars * 0.12),
+        "warnings": int(max_chars * 0.15),
+        "recent": int(max_chars * 0.15),
+        "open_loops": int(max_chars * 0.35),
+        "goals": int(max_chars * 0.10),
+        "self_model": int(max_chars * 0.12),
+        "internal_state": int(max_chars * 0.10),
+        "relevant": int(max_chars * 0.16),
+    }
+
+    def _emit(name: str, header: str, lines: Sequence[str]) -> int:
+        """Render a section within both its soft ceiling and the global budget.
+        Returns the number of content lines actually kept (0 if the section was
+        dropped), so callers report surfaced content, not raw inputs."""
+        nonlocal used
+        if not lines:
+            return 0
+        # Room left is the smaller of this lane's ceiling and global remaining,
+        # minus the header and the "\n\n" separator this block will cost.
+        avail = min(soft.get(name, int(max_chars * 0.1)), max_chars - used)
+        body_budget = avail - len(header) - 1 - 2  # header + "\n" + separator
+        if body_budget <= 0:
+            return 0
+        kept: list[str] = []
+        chars = 0
+        for line in lines:
+            if chars + len(line) + 1 <= body_budget:
+                kept.append(line)
+                chars += len(line) + 1
+            elif not kept and body_budget >= 25:
+                # Oversized first item: keep a bounded preview rather than drop
+                # the whole lane (a single long commitment must not blank the
+                # snapshot).
+                kept.append(line[: body_budget - 1].rstrip() + "…")
+                break
+            else:
+                break
+        if not kept:
+            return 0
+        block = header + "\n" + "\n".join(kept)
+        sections.append(block)
+        section_names.append(name)
+        used += len(block) + 2  # +2 for the "\n\n" join
+        return len(kept)
+
+    # 1. Identity / self-kernel (supplied by the runtime's persona; nmem core
+    #    stays decoupled from agent_core).
+    if identity:
+        _emit("identity", "### Who I am", [identity.strip()])
+
+    # 2. Warnings — governance red-lines, surfaced regardless of stimulus.
+    warnings = [
+        f"[!] {getattr(p, 'key', '')}: {(getattr(p, 'content', '') or '')[:140]}"
+        for p in policies
+        if _is_warning(f"{getattr(p, 'key', '')} {getattr(p, 'content', '')}")
+    ]
+    _emit("warnings", "### Standing warnings", warnings)
+
+    # 3. Recent trajectory — what I have been doing lately.
+    recent_lines = []
+    for e in recent:
+        title = (getattr(e, "title", None) or getattr(e, "content", "") or "").strip()
+        if title:
+            recent_lines.append(f"- {title[:120]}")
+    _emit("recent", "### Recently", recent_lines)
+
+    # 4. Unified open loops — commitments ∪ curiosity, salience-ranked. The
+    #    ranked list is drawn from the (bounded) fetched candidates, but the
+    #    reported total uses the true backlog count so the omission notice never
+    #    understates what is unresolved.
+    loops, _considered = merge_open_loops(commitments, curiosity, now, k_open_loops)
+    fetched_curiosity = curiosity_total if curiosity_total is not None else len(curiosity)
+    loops_total = len(commitments) + fetched_curiosity
+    loop_lines = [f"- {l.text}" for l in loops]
+    n_loops_shown = _emit("open_loops", "### Open loops (what's unresolved)", loop_lines)
+    # Omission notice reflects BOTH the k-cut and any budget truncation, and is
+    # only appended when it genuinely fits — so the count never lies.
+    dropped = loops_total - n_loops_shown
+    if dropped > 0 and section_names and section_names[-1] == "open_loops":
+        note = f"- (+{dropped} more unresolved, not shown)"
+        if used + len(note) + 1 <= max_chars:
+            sections[-1] = sections[-1] + "\n" + note
+            used += len(note) + 1
+
+    # 5. Active goals (sym seam).
+    n_goals = 0
+    if sym is not None and sym.active_goals:
+        n_goals = _emit("goals", "### Active goals", [f"- {g}" for g in sym.active_goals])
+
+    # 6. Self-model (sym seam).
+    has_self_model = False
+    if sym is not None and sym.self_model_summary:
+        has_self_model = _emit("self_model", "### About myself", [sym.self_model_summary.strip()]) > 0
+
+    # 7. Internal state — drive consequence as prose, never numbers.
+    has_drive_state = False
+    if sym is not None and sym.drive_state_prose:
+        has_drive_state = _emit("internal_state", "### Right now", [sym.drive_state_prose.strip()]) > 0
+
+    # 8. Query-relevant recall (only when a stimulus is present).
+    rel_lines = []
+    for r in relevant:
+        text = (getattr(r, "title", None) or getattr(r, "content", "") or "").strip()
+        if text:
+            rel_lines.append(f"- {text[:120]}")
+    _emit("relevant", "### Relevant to now", rel_lines)
+
+    if not sections:
+        content = header_prefix + "(no continuity state yet)"
+    else:
+        content = header_prefix + "\n\n".join(sections)
+    # Hard guarantee: never exceed the caller's char budget (covers the tiny-
+    # budget empty-state fallback and any separator-accounting off-by-one).
+    if len(content) > max_chars:
+        content = content[:max_chars]
+
+    # Order section_names by the canonical lane order for a stable report.
+    ordered = tuple(n for n in _SECTION_ORDER if n in section_names)
+
+    return ContinuityResult(
+        content=content,
+        token_estimate=len(content) // 4,
+        sections=ordered,
+        n_commitments=len(commitments),
+        n_open_loops_shown=n_loops_shown,
+        n_open_loops_total=loops_total,
+        n_goals=n_goals,
+        has_self_model=has_self_model,
+        has_drive_state=has_drive_state,
+    )
