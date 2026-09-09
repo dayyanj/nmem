@@ -3,8 +3,16 @@ protocol-agnostic bits (capability mapping, OpenAPI param merge, config→regist
 network or an LLM — the live LLM-driven loop is validated against a real backend separately."""
 import asyncio
 
-from nmem.agent_core.actors import assemble_registry
-from nmem.agent_core.actors.webhook import _openapi_params, _safe_name, webhook_action
+import pytest
+
+# The actor layer builds nmem-act Actions; nmem-act is an OPTIONAL sibling (the actor feature's
+# dep), not installed in nmem's own CI extras. Skip the whole file when it's absent rather than
+# erroring the run — the live/full actor coverage runs where nmem-act is installed.
+pytest.importorskip("nmem_act")
+
+from nmem.agent_core.actors import assemble_registry  # noqa: E402
+from nmem.agent_core.actors.webhook import (  # noqa: E402
+    _openapi_params, _safe_name, openapi_actions, webhook_action)
 
 
 def test_webhook_capability_defaults_by_method():
@@ -118,6 +126,59 @@ def test_webhook_get_preserves_url_query_string():
             await fq.handler({})                                 # fixed query, no params → kept
         asyncio.run(go())
         assert seen == ["/time?city=Auckland", "/s?key=abc"]
+    finally:
+        srv.shutdown()
+
+
+def test_openapi_inherits_path_item_params_and_resolves_nested_refs():
+    # codex re-review: Path-Item-level params apply to every operation, and $refs nested in arrays
+    # must be inlined (else the exported tool schema references components it doesn't ship).
+    doc = {
+        "components": {"schemas": {
+            "Item": {"type": "object", "properties": {"sku": {"type": "string"}}},
+            "Order": {"type": "object", "required": ["lines"], "properties": {
+                "lines": {"type": "array", "items": {"$ref": "#/components/schemas/Item"}}}}}},
+        "paths": {"/orders/{oid}": {
+            "parameters": [{"name": "oid", "in": "path", "required": True, "schema": {"type": "string"}}],
+            "post": {"operationId": "create_order", "requestBody": {"content": {"application/json": {
+                "schema": {"$ref": "#/components/schemas/Order"}}}}}}},
+    }
+
+    async def go():
+        actions = await openapi_actions({"spec": doc, "base_url": "http://svc"})
+        props = actions[0].parameters["properties"]
+        assert "oid" in props                                  # inherited path-item param
+        assert "lines" in props                                # body $ref resolved
+        assert props["lines"]["items"]["properties"]["sku"]["type"] == "string"  # NESTED ref inlined
+        assert "$ref" not in str(props["lines"])
+    asyncio.run(go())
+
+
+def test_webhook_url_encodes_path_placeholder_values():
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    seen = []
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{}')
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        async def go():
+            a = webhook_action({"name": "g", "url": f"http://127.0.0.1:{port}/items/{{id}}", "method": "GET"})
+            await a.handler({"id": "a/b c"})       # slash + space must be percent-encoded, not injected
+        asyncio.run(go())
+        assert seen == ["/items/a%2Fb%20c"]
     finally:
         srv.shutdown()
 

@@ -97,11 +97,29 @@ def test_create_requires_agent_id():
     assert r.json()["ok"] is False
 
 
+def test_create_reports_failure_when_start_agent_raises(tmp_path):
+    # codex re-review: if start_agent (provisioning) fails + tears down the config, create must
+    # report ok:false — not ok:true/started:false while announcing files that were just deleted.
+    async def boom(spec, agent_dir):
+        import shutil
+        shutil.rmtree(agent_dir, ignore_errors=True)      # mimic the appliance's cleanup-on-failure
+        raise RuntimeError("DB unreachable")
+
+    c = _client(config_dir=str(tmp_path), start_agent=boom)
+    r = c.post("/studio/create", json={"agent_id": "scout", "enabled": [],
+                                       "persona": {"agent_id": "scout", "objectives": ["x"]},
+                                       "llm": {"provider": "openai", "base_url": "http://x/v1", "model": "m"}})
+    body = r.json()
+    assert body["ok"] is False and "DB unreachable" in body["error"]
+    assert not (tmp_path / "scout").exists()              # torn down, not left half-created
+
+
 def test_create_rejects_path_traversal_agent_ids(tmp_path):
     # codex P1: agent_id becomes a filesystem path — ../, absolute, slashes, dots must be refused
     # BEFORE any write, so a request can't escape config_dir.
     c = _client(config_dir=str(tmp_path))
-    for bad in ["../evil", "/etc/passwd", "a/b", "..", ".", "has space", "x;rm", "..\\win"]:
+    # includes "my-agent": a hyphen is invalid in the derived env-var names (<AGENT>_DB_DSN_ASYNC)
+    for bad in ["../evil", "/etc/passwd", "a/b", "..", ".", "has space", "x;rm", "..\\win", "my-agent"]:
         r = c.post("/studio/create", json={"agent_id": bad, "enabled": [],
                                            "llm": {"provider": "openai", "model": "m"}})
         assert r.json()["ok"] is False, f"{bad!r} should be rejected"

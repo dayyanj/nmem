@@ -48,10 +48,13 @@ def webhook_action(spec: dict):
     header_ps = set(spec.get("header_params") or [])
 
     async def handler(params: dict) -> ActionResult:
+        from urllib.parse import quote
         params = dict(params or {})
         target = url
-        for k in [k for k in params if "{" + k + "}" in target]:   # path (& query) placeholders
-            target = target.replace("{" + k + "}", str(params.pop(k)))
+        for k in [k for k in params if "{" + k + "}" in target]:   # path placeholders
+            # URL-encode: a value with '/', '?', '#', or spaces would otherwise break the path
+            # or inject extra path/query segments.
+            target = target.replace("{" + k + "}", quote(str(params.pop(k)), safe=""))
         req_headers = dict(headers)
         for k in [k for k in params if k in header_ps]:            # in: header
             req_headers[k] = str(params.pop(k))
@@ -117,20 +120,43 @@ def _resolve_ref(node, doc: dict):
     return node
 
 
-def _openapi_params(op: dict, doc: dict) -> tuple[dict, list, list]:
-    """Merge an operation's parameters + JSON requestBody into one JSON Schema, resolving any
-    ``$ref`` (FastAPI request bodies are `$ref`s — unresolved they'd yield an EMPTY schema so the
-    tool takes no args). Returns ``(schema, query_param_names, header_param_names)`` so the caller
-    can route each argument to its OpenAPI ``in:`` location instead of dumping all into the body."""
+def _deep_resolve(node, doc: dict, depth: int = 6):
+    """Recursively inline local ``$ref``s inside a schema — not just the top level. A FastAPI body
+    with ``items: list[Item]`` nests ``items.$ref``; left unresolved the exported tool schema
+    points at ``#/components/…`` that isn't shipped, so strict tool validators reject it. Walks
+    properties / items / additionalProperties / allOf|anyOf|oneOf, depth-bounded for cyclic refs."""
+    node = _resolve_ref(node, doc)
+    if depth <= 0 or not isinstance(node, dict):
+        return node
+    out = {}
+    for k, v in node.items():
+        if k == "properties" and isinstance(v, dict):
+            out[k] = {pk: _deep_resolve(pv, doc, depth - 1) for pk, pv in v.items()}
+        elif k in ("items", "additionalProperties") and isinstance(v, dict):
+            out[k] = _deep_resolve(v, doc, depth - 1)
+        elif k in ("allOf", "anyOf", "oneOf") and isinstance(v, list):
+            out[k] = [_deep_resolve(x, doc, depth - 1) for x in v]
+        else:
+            out[k] = v
+    return out
+
+
+def _openapi_params(op: dict, doc: dict, inherited: list | None = None) -> tuple[dict, list, list]:
+    """Merge an operation's parameters (+ any inherited from the Path Item) + JSON requestBody into
+    one JSON Schema, deep-resolving ``$ref``s. Returns ``(schema, query_param_names,
+    header_param_names)`` so the caller routes each argument to its OpenAPI ``in:`` location."""
     props: dict = {}
     required: list = []
     query_names: list = []
     header_names: list = []
-    for p in op.get("parameters", []) or []:
+    # Path-Item-level parameters apply to every operation; operation-level ones override by (name,in).
+    merged: dict = {}
+    for p in (inherited or []) + (op.get("parameters", []) or []):
         p = _resolve_ref(p, doc)
-        if not isinstance(p, dict) or not p.get("name"):
-            continue
-        schema = _resolve_ref(p.get("schema") or {"type": "string"}, doc)
+        if isinstance(p, dict) and p.get("name"):
+            merged[(p["name"], p.get("in"))] = p
+    for p in merged.values():
+        schema = _deep_resolve(p.get("schema") or {"type": "string"}, doc)
         props[p["name"]] = {**schema, "description": p.get("description", "")}
         if p.get("required"):
             required.append(p["name"])
@@ -141,10 +167,9 @@ def _openapi_params(op: dict, doc: dict) -> tuple[dict, list, list]:
             header_names.append(p["name"])
         # in:path is carried by the URL's {name} placeholder (handled in the webhook handler)
     body = (((op.get("requestBody") or {}).get("content") or {}).get("application/json") or {}).get("schema")
-    body = _resolve_ref(body, doc) if body else None
+    body = _deep_resolve(body, doc) if body else None
     if isinstance(body, dict) and body.get("properties"):
-        for k, v in body["properties"].items():
-            props[k] = _resolve_ref(v, doc)
+        props.update(body["properties"])
         required += list(body.get("required", []))
     out = {"type": "object", "properties": props}
     if required:
@@ -168,13 +193,15 @@ async def openapi_actions(spec: dict) -> list:
     headers = spec.get("headers") or {}
     actions = []
     for path, methods in (doc.get("paths") or {}).items():
+        # Parameters declared on the Path Item apply to every operation under it (OpenAPI spec).
+        path_params = (methods or {}).get("parameters", []) if isinstance(methods, dict) else []
         for method, op in (methods or {}).items():
             if method.upper() not in _METHODS or not isinstance(op, dict):
                 continue
             op_id = op.get("operationId") or f"{method}_{path}"
             if include and op_id not in include and path not in include:
                 continue
-            schema, query_names, header_names = _openapi_params(op, doc)
+            schema, query_names, header_names = _openapi_params(op, doc, inherited=path_params)
             actions.append(webhook_action({
                 "name": _safe_name(op_id),
                 "url": base.rstrip("/") + path,

@@ -32,9 +32,11 @@ log = logging.getLogger(__name__)
 
 # Providers we know how to build a backend for (mirrors agent_core.backend).
 _PROVIDERS = ("openai", "anthropic")
-# A path-safe agent id: alphanumeric start, then [A-Za-z0-9_-], max 64. Blocks ../, absolute
+# A path-safe agent id: alphanumeric start, then [A-Za-z0-9_], max 64. Blocks ../, absolute
 # paths, dots, slashes, spaces, and shell/SQL metacharacters before it touches the filesystem.
-_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+# NO hyphen: agent_id also becomes an env-var-name component (<AGENT>_DB_DSN_ASYNC etc.), and a
+# hyphen there is an invalid shell name that _merge_env_file would skip → missing DSN → boot loop.
+_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_]{0,63}$")
 
 
 def _build_test_backend(spec: dict):
@@ -167,8 +169,8 @@ def make_studio_router(get_runtime: Callable | None = None, *, config_dir: str =
         # anything that could escape config_dir (../, absolute, slashes, dots) or carry shell/SQL
         # metacharacters — a strict slug, validated BEFORE any os.path.join / write.
         if not _AGENT_ID_RE.match(agent_id):
-            return {"ok": False, "error": "agent_id must be 1-64 chars of [A-Za-z0-9_-], "
-                                          "starting alphanumeric (no slashes, dots, or spaces)"}
+            return {"ok": False, "error": "agent_id must be 1-64 chars of [A-Za-z0-9_], "
+                                          "starting alphanumeric (no hyphens, slashes, dots, or spaces)"}
         # the writer auto-completes the dependency closure (so the on-disk env is always
         # dependency-complete); report what it pulled in beyond the user's explicit selection.
         enabled = {f for f in (spec.get("enabled") or []) if f in caps.CAPABILITIES}
@@ -201,7 +203,11 @@ def make_studio_router(get_runtime: Callable | None = None, *, config_dir: str =
                     await res
                 started = True
             except Exception as e:  # noqa: BLE001
+                # start_agent (e.g. the appliance's provision+stage) may have removed the config
+                # it couldn't stand up — so this is a FAILED create, not a create with started=false.
                 log.warning("[studio] start_agent failed for %s: %s", agent_id, e, exc_info=True)
+                return {"ok": False, "agent_id": agent_id,
+                        "error": f"agent could not be started: {e}"}
 
         return {"ok": True, "agent_id": agent_id, "written": result.get("written", []),
                 "auto_enabled": auto_enabled, "unknown_flags": unknown,

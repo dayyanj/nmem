@@ -145,7 +145,9 @@ async function testLLM(){const spec=llmSpec();const r=document.getElementById('t
   if(!spec.model){r.className='tres err';r.textContent='✗ pick a model';return;}
   r.className='tres wait';r.textContent='testing (server-side)…';
   const res=await api('/studio/test-llm',spec);
-  if(res.ok){r.className='tres ok';r.innerHTML=`✓ reachable · <b>${res.model}</b> replied${res.sample?' “'+res.sample+'”':''} · ${res.latency_ms}ms`;}
+  // textContent (not innerHTML): res.model/res.sample come from the REMOTE provider — a hostile
+  // endpoint could return '<img onerror=…>'. Escaping here prevents HTML/script injection.
+  if(res.ok){r.className='tres ok';r.textContent=`✓ reachable · ${res.model} replied${res.sample?' “'+res.sample+'”':''} · ${res.latency_ms}ms`;}
   else{r.className='tres err';r.textContent=`✗ ${res.error||'unreachable'}`;}}
 function embeddingSpec(){if(document.getElementById('emb').value!=='remote')return null;
   return {provider:'openai',base_url:document.getElementById('emburl').value.trim(),
@@ -165,7 +167,11 @@ function _clear(ids){ids.forEach(i=>document.getElementById(i).value='');}
 function addTool(){
   let e=null;
   if(_toolType==='webhook'){const n=_v('wh_name'),u=_v('wh_url');if(!n||!u)return;
-    e={_type:'webhook',name:n,url:u,method:_v('wh_method')};_clear(['wh_name','wh_url']);}
+    e={_type:'webhook',name:n,url:u,method:_v('wh_method')};
+    // comma-separated param names → a JSON-Schema the LLM sees (else the tool takes no args)
+    const ps=_v('wh_params').split(',').map(s=>s.trim()).filter(Boolean);
+    if(ps.length)e.parameters={type:'object',properties:Object.fromEntries(ps.map(p=>[p,{type:'string'}]))};
+    _clear(['wh_name','wh_url','wh_params']);}
   else if(_toolType==='mcp'){const n=_v('mcp_name'),tr=_v('mcp_transport');if(!n)return;
     if(tr==='http'){const u=_v('mcp_url');if(!u)return;e={_type:'mcp',name:n,transport:'http',url:u};}
     else{const c=_v('mcp_cmd');if(!c)return;const p=c.split(/\s+/);e={_type:'mcp',name:n,transport:'stdio',command:p[0],args:p.slice(1)};}
