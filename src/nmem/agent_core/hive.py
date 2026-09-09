@@ -16,23 +16,20 @@ standalone** connection on the graph DB and holds it for the process lifetime, r
 ``release()`` (or process death → connection death → the lock **frees automatically at the DB**, no
 split-brain). A pooled connection here would silently drop the lock and produce two keepers.
 
-**INTERIM: failover is release-only, not yet live takeover (codex 2026-09-09).** Today's gate is a
-**boot snapshot** — election runs once at ``AgentRuntime.start()`` and feeds the two BridgeConfig flags
-below, which nmem-sym reads at bridge **connect time** to register (or not) the clustering/dreamstate
-consolidation hooks. So a dead keeper's lock frees (no split-brain), but a surviving willing process
-only picks it up on its *next* start, and it couldn't "flip on" the cycles live even if it noticed —
-the hooks were never registered. With a single willing keeper, graph-global maintenance pauses until
-that keeper restarts. **The agreed real fix (co-design, hive doc §16/§17): a *callable* seam
-``SymbolBridge(is_keeper=lambda: rt.is_keeper)`` consulted per-cycle (nmem-sym; register hooks always,
-gate inside the hook body) + a periodic re-election tick for willing contributors (agent_core) so
-``is_keeper`` can flip live.** Both are additive/default-off and land together; this boot-snapshot is
-the v1 they supersede. Path is founder-gated + not deployed + DJ-AI-frozen until then.
+**Failover is LIVE (hive doc §16–§21).** nmem-sym's D1 seam (`SymbolBridge(is_keeper=…)`, commit
+`1ab0ab3`) registers the graph-global hooks unconditionally and consults ``is_keeper()`` *inside* the
+hook body, so the gate re-evaluates every cycle. ``AgentRuntime`` passes
+``is_keeper=lambda: self.runs_graph_global`` (only in ``shared_world``; isolated ⇒ ``is_keeper=None`` ⇒
+nmem-sym keeps its static-flag behavior = today), and a willing contributor runs ``_keeper_retry_loop``
+to re-acquire the freed lock — on acquire it flips ``is_keeper`` and the dormant hooks resume on the
+next cycle, **no restart, no split-brain**. (This supersedes the earlier boot-snapshot gate `c4ea564`,
+which couldn't fail over — codex 2026-09-09.)
 
-This module gates NOTHING by itself — it hands the runtime ``is_keeper``. The runtime then gates
-the graph-global cycles (clustering + dreamstate) on it in ``AgentRuntime._wire_cognition`` via the
-existing ``cluster_on_full_cycle`` / ``dreamstate_on_nightly`` BridgeConfig flags — no nmem-sym change
-needed. Remaining §12.5-step-3 work: (a) live re-election/takeover (above); (b) the per-agent goal
-lifecycle that currently rides the now-keeper-only dreamstate cycle — both real design items, not flags.
+This module gates NOTHING by itself — it hands the runtime ``is_keeper``; the runtime wires it into the
+bridge callable (above). **Remaining §12.5-step-3 work: the per-agent goal lifecycle** (abandon / reap /
+impasse-tick) that rides the now-keeper-only dreamstate — it must move to a per-agent ``_lifecycle_loop``
+(owner-scoped, ``owner_agent=None``=today for isolated) co-landing with nmem-sym's D2
+``run_goal_lifecycle`` entrypoint. That one is a real design item, not a flag.
 """
 from __future__ import annotations
 

@@ -58,6 +58,35 @@ def test_graph_global_cycles_gated_on_keeper_state():
     assert _rt("shared_world", False).runs_graph_global is False  # contributor SUPPRESSED (the point)
 
 
+def test_keeper_retry_loop_takes_over_when_lock_frees(monkeypatch):
+    """Live failover (tick A): a willing contributor that lost the boot election retries the lock and,
+    on acquiring it, flips is_keeper — so the D1 callable (lambda: runs_graph_global) starts returning
+    True and the already-registered graph-global hooks resume, no restart. Patches become_keeper (the
+    loop imports it at call time) so no live PG is needed; the lock is still held on the first poll."""
+    from nmem.agent_core.runtime import AgentRuntime
+
+    rt = AgentRuntime.__new__(AgentRuntime)
+    rt.is_keeper = False
+    rt._keeper_lock = None
+    rt._keeper_dsn, rt._keeper_key = "postgresql://x/graph", 123
+
+    class _Lock:  # stand-in for KeeperLock
+        held = True
+
+    calls = {"n": 0}
+
+    async def fake_become(dsn, key):
+        calls["n"] += 1
+        return None if calls["n"] < 2 else _Lock()   # still held on 1st poll, freed by the 2nd
+
+    monkeypatch.setattr("nmem.agent_core.hive.become_keeper", fake_become)
+
+    import asyncio
+    asyncio.run(asyncio.wait_for(rt._keeper_retry_loop(0.001), timeout=2))
+    assert rt.is_keeper is True and rt._keeper_lock is not None   # took over live
+    assert calls["n"] == 2                                        # retried until the lock freed
+
+
 @pytest.mark.skipif(not os.environ.get("NMEM_TEST_PG_DSN"),
                     reason="needs a Postgres (set NMEM_TEST_PG_DSN)")
 def test_single_keeper_by_construction_and_failover():

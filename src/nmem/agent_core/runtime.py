@@ -73,6 +73,8 @@ class AgentRuntime:
         self._consol_task = None
         self._drive_task = None
         self._pursue_task = None
+        self._keeper_retry_task = None
+        self._keeper_dsn = self._keeper_key = None
         self.status: dict = {"enabled": False}
 
         # Hive (Path B): isolated (default) = today, byte-identical. shared_world elects a single
@@ -153,7 +155,8 @@ class AgentRuntime:
             # Key on the SHARED graph's DB NAME (not the per-agent domain) so every contender on
             # the same graph computes the SAME key — else each would win its own lock.
             dbname = graph_dsn.rsplit("/", 1)[-1].split("?")[0]
-            self._keeper_lock = await become_keeper(graph_dsn, keeper_key(dbname))
+            self._keeper_dsn, self._keeper_key = graph_dsn, keeper_key(dbname)  # reused by the retry tick
+            self._keeper_lock = await become_keeper(self._keeper_dsn, self._keeper_key)
         except Exception as e:  # noqa: BLE001
             log.warning("[runtime] keeper election failed (running as contributor): %s", e)
             self._keeper_lock = None
@@ -171,6 +174,14 @@ class AgentRuntime:
     async def stop(self) -> None:
         """Tear the mind down cleanly (idempotent). Cancel loops, release the keeper lock,
         stop consolidation, close memory + graph."""
+        # Cancel the retry tick FIRST — else it could re-acquire the lock we're about to release.
+        if self._keeper_retry_task is not None:
+            self._keeper_retry_task.cancel()
+            try:
+                await self._keeper_retry_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            self._keeper_retry_task = None
         if self._keeper_lock is not None:
             try:
                 await self._keeper_lock.release()   # frees the graph-keeper role for another process
@@ -224,23 +235,25 @@ class AgentRuntime:
 
         from nmem_sym import BridgeConfig, SymbolBridge, config as sym_config
         s = sym_config.settings
-        # B-ii step-3 (graph-global half): the clustering + dreamstate cycles run on exactly one
-        # process per shared graph. nmem-sym already gates them on these two BridgeConfig flags
-        # (bridge.py cluster_on_full_cycle / dreamstate_on_nightly); we source them from keeper
-        # state. Solo/isolated ⇒ True (unchanged); shared_world ⇒ keeper-only. (The per-agent goal
-        # lifecycle that currently rides dreamstate is the still-open design half — see hive doc.)
-        run_global = self.runs_graph_global
+        # B-ii step-3: gate the graph-global cycles (clustering + dreamstate + its post-hooks) on keeper
+        # state via nmem-sym's D1 callable seam (bridge.py:223). The bridge registers the hooks
+        # unconditionally and consults is_keeper() IN the hook body, so this re-evaluates LIVE — a
+        # contributor that later wins the lock (see _keeper_retry_loop) starts running them with no
+        # restart. Pass the callable ONLY in shared_world; isolated ⇒ is_keeper=None ⇒ nmem-sym keeps
+        # its static-flag behavior (honors any hand-set cluster/dreamstate flag) = byte-identical to
+        # today. (Supersedes c4ea564's boot-snapshot flags, which couldn't fail over — codex 2026-09-09.)
+        is_keeper_cb = (lambda: self.runs_graph_global) if self.hive.is_shared_world else None
         self.bridge = SymbolBridge(graph, BridgeConfig(
             drives_enabled=s.drives_enabled, emotion_enabled=s.emotion_enabled,
             temporal_awareness_enabled=s.temporal_awareness_enabled,
             schemas_enabled=s.schemas_enabled, analogy_enabled=s.analogy_enabled,
             self_model_enabled=s.self_model_enabled, procedures_enabled=s.procedures_enabled,
             goals_enabled=s.goals_enabled, extract_max_parallel=s.extract_max_parallel,
-            cluster_on_full_cycle=run_global, dreamstate_on_nightly=run_global,
-        ), agent_id=self.hive.agent_id)   # B-i: owner-stamp this agent's agency writes (None=isolated)
+        ), agent_id=self.hive.agent_id,   # B-i: owner-stamp this agent's agency writes (None=isolated)
+           is_keeper=is_keeper_cb)
         if self.hive.is_shared_world:
-            log.info("[runtime] graph-global cycles %s (keeper=%s)",
-                     "ON" if run_global else "SUPPRESSED (contributor)", self.is_keeper)
+            log.info("[runtime] graph-global cycles %s (keeper=%s, live-gated)",
+                     "ON" if self.runs_graph_global else "SUPPRESSED (contributor)", self.is_keeper)
         self.bridge.connect(mem)
 
         self._wire_goal_enrichment()
@@ -275,6 +288,13 @@ class AgentRuntime:
 
         # Loop #3: goal pursuit — only if the agent gave us hands + a proposal builder.
         pursuit_on = self._start_pursuit()
+
+        # Loop #4: keeper failover — a WILLING contributor (graph_role=keeper) that lost the boot
+        # election retries the lock so it can take over live if the keeper dies (see _keeper_retry_loop).
+        if self.hive.wants_keeper and not self.is_keeper:
+            retry = float(self._config.get("hive", {}).get("keeper_retry_seconds", 30))
+            self._keeper_retry_task = asyncio.create_task(self._keeper_retry_loop(retry))
+            log.info("[runtime] keeper-retry loop started (willing contributor, every %ss)", retry)
 
         self.status = {
             "enabled": True, "plugins": plugins, "prediction": pred_on,
@@ -388,3 +408,25 @@ class AgentRuntime:
             except Exception:  # noqa: BLE001
                 log.warning("[runtime] pursuit cycle failed", exc_info=True)
             await asyncio.sleep(interval)
+
+    async def _keeper_retry_loop(self, interval: float) -> None:
+        """Live keeper failover for a WILLING contributor that lost the boot election. Without this,
+        ``is_keeper`` is set once at start and the D1 callable never changes → a dead keeper's freed
+        lock is never re-acquired and graph-global maintenance pauses until a restart (codex 2026-09-09).
+        Retry the advisory lock; on acquire, flip ``is_keeper`` — the bridge's in-hook ``is_keeper()``
+        then activates the (already-registered) graph-global hooks on the next cycle, no restart."""
+        from nmem.agent_core.hive import become_keeper
+        while True:
+            try:
+                await asyncio.sleep(interval)        # sleep-first: we only start this having lost at boot
+                if self.is_keeper or self._keeper_dsn is None:
+                    return
+                lock = await become_keeper(self._keeper_dsn, self._keeper_key)
+                if lock is not None:
+                    self._keeper_lock, self.is_keeper = lock, True
+                    log.info("[runtime] keeper failover: acquired the freed lock — graph-global cycles resume")
+                    return
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                log.warning("[runtime] keeper retry failed", exc_info=True)
