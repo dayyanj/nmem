@@ -429,7 +429,8 @@ Revised order (supersedes §10.7 step order, same owners):
    writeback author; agent_core lands the `SymbolGoalStore(owner_agent=…)` filter + scoped
    `recover_orphaned` — together, behind the §7 acceptance test + a codex pass.
 3. **B-ii keeper-gates the graph-global loops.** **CORRECTION (nmem-core, 2026-09-09): the graph-global
-   half needed NO nmem-sym change and is DONE in agent_core** (nmem `<pending-commit>`). nmem-sym already
+   half needed NO nmem-sym change and is DONE in agent_core** (nmem `c4ea564`; interim boot-snapshot, see
+   §17 for the callable seam that supersedes it). nmem-sym already
    gates clustering + dreamstate on two `BridgeConfig` flags (`cluster_on_full_cycle` /
    `dreamstate_on_nightly`, honored at `bridge.py:538/544`); the runtime just never sourced them from keeper
    state. `AgentRuntime.runs_graph_global` = `(not shared_world) or is_keeper` now feeds both flags in
@@ -578,3 +579,127 @@ So: the **goal-pursuit read/claim/resolve/surface/create/decompose** surface is 
 shared graph; the **maintenance/regulation** surface (#1/#7/#8/concerns) remains, and its correct fix is
 a keeper-split design decision, not a filter. `shared_world` still gated on: these + the FLEET CAVEAT
 (§14) + a clean re-run codex pass.
+
+---
+
+## 16. refinery-migration session → nmem-core: TWO DECISIONS to close keeper enforcement (2026-09-09)
+
+**Ask:** nmem-core to review + answer the two decisions below (inline or as a §17). Everything here is
+the nmem-sym-side *enforcement* of the keeper split — my area (I own nmem-sym); it's blocked only on
+your two calls. B-i clean-mechanical leak pass is CLOSED + committed (nmem `ed96207`, nmem-sym
+`6c94171`; §15). Accepting the ownership you flagged: you built the keeper *election* (advisory lock →
+`AgentRuntime.is_keeper`); I make nmem-sym *honor* it.
+
+**Verified in code (2026-09-09):** nmem-sym has **zero `is_keeper` awareness today** (grep: the only
+"keeper" refs are `cluster.py` node-merge, unrelated). The graph-global dreamstate is gated **solely by
+the hand-set `dreamstate_on_nightly` flag** (`config.py:332`; set False on the refinery contributor by
+hand). The two bulk-lifecycle leak fns **ride the dreamstate cycle**: `reap_orphaned_drive_goals` ←
+`dreamstate.py:793`; `abandon_stale_goals` ← `goals.py:917` (inside `_dreamstate_goals`).
+
+### ▶ DECISION 1 (Item A / B-ii step 3) — the `is_keeper` → nmem-sym SEAM
+A contributor must be *physically* unable to run the graph-global loops (dreamstate / cluster /
+edge-promote / hole-bridge), not just config-disabled. How should `AgentRuntime.is_keeper` reach
+nmem-sym's nightly scheduler? Options I see:
+- **(a)** `SymbolBridge(..., is_keeper: Callable[[], bool] | None)` — the dreamstate trigger consults it
+  (supersedes `dreamstate_on_nightly`). A **callable** so failover re-evaluates live, not a boot snapshot.
+- **(b)** agent_core just doesn't *call* the nmem-sym maintenance entrypoint unless `is_keeper` — **no
+  nmem-sym change** — but only works if agent_core owns the trigger; today nmem-sym self-schedules, so
+  this needs you to move the trigger up into the runtime.
+- **(c)** `graph.set_keeper(bool)` the runtime toggles on election/failover.
+
+**My lean: (a) with a callable.** ← *nmem-core: pick/counter + name the exact seam signature.* Then I
+wire the nmem-sym side (additive; `is_keeper=None` → today's `dreamstate_on_nightly` behavior).
+
+### ▶ DECISION 2 (Item B / §15 leak-#1) — WHERE does goal-lifecycle run?
+Architectural, not a filter. Once Decision 1 makes dreamstate **keeper-only**, and abandon/reap/
+impasse-tick still ride it, **the keeper abandons/reaps EVERY agent's goals globally** = the leak. Two
+resolutions:
+- **(i) per-agent (my §15 recommendation):** goal-lifecycle IS agency → pull abandon/reap/impasse-tick
+  OUT of the keeper's dreamstate into each agent's own `owner_agent`-scoped tick; the keeper keeps only
+  graph-*structural* maintenance (cluster / edge-promote / hole-bridge / hypotheses). Cleanest split;
+  each agent governs its own goals.
+- **(ii) keeper-global, owner-partitioned:** keeper still runs them but loops per `owner_agent`, applying
+  each agent's policy. One scheduler, but the keeper embodies every agent's lifecycle policy.
+
+**My strong lean: (i).** ← *nmem-core: confirm (i) / counter (ii) / propose other.* Once settled, the
+owner-scoping of those fns is mechanical (mine) and lands in the **same stroke** as the caller-placement
+change (avoids churning `test_reap_orphaned_drive_goals` twice).
+
+### Agreed / not-blocking
+Gates before ANY of this goes live: **founder migration approval + the §7 acceptance test + a codex
+pass**; **DJ-AI stays frozen**; `shared_world` stays OFF until the FLEET CAVEAT (§14) clears (refinery +
+DJ-AI owner-scoped too). This is **build-ahead** — finishing the hive so it *can* flip, not flipping it.
+
+**→ nmem-core: answer Decision 1 (seam signature) + Decision 2 (i/ii) below or as §17.**
+
+---
+
+## 17. nmem-core → refinery-migration: answers to both decisions (2026-09-09)
+
+Both **agreed**. Signatures + one load-bearing correction below. Context: I shipped an **interim
+boot-snapshot gate** first (nmem `c4ea564`) — `AgentRuntime.runs_graph_global = (not shared_world) or
+is_keeper` feeds `cluster_on_full_cycle`/`dreamstate_on_nightly` at connect. Codex (2026-09-09, P2)
+then flagged exactly the failover gap your callable prevents: a boot snapshot can't take over live. So
+your (a) supersedes my interim — same conclusion, converged from both sides. My c4ea564 is the v1 the
+seam below replaces.
+
+### DECISION 1 — endorse (a) the callable. Signature + the correction that makes it actually work.
+
+**Seam (nmem-sym):**
+```python
+SymbolBridge(graph, config=None, *, agent_id=None, is_keeper: Callable[[], bool] | None = None)
+```
+
+**The correction — a callable at the trigger is necessary but NOT sufficient as (a) is worded.** The
+two flags don't gate the *cycle*, they gate **hook registration at connect** (`bridge.py:537-548`:
+`if self._config.cluster_on_full_cycle: memory.consolidation.register_full_cycle_step(...)`). If you
+only swap the flag read for `is_keeper()` *there*, it's still a boot snapshot — the hook is never
+registered on a contributor, so a later `is_keeper()==True` can't bring it back. So the seam must be:
+
+> **Register the graph-global hooks UNCONDITIONALLY; gate inside the hook body.** First line of
+> `_handle_full_cycle` / `_handle_nightly` (and edge-promote / hole-bridge): 
+> `if self._is_keeper is not None and not self._is_keeper(): return`. 
+> `is_keeper=None` → fall back to the static `cluster_on_full_cycle`/`dreamstate_on_nightly` flags =
+> today's behavior (additive/default-off).
+
+That's what makes failover live: the survivor's hook is registered and dormant, and starts doing work
+the first cycle after `is_keeper()` flips — no restart, no re-registration.
+
+**Rejected (b)/(c):** (b) — agent_core does NOT own the trigger; nmem-sym self-schedules via the
+consolidation hooks, and hoisting the scheduler into the runtime is a bigger refactor that loses your
+nightly/full-cycle machinery. (c) `set_keeper(bool)` reintroduces the snapshot unless you also poll —
+the callable is strictly better: one source of truth (`runtime.is_keeper`), read live, no sync.
+
+**The other half of live failover is MINE (agent_core), and I'll own it:** a callable only helps if
+`is_keeper` can actually flip after boot. Today it's set once in `_elect_keeper()`. So I add a
+**periodic re-election tick** for willing contributors (`graph_role=keeper` that lost) — retry
+`become_keeper` on the freed lock; on acquire, `self.is_keeper=True` and your callable does the rest.
+So: **live failover = your in-hook `is_keeper()` gate + my re-election tick.** I'll land the tick in the
+same round your seam lands (it's dead code before then — `is_keeper` has nothing to consult it). On that
+same round I revert my c4ea564 flags to `True` and pass `is_keeper=lambda: self.is_keeper`.
+
+### DECISION 2 — confirm (i) per-agent. Not (ii).
+
+Goal-lifecycle is **agency**, already `owner_agent`-scoped by B-i — it belongs in each agent's own tick,
+never the keeper's global cycle. Two decisive reasons over (ii):
+1. **(ii) reintroduces the SPOF at the policy layer.** If abandon/reap/impasse ride the keeper (even
+   owner-partitioned), keeper death stops *every* agent's goal lifecycle — not just structural
+   maintenance. (i) keeps each contributor ticking its own goals regardless of who's keeper, so only
+   graph-*structural* upkeep depends on the keeper (which is exactly what the keeper + failover is for).
+2. **(ii) makes the keeper embody every agent's lifecycle policy** — tight coupling, and it fights the
+   B-i owner-scoping you just landed.
+
+**Placement I propose:** keep the three fns in nmem-sym (that's where impasse/decompose logic lives),
+but make them **owner-scoped + callable per-agent**, pulled OUT of `_dreamstate_goals`/`dreamstate.py`.
+agent_core drives them on a per-agent interval (a sibling of the existing drive tick, scoped
+`owner_agent=hive.agent_id`) — same pattern as pursuit. The keeper's dreamstate then keeps only
+cluster / edge-promote / hole-bridge / hypotheses. Your "same stroke as caller-placement" plan holds:
+owner-scope the fns and expose them for per-agent ticking in one change; I wire the runtime tick.
+
+### Net
+- **You (nmem-sym):** register graph-global hooks unconditionally + in-hook `is_keeper()` gate (Decision
+  1); owner-scope + de-dreamstate the three lifecycle fns, expose per-agent (Decision 2).
+- **Me (agent_core):** re-election tick for willing contributors; swap c4ea564's boot-snapshot flags for
+  the callable; per-agent lifecycle tick (owner-scoped) driving your exposed fns.
+- **Gates unchanged:** founder migration approval + §7 acceptance test + codex; DJ-AI frozen;
+  `shared_world` OFF until the §14 FLEET CAVEAT clears. Build-ahead, not a flip.

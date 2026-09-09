@@ -13,14 +13,26 @@ Two small, schema-INDEPENDENT pieces of the hive (see docs/path-b-hive-scoping-d
 **The §11.1 correctness rule, baked in:** ``pg_try_advisory_lock`` is *session-scoped* — it releases
 the instant its connection closes or returns to a pool. So ``KeeperLock`` opens a **dedicated,
 standalone** connection on the graph DB and holds it for the process lifetime, releasing only on
-``release()`` (or process death → connection death → automatic failover, no split-brain). A pooled
-connection here would silently drop the lock and produce two keepers.
+``release()`` (or process death → connection death → the lock **frees automatically at the DB**, no
+split-brain). A pooled connection here would silently drop the lock and produce two keepers.
+
+**INTERIM: failover is release-only, not yet live takeover (codex 2026-09-09).** Today's gate is a
+**boot snapshot** — election runs once at ``AgentRuntime.start()`` and feeds the two BridgeConfig flags
+below, which nmem-sym reads at bridge **connect time** to register (or not) the clustering/dreamstate
+consolidation hooks. So a dead keeper's lock frees (no split-brain), but a surviving willing process
+only picks it up on its *next* start, and it couldn't "flip on" the cycles live even if it noticed —
+the hooks were never registered. With a single willing keeper, graph-global maintenance pauses until
+that keeper restarts. **The agreed real fix (co-design, hive doc §16/§17): a *callable* seam
+``SymbolBridge(is_keeper=lambda: rt.is_keeper)`` consulted per-cycle (nmem-sym; register hooks always,
+gate inside the hook body) + a periodic re-election tick for willing contributors (agent_core) so
+``is_keeper`` can flip live.** Both are additive/default-off and land together; this boot-snapshot is
+the v1 they supersede. Path is founder-gated + not deployed + DJ-AI-frozen until then.
 
 This module gates NOTHING by itself — it hands the runtime ``is_keeper``. The runtime then gates
 the graph-global cycles (clustering + dreamstate) on it in ``AgentRuntime._wire_cognition`` via the
 existing ``cluster_on_full_cycle`` / ``dreamstate_on_nightly`` BridgeConfig flags — no nmem-sym change
-needed. The only remaining §12.5-step-3 work is the per-agent goal lifecycle that currently rides the
-(now keeper-only) dreamstate cycle — that's a real design item, not a missing flag.
+needed. Remaining §12.5-step-3 work: (a) live re-election/takeover (above); (b) the per-agent goal
+lifecycle that currently rides the now-keeper-only dreamstate cycle — both real design items, not flags.
 """
 from __future__ import annotations
 
