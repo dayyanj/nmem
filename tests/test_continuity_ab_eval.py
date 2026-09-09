@@ -6,8 +6,11 @@ from __future__ import annotations
 from nmem.continuity_ab_eval import (
     aggregate,
     build_judge_messages,
+    build_realstate_judge_messages,
     parse_judge,
+    realstate_verdict,
     verdict,
+    REALSTATE_PROBES,
     SCENARIOS,
 )
 
@@ -152,6 +155,66 @@ def test_scenarios_are_wellformed():
     for s in SCENARIOS:
         assert s.expectation in {"help", "no_regress", "null"}
         assert s.stimulus and s.rubric
+
+
+# ── real-state mode: the cognition-vs-plumbing verdict ─────────────────────────
+
+def _rs(controlled, openp):
+    """controlled=(on_list, off_list), openp=(on_list, off_list) → records."""
+    out = []
+    for metric, (on, off) in (("prioritize_controlled", controlled), ("prioritize_open", openp)):
+        for v in on:
+            out.append({"scenario": metric, "metric": metric, "condition": "on", "score": v})
+        for v in off:
+            out.append({"scenario": metric, "metric": metric, "condition": "off", "score": v})
+    return out
+
+
+def test_realstate_helps_without_overclaiming_cognition():
+    # Controlled gain → "HELPS", but must NOT claim reasoning-isolated-from-information.
+    v = realstate_verdict(aggregate(_rs(controlled=([0.9], [0.6]), openp=([0.9], [0.2]))))
+    assert "HELPS" in v["verdict"] and v["checks"]["controlled_helps"]
+    assert "NOT proven reasoning-over-information" in v["verdict"]   # honest caveat present
+    assert "COGNITION GAIN" not in v["verdict"]                      # no overclaim
+
+
+def test_realstate_info_access_only():
+    # Open helps (ON supplies the facts) but controlled shows ~0 → plumbing, not cognition.
+    v = realstate_verdict(aggregate(_rs(controlled=([0.7], [0.68]), openp=([0.9], [0.1]))))
+    assert "INFO-ACCESS ONLY" in v["verdict"] and not v["checks"]["controlled_helps"]
+
+
+def test_realstate_distracts():
+    # With facts supplied to both, ON reasoned WORSE → continuity is net noise here.
+    v = realstate_verdict(aggregate(_rs(controlled=([0.4], [0.8]), openp=([0.9], [0.1]))))
+    assert "HARMS" in v["verdict"] and v["checks"]["controlled_harms"]
+
+
+def test_realstate_open_probe_regression_reported_as_harm():
+    # codex P2: controlled ≈ 0 but open strongly NEGATIVE must report HARM, not NO EFFECT.
+    v = realstate_verdict(aggregate(_rs(controlled=([0.8], [0.8]), openp=([0.0], [1.0]))))
+    assert "HARMS THE OPEN PROBE" in v["verdict"] and v["checks"]["open_harms"]
+    assert "NO EFFECT" not in v["verdict"]
+
+
+def test_realstate_no_effect():
+    v = realstate_verdict(aggregate(_rs(controlled=([0.6], [0.58]), openp=([0.6], [0.55]))))
+    assert "NO EFFECT" in v["verdict"]
+
+
+def test_realstate_judge_sees_goals_but_not_condition():
+    probe = REALSTATE_PROBES[0]
+    msgs = build_realstate_judge_messages(probe, "my reply", ["ship the API audit", "fix loyalty"])
+    blob = " ".join(m["content"] for m in msgs).lower()
+    assert "ship the api audit" in blob and "my reply" in blob       # genuine goals grounding
+    assert "condition" not in blob and "continuity on" not in blob   # still blind
+
+
+def test_realstate_probes_wellformed():
+    metrics = {p.metric for p in REALSTATE_PROBES}
+    assert {"prioritize_controlled", "prioritize_open"} <= metrics
+    # exactly one probe supplies the genuine goals to both conditions (the controlled one)
+    assert sum(1 for p in REALSTATE_PROBES if p.supply_goals) >= 1
 
 
 def test_judge_messages_are_blind_to_condition():

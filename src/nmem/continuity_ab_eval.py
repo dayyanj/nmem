@@ -380,6 +380,152 @@ async def run(mem, backend, judge, *, agent_id: str, scope=None, trials: int = 3
             "records": records}
 
 
+# ── Real-state mode: read-only probes over an agent's GENUINE accumulated memory ──────
+#
+# The isolated A/B above plants synthetic fixtures — which makes its "help" wins close to
+# tautological (the answer was placed in the prompt). This mode instead runs READ-ONLY as the
+# REAL agent over its REAL memory (narrative / journal / LTM via wake()), and any facts it
+# SUPPLIES are the agent's GENUINE actionable goals (pulled from its own graph), never invented.
+# It plants nothing and clears nothing.
+#
+# The anti-tautology design is the contrast between two probes:
+#   * prioritize_controlled — the genuine goals are given to BOTH conditions in the prompt;
+#     only ON also gets its continuity snapshot. If ON beats OFF HERE, the self-context aids
+#     REASONING (both already had the facts). If ON ≈ OFF here, continuity is info-access only.
+#   * prioritize_open — nothing supplied; ON has continuity, OFF is blind. The gross effect
+#     (largely info-access). The gap between this and the controlled probe is the real signal.
+
+@dataclass(frozen=True)
+class RealStateProbe:
+    name: str
+    metric: str
+    stimulus: str
+    rubric: str
+    supply_goals: bool   # give the agent's genuine goals to BOTH conditions?
+
+
+REALSTATE_PROBES: tuple[RealStateProbe, ...] = (
+    RealStateProbe(
+        name="prioritize_controlled", metric="prioritize_controlled", supply_goals=True,
+        stimulus=("Here are things currently on your plate:\n{goals}\n\nPick the TWO you should "
+                  "advance next and justify the choice in terms of your broader situation and how "
+                  "they relate to each other."),
+        rubric=("Score the PRIORITISATION REASONING, not mere listing. Full credit (1.0): picks a "
+                "sensible two AND justifies with specific, coherent reasoning about the agent's "
+                "actual situation / how the goals interrelate / sequencing. Low (≤0.3): generic, "
+                "arbitrary, or just restates items with no real justification. The agent's genuine "
+                "goals are provided for reference:\n{goals}"),
+    ),
+    RealStateProbe(
+        name="prioritize_open", metric="prioritize_open", supply_goals=False,
+        stimulus=("Given everything you are currently working toward, what are the TWO most "
+                  "important things for you to do next, and why?"),
+        rubric=("Full credit (1.0) if the reply names SPECIFIC things the agent is actually working "
+                "toward and prioritises them with coherent reasoning. Low (≤0.3) if generic or not "
+                "grounded in the agent's real goals. The agent's genuine goals are provided for "
+                "reference:\n{goals}"),
+    ),
+)
+
+
+def build_realstate_judge_messages(probe: RealStateProbe, reply: str, genuine_goals: list[str]) -> list[dict]:
+    """Judge prompt for a real-state probe. The judge is given the agent's GENUINE goals as a
+    grounding reference (so it can tell specific-and-grounded from generic), the stimulus, and
+    the reply — but NEVER which condition produced it."""
+    goals_block = "\n".join(f"- {g}" for g in genuine_goals) or "(none on record)"
+    rubric = probe.rubric.format(goals=goals_block)
+    stim = probe.stimulus.format(goals=goals_block)
+    user = (f"SITUATION (said to the agent):\n{stim}\n\nAGENT'S REPLY:\n{reply.strip() or '(empty)'}"
+            f"\n\nRUBRIC:\n{rubric}\n\nReturn the JSON now.")
+    return [{"role": "system", "content": _JUDGE_SYSTEM}, {"role": "user", "content": user}]
+
+
+async def realstate_subject(backend, mem, agent_id: str, probe: RealStateProbe,
+                            continuity: bool, genuine_goals: list[str]) -> str:
+    """One read-only real-state turn. ON injects the agent's REAL wake() snapshot; both get the
+    genuine goals when the probe supplies them. No checkpoint is written (unlike converse) —
+    this mode must not mutate the real agent's memory."""
+    goals_block = "\n".join(f"- {g}" for g in genuine_goals) or "(none on record)"
+    stim = probe.stimulus.format(goals=goals_block)
+    cont = ""
+    if continuity:
+        from nmem.agent_core.continuity import continuity_block
+        cont = await continuity_block(mem, agent_id, query=stim)
+    messages = [{"role": "system", "content": _subject_system(agent_id, cont)},
+                {"role": "user", "content": stim}]
+    return await backend.chat(messages, temperature=0.3, max_tokens=450)
+
+
+# Pre-registered real-state thresholds.
+_T_CONTROLLED_GAIN = 0.15       # ON-OFF on the controlled probe ≥ this ⇒ continuity's fuller context helps
+_T_HARM = -0.15                 # ON-OFF ≤ this ⇒ continuity HARMS (distraction / worse answer)
+
+
+def realstate_verdict(agg: dict) -> dict:
+    """Interpret the controlled-vs-open contrast — HONESTLY.
+
+    IMPORTANT limit (codex P2): the "controlled" probe supplies the same genuine GOALS to both
+    conditions, but ON's wake snapshot still carries OTHER remembered context (narrative, recent
+    activity, checkpoint). So a controlled gain means "continuity's fuller situational context
+    helps prioritisation" — it does NOT isolate reasoning from information. A memory layer's whole
+    job IS to supply relevant info, so "pure reasoning gain, independent of info" is not separable
+    here and is NOT claimed. What the contrast still distinguishes: whether continuity adds value
+    BEYOND just handing over the goal list (controlled gain), vs only when it supplies the goals
+    (open-only gain), vs not at all, vs actively harming."""
+    m = agg["by_metric"]
+    ctrl = m.get("prioritize_controlled")
+    openp = m.get("prioritize_open")
+    if not ctrl or not openp or ctrl["n_on"] == 0 or ctrl["n_off"] == 0 \
+            or openp["n_on"] == 0 or openp["n_off"] == 0:
+        return {"verdict": "INCONCLUSIVE — missing/failed judged data for a real-state probe.",
+                "checks": {}}
+    cd, od = ctrl["delta"], openp["delta"]
+    checks = {"controlled_delta": cd, "open_delta": od,
+              "controlled_helps": cd >= _T_CONTROLLED_GAIN,
+              "controlled_harms": cd <= _T_HARM,
+              "open_harms": od <= _T_HARM}
+    if checks["controlled_harms"]:
+        v = (f"CONTINUITY HARMS (controlled Δ={cd:+.2f}) — with the genuine goals already supplied to "
+             f"both, ON reasoned WORSE than OFF; the extra self-context is net noise for this task.")
+    elif checks["open_harms"]:
+        v = (f"CONTINUITY HARMS THE OPEN PROBE (open Δ={od:+.2f}) — when it must supply context, "
+             f"continuity degraded the answer rather than helping. Not a no-op; a regression.")
+    elif checks["controlled_helps"]:
+        v = (f"CONTINUITY HELPS prioritisation (controlled Δ={cd:+.2f}) — it adds value BEYOND merely "
+             f"handing over the goal list. NOTE: ON's snapshot carries remembered context beyond the "
+             f"supplied goals, so this is 'fuller context helps', NOT proven reasoning-over-information.")
+    elif od >= _T_CONTROLLED_GAIN:
+        v = (f"INFO-ACCESS ONLY — continuity helps only when it SUPPLIES the facts (open Δ={od:+.2f}) "
+             f"but adds nothing once the goals are present for both (controlled Δ={cd:+.2f}). Plumbing.")
+    else:
+        v = (f"NO EFFECT — controlled Δ={cd:+.2f}, open Δ={od:+.2f}; no meaningful change in "
+             f"prioritisation from continuity on real state.")
+    return {"verdict": v, "checks": checks,
+            "thresholds": {"controlled_gain": _T_CONTROLLED_GAIN, "harm": _T_HARM}}
+
+
+async def run_realstate(mem, backend, judge, *, agent_id: str, genuine_goals: list[str],
+                        trials: int = 3, probes: tuple[RealStateProbe, ...] = REALSTATE_PROBES) -> dict:
+    """Read-only real-state A/B. Asserts it plants/clears nothing. ``genuine_goals`` MUST be the
+    agent's real goals (the caller pulls them read-only); they are the only facts supplied."""
+    records: list[dict] = []
+    for pr in probes:
+        for t in range(trials):
+            for condition in ("on", "off"):
+                reply = await realstate_subject(backend, mem, agent_id, pr,
+                                                condition == "on", genuine_goals)
+                judge_out = await judge.chat(
+                    build_realstate_judge_messages(pr, reply, genuine_goals),
+                    temperature=0.0, max_tokens=200)
+                judged = parse_judge(judge_out if isinstance(judge_out, str) else str(judge_out))
+                records.append({"scenario": pr.name, "metric": pr.metric, "condition": condition,
+                                "trial": t, "score": judged["score"], "rationale": judged["rationale"],
+                                "parse_failed": judged.get("parse_failed", False), "reply": reply[:500]})
+    agg = aggregate(records)
+    verd = realstate_verdict(agg)
+    return {"aggregate": agg, "verdict": verd, "report": format_report(agg, verd), "records": records}
+
+
 def _build_openai_backend(url: str, model: str, key: str = "none"):
     """Minimal OpenAI-compatible chat backend (vLLM/Ollama/OpenAI). Kept local so the harness
     has no hard dep beyond the already-present openai client."""
