@@ -13,7 +13,11 @@ name: Publish appliance images
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:            # allow a manual run from the Actions UI
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build + push (e.g. 1.0.0)"
+        required: true
 
 jobs:
   publish:
@@ -21,22 +25,42 @@ jobs:
     steps:
       # Reassemble the apps/ monorepo layout the studio Dockerfile expects (siblings side-by-side).
       - uses: actions/checkout@v4
-        with: { path: nmem }
+        with:
+          path: nmem
       - uses: actions/checkout@v4
-        with: { repository: ${{ github.repository_owner }}/nmem-sym, path: nmem-sym, token: ${{ secrets.REPO_TOKEN }} }
+        with:
+          repository: "${{ github.repository_owner }}/nmem-sym"
+          path: nmem-sym
+          token: "${{ secrets.REPO_TOKEN }}"
       - uses: actions/checkout@v4
-        with: { repository: ${{ github.repository_owner }}/nmem-act, path: nmem-act, token: ${{ secrets.REPO_TOKEN }} }
+        with:
+          repository: "${{ github.repository_owner }}/nmem-act"
+          path: nmem-act
+          token: "${{ secrets.REPO_TOKEN }}"
       - uses: actions/checkout@v4
-        with: { repository: ${{ github.repository_owner }}/nmem-exchange, path: nmem-exchange, token: ${{ secrets.REPO_TOKEN }} }
+        with:
+          repository: "${{ github.repository_owner }}/nmem-exchange"
+          path: nmem-exchange
+          token: "${{ secrets.REPO_TOKEN }}"
       - uses: actions/checkout@v4
-        with: { repository: ${{ github.repository_owner }}/nmem-viz, path: nmem-viz, token: ${{ secrets.REPO_TOKEN }} }
+        with:
+          repository: "${{ github.repository_owner }}/nmem-viz"
+          path: nmem-viz
+          token: "${{ secrets.REPO_TOKEN }}"
 
       - name: Log in to registry.spwig.com
-        run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login registry.spwig.com -u "${{ secrets.REGISTRY_USERNAME }}" --password-stdin
+        env:
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: printf '%s' "$REGISTRY_PASSWORD" | docker login registry.spwig.com -u "$REGISTRY_USERNAME" --password-stdin
 
-      - name: Build + push images (version = the tag, minus the leading v)
+      - name: Build + push images
         env:
           REGISTRY: registry.spwig.com
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          VERSION="$VERSION" REGISTRY="$REGISTRY" ./nmem/docker/publish.sh --push
+          if [ "$EVENT" = "workflow_dispatch" ]; then V="$INPUT_VERSION"; else V="${REF_NAME#v}"; fi
+          case "$V" in ""|*/*|*" "*) echo "invalid version '$V' — expected e.g. 1.0.0 (tag it vX.Y.Z)"; exit 1;; esac
+          VERSION="$V" REGISTRY="$REGISTRY" ./nmem/docker/publish.sh --push

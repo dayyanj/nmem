@@ -12,7 +12,7 @@ LABEL org.opencontainers.image.title="nmem-studio" \
       org.opencontainers.image.description="Pull-and-run appliance for an autonomous nmem agent" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.source="https://spwig.com" \
-      org.opencontainers.image.licenses="AGPL-3.0-or-later"
+      org.opencontainers.image.licenses="BUSL-1.1 AND MIT"
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
