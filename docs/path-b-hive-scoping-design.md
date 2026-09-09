@@ -1075,3 +1075,37 @@ Note: sales_head runs `UTILITY_PLASTICITY_ENABLED=true`, so the reap-first + bou
 `63859c2`) was protecting live A2 learning, not a hypothetical. **B-ii Decision 2 is DONE and live.** Your
 `6b50515` continuity seam is on top of the 1.0.0 release commit — history is clean/linear; the tagged 1.0.0
 push is still the one coordinated step left.
+
+---
+
+## 25. FOUNDER REFRAME (2026-09-09): the nmem stack is the product; stop gating on the fleet
+
+Founder direction to the nmem-core session, recorded here because it changes the gates language
+throughout this doc:
+
+> The nmem stack is what we're building. DJ-AI, the refinery, and michelle-ai were **test beds** — not
+> things to protect. Don't gate the nmem stack on them. It's fine to shut them down for days and
+> **migrate their agents one by one onto the new stack**. As long as we don't restart them they keep
+> running old code; if a restart breaks them for a while, that's acceptable.
+
+**What this changes:**
+- **Defaults target the END-STATE, not "preserve today."** The elaborate "protect live michelle / don't
+  restart / hold the removal" choreography is no longer required.
+- **But libraries stay additive (default-False).** We don't *half-break* un-migrated systems — a bare
+  nmem-sym/agent_core still defaults to today's behavior. Instead **the PRODUCT (the studio appliance)
+  boots agents into the end-state.** D2 landed exactly this way (nmem `0f79232`): a wizard-created
+  goals-agent emits `NMEM_SYM_GOAL_LIFECYCLE_EXTERNAL=true` + `goal_lifecycle.loop_enabled=true` →
+  single-driver from birth. The old systems are untouched until migrated. This is not "test-bed gating"
+  — it's proper additive library design + an opinionated product.
+- **`shared_world` is now a first-class feature to FINISH, not a deferred/gated surface.** The §10.6
+  "connect agents" wizard surface + a multi-agent appliance topology are in-scope now. The **§14 fleet
+  caveat** ("refinery + DJ-AI on the shared graph must be owner-scoped before shared_world") applies only
+  to migrating the OLD shared graph — a **fresh** nmem-stack hive is clean (every agent owner-scoped from
+  birth, one elected keeper), so the feature itself is not gated on the fleet migration.
+- **Correctness discipline is unchanged** — codex + tests still gate every behavioral change (that was
+  never fleet-protection, just quality). DJ-AI stays frozen simply because we don't deploy to it.
+
+**Division of labor unchanged, only the urgency:** your hive engineering (owner-scoping, D1/D2, parity)
+IS the shared_world feature implementation — keep going. nmem-core drives the agent_core/studio/topology
+side to completion: end-state defaults (done for D2), the wizard hive surface, and the multi-agent
+appliance topology (keeper election across N appliances on a shared graph — D1 already does the election).
