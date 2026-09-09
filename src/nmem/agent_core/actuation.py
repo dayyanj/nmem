@@ -73,6 +73,17 @@ def build_experiential_sink(bridge, mem, agent_id: str):
                 grounding="confirmed" if verified else "inferred")
         except Exception:  # noqa: BLE001
             pass
+
+        # 4. continuity: pursuing a goal is an ACTION — record it as "where I left off" so a
+        # wake snapshot reflects what the agent last DID autonomously, not only what it was
+        # asked. (Generic: every acting agent that uses this sink inherits it.)
+        try:
+            from nmem.agent_core.continuity import record_action_checkpoint
+            verb = "pursued" if verified else "attempted"
+            await record_action_checkpoint(
+                mem, agent_id, f"{verb}: {obj}" + (f" — {note[:160]}" if note else ""))
+        except Exception:  # noqa: BLE001
+            pass
         # NB: tool-use skill capture is not here — wrap this sink with nmem-act's
         # make_reflective_sink (reflect on observations["steps"] -> skills) for that.
 
