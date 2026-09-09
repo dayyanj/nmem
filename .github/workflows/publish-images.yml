@@ -1,0 +1,42 @@
+# Build + push the nmem appliance images on a version tag (open, free pull-and-run distribution).
+#
+#   git tag v1.0.0 && git push origin v1.0.0   → builds nmem-studio:1.0.0 + nmem-viz:1.0.0 (+ :latest)
+#
+# REQUIRES three repo/org secrets to be wired (Settings → Secrets):
+#   REGISTRY_USERNAME / REGISTRY_PASSWORD  — a push credential for registry.spwig.com
+#   REPO_TOKEN                             — read access to the sibling repos (cross-repo checkout)
+# and confirmation that the sibling repos (nmem-sym / nmem-act / nmem-exchange / nmem-viz) live under
+# the SAME owner as this repo. If instead you publish the libs to a package index, drop the sibling
+# checkouts and have the Dockerfile pip-install them — then this only needs the registry secrets.
+name: Publish appliance images
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:            # allow a manual run from the Actions UI
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      # Reassemble the apps/ monorepo layout the studio Dockerfile expects (siblings side-by-side).
+      - uses: actions/checkout@v4
+        with: { path: nmem }
+      - uses: actions/checkout@v4
+        with: { repository: ${{ github.repository_owner }}/nmem-sym, path: nmem-sym, token: ${{ secrets.REPO_TOKEN }} }
+      - uses: actions/checkout@v4
+        with: { repository: ${{ github.repository_owner }}/nmem-act, path: nmem-act, token: ${{ secrets.REPO_TOKEN }} }
+      - uses: actions/checkout@v4
+        with: { repository: ${{ github.repository_owner }}/nmem-exchange, path: nmem-exchange, token: ${{ secrets.REPO_TOKEN }} }
+      - uses: actions/checkout@v4
+        with: { repository: ${{ github.repository_owner }}/nmem-viz, path: nmem-viz, token: ${{ secrets.REPO_TOKEN }} }
+
+      - name: Log in to registry.spwig.com
+        run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login registry.spwig.com -u "${{ secrets.REGISTRY_USERNAME }}" --password-stdin
+
+      - name: Build + push images (version = the tag, minus the leading v)
+        env:
+          REGISTRY: registry.spwig.com
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="$VERSION" REGISTRY="$REGISTRY" ./nmem/docker/publish.sh --push

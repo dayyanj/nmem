@@ -5,10 +5,20 @@
 # or just `docker compose up` from nmem/docker/studio/ (compose sets the context).
 FROM python:3.12-slim
 
+# Version stamped in at build time (CI passes --build-arg VERSION=<tag>); defaults to "dev" for a
+# local build. Surfaced as an OCI label so `docker inspect` / a registry shows exactly what shipped.
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="nmem-studio" \
+      org.opencontainers.image.description="Pull-and-run appliance for an autonomous nmem agent" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.source="https://spwig.com" \
+      org.opencontainers.image.licenses="AGPL-3.0-or-later"
+
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     STUDIO_DATA_DIR=/data \
     STUDIO_PORT=8080 \
+    NMEM_STUDIO_VERSION=${VERSION} \
     HF_HOME=/opt/hf
 
 # build-essential for asyncpg/torch native bits; curl for the compose healthcheck.

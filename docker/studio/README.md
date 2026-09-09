@@ -14,12 +14,28 @@ hand. One image, one process, two modes:
 
 ## Run
 
+**Pull the released image** (open, free — no login to pull):
+
+```bash
+docker pull registry.spwig.com/nmem-studio:latest     # or a pinned version, e.g. :1.0.0
+docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' \
+  registry.spwig.com/nmem-studio:latest               # confirm which version you got
+```
+
+The compose file uses `nmem-studio:latest`; retag the pulled image (or edit the `image:` line) and
+`docker compose up`. **Or build from source** (installs CPU torch + the embedder — a few minutes):
+
 ```bash
 cd nmem/docker/studio
-docker compose up --build        # first run builds the image (installs CPU torch + the embedder)
+docker compose up --build
 ```
 
 Then open <http://localhost:8080>. (If 8080 is taken: `STUDIO_HOST_PORT=18080 docker compose up`.)
+
+> **Releasing (maintainers):** `./docker/publish.sh --push` builds both images from the monorepo,
+> version-stamps them (`VERSION` → the `org.opencontainers.image.version` label), and pushes
+> `:<version>` + `:latest` to `$REGISTRY` (default `registry.spwig.com`). CI does this on a `v*` tag
+> (`.github/workflows/publish-images.yml`).
 
 > **Security — the admin surface can create + run agents and register container-executing tools.**
 > By default it is **unauthenticated** and the compose binds the studio + viz ports to **loopback
