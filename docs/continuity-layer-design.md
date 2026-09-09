@@ -69,9 +69,11 @@ commitments have a full lifecycle, and drives are real control state, not decora
   story ("over the last weeks I've been…") cannot be re-derived cheaply per turn and must survive
   process death. The only genuinely new persisted artifact.
 
-- **Immediate-continuity checkpoint — written transactionally at session end.** last_interaction_summary,
-  last_action, interrupted_work. Reuse `Memory.end_session()` + working memory; persist one compact row
-  per agent so "returning after a gap" survives restarts.
+- **Immediate-continuity checkpoint — advanced every turn.** last_interaction_summary, last_action,
+  interrupted_work. Persist one compact row per agent so "returning after a gap" survives restarts.
+  **Written per-turn, not per-session** (see §6.1): the hosts do not emit a reliable session-close, so a
+  session-end-only write never fires — the turn loop (`agent_core.chat.converse`) is the durable cadence.
+  `Memory.end_session()` still writes a checkpoint opportunistically when a host does close a session.
 
 **Living table vs pure JSON → hybrid, and mostly neither.** The living part is *computed, not stored*.
 Only two small durable artifacts persist (§3). A single fat JSON `continuity_state` blob is rejected —
@@ -165,8 +167,33 @@ does not — it makes Gaps 2 and 6 harder to see. This design uses "continuity l
   identity → trajectory → commitments → goals → relationships → self-model → unresolved → internal
   state; token-budgeted like `briefing()`.
 - Add read-only `SymbolBridge.continuity_inputs(agent_id)`.
-- Wire michelle-ai's boot to call `wake()` before `augment_search()`.
+- Wire the snapshot into the **turn loop** (see §6.1), not boot-only.
 - Build the eval harness + static-preamble baseline in parallel; capture baseline numbers.
+
+### 6.1 Caller topology — where continuity is read and written (corrects the original boot-only plan)
+
+The first cut of this plan said "call `wake()` at boot" and "checkpoint at session end." Both were
+wrong in the same way: **boot-only is not living, and session-end never fires** (the hosts — michelle,
+the twin, studio chat — do not emit a reliable `MemorySystem.end_session()`). A snapshot produced but
+never read, plus a checkpoint whose only writer is uncalled, is how the layer looked "shipped" while
+being inert in every real turn. The correct home is the **turn loop in agent_core** — the source — so
+every target inherits it:
+
+- **READ — `agent_core/chat.py::converse()`** injects `continuity_block()` (= `mem.wake()`) into the
+  system prompt *every turn*, ahead of the query-driven `# Memory` block. Continuity answers "where am
+  I"; memory answers "what's relevant to this query" — reorientation first. Flag-gated (`continuity=`),
+  token-budgeted, fail-open.
+- **WRITE — `converse()` advances the checkpoint after every turn** (`record_turn_checkpoint()`): a
+  per-turn upsert of `last_interaction_summary` / `last_action`. This is the *living write* — progressive
+  (turn granularity, not nightly, not per-session) and restart-durable. It does not depend on a session
+  close the hosts never emit.
+- **Autonomous "turns" (next increment):** the pursuit loop's `build_proposal` and the comms loop's
+  `on_intent` are also points where the agent acts/speaks — they should read continuity the same way and
+  record an action checkpoint on completion. Not yet wired.
+- **Targets consume via the generic path.** An agent with a bespoke turn assembler (michelle's
+  `identity.build_memory_context`) bypasses `converse()` and so bypasses continuity; the fix is to route
+  the target's turn through `agent_core.chat.converse` (agent_core is the source, the agent is the
+  target), not to re-wire continuity per agent.
 
 **Phase 2 — narrative_self + delta (still michelle)**
 - Add `nmem_narrative_self` + `nmem_continuity_checkpoint` (schema v5→6; codex review before landing).
@@ -191,7 +218,12 @@ does not — it makes Gaps 2 and 6 harder to see. This design uses "continuity l
 - `nmem/src/nmem/db/models.py` + new `migrations/NNN` — two thin tables, schema v5→6.
 - `nmem-sym/src/nmem_sym/bridge.py` — new read-only `continuity_inputs(agent_id)`; reuse
   `augment_search()` (`:2860`). **No agency-table writes.**
-- michelle-ai runtime/boot wiring (own repo/config) — call `wake()` at activation.
+- `nmem/src/nmem/agent_core/chat.py` — `converse()` reads `continuity_block()` in and advances
+  `record_turn_checkpoint()` out, every turn (§6.1). The consumer seam; generic to all targets.
+- `nmem/src/nmem/agent_core/runtime.py` — `install_continuity_provider()` wires the sym seam into
+  `mem.wake()` at `AgentRuntime.start()`.
+- Target wiring (own repo/config) — route the target's turn through `agent_core.chat.converse` rather
+  than a bespoke assembler, so it inherits continuity (michelle migration = the first such target).
 
 ## 8. Verification (end-to-end, on michelle-ai)
 - Cold-boot with an empty query (`"Morning."`); confirm `wake()` returns identity + current

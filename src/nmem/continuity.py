@@ -225,10 +225,15 @@ def assemble_continuity(
         "relevant": int(max_chars * 0.16),
     }
 
-    def _emit(name: str, header: str, lines: Sequence[str]) -> int:
+    def _emit(name: str, header: str, lines: Sequence[str], *, fair: bool = False) -> int:
         """Render a section within both its soft ceiling and the global budget.
         Returns the number of content lines actually kept (0 if the section was
-        dropped), so callers report surfaced content, not raw inputs."""
+        dropped), so callers report surfaced content, not raw inputs.
+
+        ``fair``: give every line an equal share of the *actual* body budget
+        (truncating each to a bounded preview) instead of first-come-first-served.
+        Used by the immediate/checkpoint lane so a stale long field can't crowd out
+        a freshly-written one — every populated field survives as a preview."""
         nonlocal used
         if not lines:
             return 0
@@ -238,6 +243,28 @@ def assemble_continuity(
         body_budget = avail - len(header) - 1 - 2  # header + "\n" + separator
         if body_budget <= 0:
             return 0
+        if fair and len(lines) > 1 and sum(len(ln) + 1 for ln in lines) > body_budget:
+            # The fields don't all fit. Fill in PRIORITY order (``lines`` is ordered most-
+            # to least-important): each field takes what it needs from the budget still
+            # unclaimed, so a short high-priority field leaves its surplus for the next and
+            # a long high-priority field rightly wins the space over lower-priority ones.
+            # This keeps priority intact — a stale lower-priority field can never displace a
+            # fresher higher-priority one (codex P2) — and the top field always gets at
+            # least a bounded preview, so the lane is never blanked while a preview fits.
+            # Each line costs len+1 (content + its "\n"). Skipped entirely when all fit.
+            fitted: list[str] = []
+            remaining = body_budget
+            for ln in lines:
+                if len(ln) + 1 <= remaining:
+                    fitted.append(ln)
+                    remaining -= len(ln) + 1
+                elif remaining >= 26:      # room for a meaningful preview of this field
+                    fitted.append(ln[: remaining - 2].rstrip() + "…")
+                    remaining = 0
+                    break
+                else:
+                    break                  # out of room; lower-priority fields drop
+            lines = fitted if fitted else [lines[0]]
         kept: list[str] = []
         chars = 0
         for line in lines:
@@ -287,19 +314,25 @@ def assemble_continuity(
         has_narrative = _emit("narrative", label, lines) > 0
 
     # 1c. Immediate continuity — "where I left off", for resuming across a gap.
+    #     Freshest-first order (interaction → interrupted work → last action → next): the
+    #     checkpoint is a partial upsert, so a stale long ``last_action`` from an earlier
+    #     writer can linger; rendering it ahead of a just-written interaction summary would
+    #     let it displace the summary (codex P2). Each field also gets a fair bounded share
+    #     of the lane so *every* present field renders a preview rather than the first few
+    #     crowding out the rest.
     has_checkpoint = False
     if checkpoint:
         ck_lines = []
+        if checkpoint.get("last_interaction_summary"):
+            ck_lines.append(f"- Last interaction: {checkpoint['last_interaction_summary']}")
         if checkpoint.get("interrupted_work"):
             ck_lines.append(f"- Was in the middle of: {checkpoint['interrupted_work']}")
         if checkpoint.get("last_action"):
             ck_lines.append(f"- Last action: {checkpoint['last_action']}")
-        if checkpoint.get("last_interaction_summary"):
-            ck_lines.append(f"- Last interaction: {checkpoint['last_interaction_summary']}")
         if checkpoint.get("expected_next_action"):
             ck_lines.append(f"- Expected next: {checkpoint['expected_next_action']}")
         if ck_lines:
-            has_checkpoint = _emit("immediate", "### Picking up from", ck_lines) > 0
+            has_checkpoint = _emit("immediate", "### Picking up from", ck_lines, fair=True) > 0
 
     # 2. Warnings — governance red-lines, surfaced regardless of stimulus.
     warnings = [
