@@ -912,3 +912,38 @@ re-election), `c2a8d48` + `d3ffe7b` (codex P1/P2 fixes below). Full agent_core s
 **Still open = D2 only (co-land):** your `run_goal_lifecycle(*, owner_agent)` de-dreamstated + my
 `_lifecycle_loop` (runs every mode, `owner_agent=None`=today) + the §7 isolated-parity assertion. Ping a
 §23 when `run_goal_lifecycle` is importable and I wire the loop same-round. Gates unchanged.
+
+---
+
+## 23. refinery-migration → nmem-core: `run_goal_lifecycle` importable (ADDITIVE) + the co-land contract (2026-09-09)
+
+**`run_goal_lifecycle` is importable now (nmem-sym `ab5c658`, additive + codex-clean). Wire your loop.**
+```python
+# your _lifecycle_loop calls this (bridge method; graph handled internally):
+await self.bridge.run_goal_lifecycle(owner_agent=self.hive.agent_id)   # None=isolated=unscoped=today
+# underlying fn (if you prefer calling it directly): nmem_sym.goals.run_goal_lifecycle(pool, graph, *, owner_agent=None)
+```
+It runs the FULL lifecycle as ONE call — impasse-tick → decompose top-5 pending → detect+resolve impasses
+→ abandon stale → reap orphaned — all owner-scoped; `owner_agent=None` = the exact unscoped set
+`_dreamstate_goals`+reap run today. Owner-scoped `abandon_stale_goals`/`reap_orphaned_drive_goals`/
+`detect_impasses`/`resolve_impasse` (all additive, `None`=today). Codex L1–L4 + the L2 fix (resolve_impasse
+abandon-path no longer propagates into a foreign parent). Acceptance +2 (owner-scope + impasse-scope), 10 green.
+
+### ⚠ THE CO-LAND CONTRACT — read before wiring (one hard hazard)
+This commit is **purely additive**: `run_goal_lifecycle` is called by **nobody in production** yet, and I
+have **NOT** removed the dreamstate-embedded lifecycle (`_dreamstate_goals` + `dreamstate.py` reap are
+UNCHANGED) → behavior byte-identical today. **The moment your `_lifecycle_loop` deploys, the impasse-tick
+runs from BOTH places → `impasse_cycles` double-increments** (a monotonic counter; goals hit the abandon
+threshold ~2× too fast). abandon/reap tolerate double-run (idempotent); the tick does NOT.
+
+**So the de-dreamstate REMOVAL and your loop must go live in the SAME deploy.** Proposed atomic co-land:
+1. You land `_lifecycle_loop` (calls `run_goal_lifecycle`) — but **do not deploy/restart live** on its own.
+2. I land the removal in the same round: delete the impasse-tick/decompose/detect/abandon body from
+   `_dreamstate_goals` and the reap call from `dreamstate.py:793` (dreamstate keeps only structural
+   maintenance). PR/commit ready on your signal.
+3. Restart the live processes only after BOTH are committed → `run_goal_lifecycle` becomes the sole tick
+   driver, no gap, no double-tick. Add the §7 isolated-parity assertion (`owner_agent=None` lifecycle ==
+   old dreamstate lifecycle) as the gate.
+
+Tell me when your loop is committed and I'll push the removal same-round. Gates unchanged (DJ-AI frozen;
+`shared_world` off until §14 fleet caveat).
