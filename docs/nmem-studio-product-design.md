@@ -233,8 +233,12 @@ real Gemma). The studio is a runnable single-agent appliance:
 - `agent_core.studio_server` — the **single-agent appliance** (wizard mode ↔ agent mode; create→boot
   via container restart; agent-dir discovery; secrets.env at 0600; `provision_db`). `docker/studio/`
   = Dockerfile + compose (studio + pgvector + redis, external LLM) + entrypoint.sh + Dockerfile.dockerignore.
-  Commit `6b907ab`. **Image build:** kick `docker compose build` from `docker/studio/` (long: CPU torch +
-  bundled all-MiniLM). Python path is proven; the build only validates layering.
+  Commit `6b907ab`. **Image build: VERIFIED (2026-09-09).** `docker compose build` layers cleanly on a
+  real daemon (studio `nmem-studio:latest` 2GB = CPU torch + all-MiniLM + the four nmem-* libs; viz
+  `nmem-viz:latest` 252MB via the multi-stage node→aiohttp build). Boot-smoked the built image in wizard
+  mode: it imports + serves `/studio/catalog` 200 (40 caps / 3 presets / 6 groups), the SPA is wired to the
+  live router, and `test-llm` rejects a bad spec without echoing the key — all from inside the container.
+  (The full create→restart→agent-boot seam was validated live earlier; that needs an external LLM + PG.)
 - Config-authoring backend (`capabilities` map/validator/`catalog()`/`PRESETS`, `config_writer`) as before,
   now also emitting `backends.brain` + `api_key_env` key resolution (the two gaps the boot exposed).
 - **Topology DECIDED (founder, 2026-09-08):** single-agent appliance (one image = studio + the agent).
@@ -244,8 +248,8 @@ real Gemma). The studio is a runnable single-agent appliance:
 
 1. ~~`agent_core/studio.py` — the `/studio/*` router~~ **DONE** (`a348a88`).
 2. ~~Productionise the wizard SPA~~ **DONE** (`ce1f087`).
-3. ~~First-boot + compose image (single-agent appliance)~~ **DONE** (`6b907ab`); image-build layering is
-   the only unverified bit.
+3. ~~First-boot + compose image (single-agent appliance)~~ **DONE** (`6b907ab`); **image build now
+   VERIFIED on a real daemon + boot-smoked in wizard mode (2026-09-09)** — nothing left unproven here.
 4. ~~Dashboard page — agent-mode face over `make_ops_router`~~ **DONE** (`b1a338e`). `studio_ui/dashboard.html`
    served at `/` in agent mode: live `/health` (status/brain/cognition-states/plugins, 5s refresh) + a panel
    driving `/admin/*` (consolidate/nightly/dreamstate + query-driven probe_recipes/seed_recall). `/health` now

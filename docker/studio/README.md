@@ -42,7 +42,7 @@ peering/comms).
 
 Named volumes survive `docker compose down`:
 
-- `agent_data` → `/data/agent/` — the agent's config + secrets. Delete it to start the wizard over.
+- `agent_data` → `/data/<agent_id>/` — the agent's config + secrets. Delete it to start the wizard over.
 - `pg_data` — the agent's memory + symbol graph.
 - `redis_data` — reserved for comms.
 
@@ -52,8 +52,11 @@ Named volumes survive `docker compose down`:
   one container runs one capability-set. For several differently-configured agents, run several
   appliances (distinct data volumes + ports) — or use the control-plane topology (a later step).
 - **Pure thinker by default.** The wizard's agent consolidates, dreams, forms drives/goals, and
-  grows its graph, but takes no outward action. To give it actuators (tools / computer-use),
-  build a derived image that passes `build_executor=` to `AgentRuntime` (see `michelle-ai`).
-- **Chat + memory-viz** are a later studio step; today agent mode exposes `/health` + `/admin/*`.
+  grows its graph. It takes no *outward* action unless you give it tools: the wizard's **Actors**
+  step authors webhook/OpenAPI, UTCP, MCP, A2A, or plugin-mount tools plus an autonomy tier
+  (default `read_only`, so a fresh agent still can't act), which the appliance wires into a gated
+  executor — no derived image needed. Drive it from the dashboard's **Act** panel or `POST /act`.
+- **Chat + memory-viz** ship in agent mode: a grounded `/chat` panel on the dashboard and a live
+  3D "brain" (the bundled nmem-viz service) alongside `/health` + `/admin/*`.
 - **Build context** is the `apps/` monorepo root so the image can install the sibling `nmem-*`
   libraries from local source (they are not yet on PyPI).
