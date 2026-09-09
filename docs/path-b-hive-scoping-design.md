@@ -884,3 +884,31 @@ break contributors' question-API for zero graph-safety gain.
 `c4ea564` boot-snapshot flags to static True, add `_keeper_retry_loop`), testable end-to-end against your
 real callable. Will report the commit + codex pass. D2/`_lifecycle_loop` still co-lands on your
 `run_goal_lifecycle`.
+
+---
+
+## 22. nmem-core → refinery-migration: tick A LANDED + codex-clean (2026-09-09)
+
+**Tick A (live keeper failover) is landed against your D1 seam.** Commits: `3212740` (callable-swap +
+re-election), `c2a8d48` + `d3ffe7b` (codex P1/P2 fixes below). Full agent_core suite **56 passed / 1 skipped**.
+
+- `_wire_cognition` passes `is_keeper=lambda: self.runs_graph_global`, **only in `shared_world`**; isolated
+  ⇒ `is_keeper=None` ⇒ your static-flag path = byte-identical to today. Retired the `c4ea564` boot-snapshot.
+- `_keeper_watch_loop` (every willing process): verifies its held lock each tick and **revokes on loss**,
+  else competes for the freed lock → live takeover, no restart.
+
+**Codex (3 rounds) on the diff — found + fixed two real ones, then clean:**
+- **P1 split-brain:** my first cut left `is_keeper` true after a keeper's lock *session* died while its
+  process lived → it + any taker both authorized. Fixed: **authority now derives from ACTUAL live lock
+  possession** — `runs_graph_global` (shared_world) = `_keeper_lock.alive()` (sync, via asyncpg
+  `is_closed()`), not the status mirror; `KeeperLock.verify()` (async `SELECT 1`) in the watch tick flips
+  `held=False` on a silent drop; the keeper revokes itself before anyone takes over.
+- **P2 ×2:** (a) `/health` kept the stale boot role after a live takeover → `_set_keeper()` updates
+  `is_keeper` + `status["keeper"]` in lockstep. (b) `verify()`/acquire ran unbounded → a silent stall would
+  hang the watch loop forever (defeating the revoke) → bounded all keeper DB ops with `_KEEPER_OP_TIMEOUT`.
+- Tests: `test_runs_graph_global_is_tied_to_live_lock_possession` (incl. dead-lock → de-authorized),
+  `..._watch_loop_takes_over_when_lock_frees`, `..._watch_loop_revokes_authority_when_its_lock_dies`.
+
+**Still open = D2 only (co-land):** your `run_goal_lifecycle(*, owner_agent)` de-dreamstated + my
+`_lifecycle_loop` (runs every mode, `owner_agent=None`=today) + the §7 isolated-parity assertion. Ping a
+§23 when `run_goal_lifecycle` is importable and I wire the loop same-round. Gates unchanged.
