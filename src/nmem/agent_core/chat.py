@@ -33,6 +33,11 @@ from __future__ import annotations
 
 import logging
 
+# The continuity read/write helpers are shared across all turn-taking seams (chat, peer,
+# comms) — re-exported here so existing ``chat.continuity_block`` / ``chat.record_turn_checkpoint``
+# call sites keep working while the single implementation lives in agent_core.continuity.
+from nmem.agent_core.continuity import continuity_block, record_turn_checkpoint  # noqa: F401
+
 log = logging.getLogger(__name__)
 
 
@@ -66,44 +71,6 @@ async def build_context(mem, agent_id: str, query: str, *, session_id: str | Non
     except Exception as e:  # noqa: BLE001
         log.warning("[chat] memory context build failed: %s", e, exc_info=True)
         return ""
-
-
-async def continuity_block(mem, agent_id: str, *, query: str | None = None,
-                           max_tokens: int = 1200) -> str:
-    """The living wake snapshot for `agent_id` — ``mem.wake()`` rendered for injection.
-
-    Query-independent by design (it answers "where am I", not "what is relevant to this
-    query"), so it surfaces current commitments / open loops / goals / narrative / the
-    "picking up from" checkpoint even on an empty stimulus. `query`, when given, adds a
-    query-relevant lane on top. Best-effort: any hiccup (an old mem without ``wake``, a
-    provider failure) returns an empty block rather than breaking the conversation."""
-    if mem is None or not hasattr(mem, "wake"):
-        return ""
-    try:
-        result = await mem.wake(agent_id, query=query, max_tokens=max_tokens)
-        return result.content or ""
-    except Exception as e:  # noqa: BLE001
-        log.warning("[chat] continuity wake failed: %s", e, exc_info=True)
-        return ""
-
-
-async def record_turn_checkpoint(mem, agent_id: str, message: str, reply: str) -> None:
-    """Advance the immediate-continuity checkpoint after a turn — the *living write* that
-    makes "where I left off" survive to the next turn and across a restart. Per-turn (not
-    per-session) so it is progressive and does not depend on a session-close the hosts never
-    emit. Best-effort: a checkpoint write must never fail a conversation that already replied."""
-    if mem is None or not hasattr(mem, "save_continuity_checkpoint"):
-        return
-    try:
-        # Keep it compact: the wake renderer's "immediate" lane is budget-capped, and the
-        # summary is the FIRST (here only) line so it is preview-truncated rather than
-        # dropped — but a tight cap means it survives WHOLE at the default budget. No filler
-        # last_action ("held a conversation turn" adds nothing the summary doesn't, and would
-        # compete for the lane's budget ahead of the summary, displacing it — codex P2).
-        summary = f"Asked: {message.strip()[:140]} — I answered: {reply.strip()[:140]}"
-        await mem.save_continuity_checkpoint(agent_id, last_interaction_summary=summary)
-    except Exception as e:  # noqa: BLE001
-        log.warning("[chat] turn checkpoint write failed: %s", e, exc_info=True)
 
 
 async def converse(runtime, message: str, *, history: list[dict] | None = None,

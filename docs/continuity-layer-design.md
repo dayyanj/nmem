@@ -187,13 +187,24 @@ every target inherits it:
   per-turn upsert of `last_interaction_summary` / `last_action`. This is the *living write* — progressive
   (turn granularity, not nightly, not per-session) and restart-durable. It does not depend on a session
   close the hosts never emit.
-- **Autonomous "turns" (next increment):** the pursuit loop's `build_proposal` and the comms loop's
-  `on_intent` are also points where the agent acts/speaks — they should read continuity the same way and
-  record an action checkpoint on completion. Not yet wired.
-- **Targets consume via the generic path.** An agent with a bespoke turn assembler (michelle's
-  `identity.build_memory_context`) bypasses `converse()` and so bypasses continuity; the fix is to route
-  the target's turn through `agent_core.chat.converse` (agent_core is the source, the agent is the
-  target), not to re-wire continuity per agent.
+- **Peer turns — `peer.py::PeerExchange`** (wired). Answering a peer challenge is a reasoning turn:
+  the exchange reads `continuity_block()` and passes it to the agent's `on_challenge` handler when that
+  handler accepts the optional 3rd `continuity` arg (arity-detected, so 2-arg handlers keep working), and
+  advances the checkpoint after the reply. This is how continuity reaches an *autonomous peer* (e.g.
+  michelle) that has no human chat surface.
+- **Proactive output — `comms.py::CommsLoop`** (wired). Delivering a pending utterance is a one-sided
+  action, so it records an *action* checkpoint (`record_action_checkpoint`, `last_action` only). No
+  continuity READ here — CommsLoop ships pre-rendered (grounded-in-surprise) utterances; it has no
+  reasoning/prompt seam to inject into.
+- **Shared helpers.** `continuity_block()` / `record_turn_checkpoint()` / `record_action_checkpoint()`
+  live in `agent_core/continuity.py` (re-exported from `chat`), so chat/peer/comms consume ONE tested path.
+- **Goal pursuit (remaining).** The pursuit loop (`GoalPursuit`, in the separate `nmem_act` package) is
+  the other autonomous-turn seam — a checkpoint on each pursued goal + continuity into the proposal. Left
+  as a follow-up because it crosses package boundaries.
+- **Targets consume via the seams, not bespoke wiring.** An agent routes its turns through the agent_core
+  seams (chat `converse`, `PeerExchange`, `CommsLoop`) and inherits continuity; agent-specific voice stays
+  host-side (michelle's `_on_challenge` just injects the supplied `continuity` into her own system prompt).
+  agent_core is the source; the agent is the target.
 
 **Phase 2 — narrative_self + delta (still michelle)**
 - Add `nmem_narrative_self` + `nmem_continuity_checkpoint` (schema v5→6; codex review before landing).

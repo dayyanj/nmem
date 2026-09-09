@@ -215,6 +215,28 @@ def test_tight_budget_keeps_higher_priority_field_over_stale_lower_one():
     assert "B" * 100 not in result.content
 
 
+def test_fresh_action_not_hidden_by_long_stale_summary():
+    """codex P2 (freshness floor): a long interaction summary must not consume the whole
+    immediate lane and hide a last_action the agent just completed (comms writes actions into
+    the same row). Each populated field gets a floor preview, so both render."""
+    from datetime import datetime, timezone
+
+    from nmem.continuity import assemble_continuity
+
+    checkpoint = {
+        "last_interaction_summary": "Asked: " + "q" * 300,          # long, possibly stale
+        "last_action": "reached out to djai: the schema drift is resolved",   # fresher
+    }
+    result = assemble_continuity(
+        agent_id="michelle", now=datetime.now(timezone.utc), identity=None,
+        recent=[], commitments=[], curiosity=[], policies=[], relevant=[], sym=None,
+        max_tokens=700, k_open_loops=7, checkpoint=checkpoint,   # codex's reported budget
+    )
+    # BOTH fields render — the fresh action is not swallowed by the long summary.
+    assert "Last interaction:" in result.content
+    assert "Last action: reached out to djai" in result.content
+
+
 @pytest.mark.asyncio
 async def test_record_turn_checkpoint_fail_open_without_support():
     # no save_continuity_checkpoint method → silent no-op, never raises

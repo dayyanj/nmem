@@ -244,26 +244,38 @@ def assemble_continuity(
         if body_budget <= 0:
             return 0
         if fair and len(lines) > 1 and sum(len(ln) + 1 for ln in lines) > body_budget:
-            # The fields don't all fit. Fill in PRIORITY order (``lines`` is ordered most-
-            # to least-important): each field takes what it needs from the budget still
-            # unclaimed, so a short high-priority field leaves its surplus for the next and
-            # a long high-priority field rightly wins the space over lower-priority ones.
-            # This keeps priority intact — a stale lower-priority field can never displace a
-            # fresher higher-priority one (codex P2) — and the top field always gets at
-            # least a bounded preview, so the lane is never blanked while a preview fits.
-            # Each line costs len+1 (content + its "\n"). Skipped entirely when all fit.
-            fitted: list[str] = []
+            # The fields don't all fit. Reserve a FLOOR preview for each populated field
+            # first (priority order), THEN hand leftover budget to the highest-priority
+            # fields. Floors-first matters because these fields are written by DIFFERENT
+            # seams at different times (chat/peer write last_interaction_summary, comms
+            # writes last_action): a pure priority-greedy fill would let a long stale
+            # summary consume the whole lane and hide an action the agent JUST completed
+            # (codex P2). With floors, every field that fits at all shows at least a
+            # preview; priority only decides who gets the surplus and, when the budget is
+            # too tight for every floor, which lowest-priority fields drop. Each line costs
+            # len+1 (content + "\n"). Skipped entirely when everything fits.
+            _FLOOR = 48   # min chars for a meaningful preview (> the loop's 25 guard)
+            caps = [0] * len(lines)
             remaining = body_budget
-            for ln in lines:
-                if len(ln) + 1 <= remaining:
-                    fitted.append(ln)
-                    remaining -= len(ln) + 1
-                elif remaining >= 26:      # room for a meaningful preview of this field
-                    fitted.append(ln[: remaining - 2].rstrip() + "…")
-                    remaining = 0
-                    break
+            floored: list[int] = []
+            for i, ln in enumerate(lines):               # pass 1: floors, priority order
+                need = min(len(ln), _FLOOR)
+                if need + 1 <= remaining:
+                    caps[i] = need
+                    remaining -= need + 1
+                    floored.append(i)
                 else:
-                    break                  # out of room; lower-priority fields drop
+                    break                                # budget exhausted; the rest drop
+            for i in floored:                            # pass 2: surplus, priority order
+                grow = min(len(lines[i]) - caps[i], remaining)
+                if grow > 0:
+                    caps[i] += grow
+                    remaining -= grow
+            fitted = [lines[i] if len(lines[i]) <= caps[i]
+                      else lines[i][: caps[i] - 1].rstrip() + "…"
+                      for i in floored]
+            # If the budget couldn't floor even one field, don't blank the lane — fall back
+            # to the top-priority field and let the loop's oversized-first-item path preview it.
             lines = fitted if fitted else [lines[0]]
         kept: list[str] = []
         chars = 0

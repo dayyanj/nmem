@@ -14,15 +14,20 @@ agent-specific things are INJECTED: ``on_challenge`` (the agent's cognition) and
 """
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 import time
 from collections.abc import Awaitable, Callable
 
+from nmem.agent_core.continuity import continuity_block, record_turn_checkpoint
+
 log = logging.getLogger(__name__)
 
-# (sender, text) -> the agent's in-character reply to a peer challenge.
-OnChallenge = Callable[[str, str], Awaitable[str]]
+# (sender, text) -> the agent's in-character reply to a peer challenge. A handler MAY take a
+# third argument, ``continuity`` (the living wake snapshot), to ground its reply in where the
+# agent currently is; PeerExchange passes it only when the handler's signature accepts it.
+OnChallenge = Callable[..., Awaitable[str]]
 
 
 def _resolve(ex_cfg: dict) -> dict:
@@ -48,11 +53,16 @@ class PeerExchange:
     """
 
     def __init__(self, config: dict, *, mem, agent_id: str, on_challenge: OnChallenge,
-                 comms_channel: str = "", ephemeral_prefixes: tuple[str, ...] | None = None) -> None:
+                 comms_channel: str = "", ephemeral_prefixes: tuple[str, ...] | None = None,
+                 continuity: bool = True) -> None:
         self._config = config
         self._mem = mem
         self._agent_id = agent_id
         self._on_challenge = on_challenge
+        self._continuity = continuity
+        # Does the handler accept the optional 3rd ``continuity`` arg? Detected once, so a
+        # 2-arg handler (sender, text) keeps working unchanged while a 3-arg one is grounded.
+        self._on_challenge_wants_continuity = self._accepts_continuity(on_challenge)
         self._ex = None
         self._ephemeral = ephemeral_prefixes or tuple(
             p.strip() for p in os.environ.get("PEER_EPHEMERAL_PREFIXES", "test:,dev:").split(",")
@@ -60,6 +70,19 @@ class PeerExchange:
         # The sink exists even before start() (delivery no-ops until started), so a host
         # can wire the comms loop unconditionally — matching pre-graduation behaviour.
         self._comms_sink = PeerExchangeSink(self, comms_channel) if comms_channel else None
+
+    @staticmethod
+    def _accepts_continuity(fn) -> bool:
+        """True if the on_challenge handler takes a 3rd positional/keyword arg (continuity).
+        Fail-safe: assume it does NOT on any introspection failure, so we never pass an arg a
+        2-arg handler can't accept."""
+        try:
+            params = [p for p in inspect.signature(fn).parameters.values()
+                      if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+            return len(params) >= 3 or any(
+                p.kind is p.VAR_POSITIONAL for p in inspect.signature(fn).parameters.values())
+        except (TypeError, ValueError):
+            return False
 
     @property
     def comms_sink(self):
@@ -133,9 +156,20 @@ class PeerExchange:
             log.info("[peer] %s from %s logged", kind, sender)
             return
 
+        # Answering a peer challenge IS a reasoning turn — ground it in the agent's living
+        # continuity (where it is, its open loops / drives / narrative) when the handler
+        # accepts it. NOT on ephemeral channels: a query-driven wake runs search(), whose
+        # entity auto-journaling would persist activity — breaking the ephemeral channel's
+        # no-persistence guarantee. Fail-open: a continuity hiccup never blocks the reply.
+        cont = ""
+        if self._continuity and self._on_challenge_wants_continuity and not ephemeral:
+            cont = await continuity_block(self._mem, self._agent_id, query=text)
         reply = "(unable to respond)"
         try:
-            reply = await self._on_challenge(sender, text)
+            if self._on_challenge_wants_continuity:
+                reply = await self._on_challenge(sender, text, cont)
+            else:
+                reply = await self._on_challenge(sender, text)
         except Exception as e:  # noqa: BLE001
             log.warning("[peer] on_challenge failed: %s", e)
 
@@ -148,6 +182,9 @@ class PeerExchange:
         if not ephemeral:
             await self._log("peer_msg", f"response to {sender}", f"[{channel}] {reply}",
                             importance=6, record_type="judgment")
+            # Advance the continuity checkpoint: this peer turn is now "where I left off".
+            if self._continuity:
+                await record_turn_checkpoint(self._mem, self._agent_id, text, reply)
         log.info("[peer] answered %s's challenge (%d chars)", sender, len(reply))
 
     async def _log(self, entry_type: str, title: str, content: str, **kw) -> None:

@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from nmem.db.models import ContinuityCheckpointModel, NarrativeSelfModel
 
@@ -132,8 +132,13 @@ async def save_checkpoint(
     """Upsert the per-agent checkpoint (one row per agent+scope).
 
     Read-then-write upsert — correct for a NULL scope, where a unique index would
-    treat NULLs as distinct. Single-writer-safe (the michelle pilot); concurrent
-    writers for one agent_id are a Phase-4 concern (add a CAS/version then).
+    treat NULLs as distinct. Concurrency-safe across writers: now that several
+    turn-taking seams write this row (chat ``converse``, ``PeerExchange``,
+    ``CommsLoop`` — possibly interleaved in one event loop, or concurrent studio
+    ``/chat`` requests), the read-then-write is serialized per agent+scope by a
+    Postgres advisory transaction lock held for the whole upsert. Two writers that
+    both find the row absent can no longer each INSERT a duplicate (which
+    ``get_checkpoint`` would then read inconsistently). The lock releases at commit.
     Only non-None fields are applied, so partial updates preserve prior values.
     """
     fields = {
@@ -143,6 +148,13 @@ async def save_checkpoint(
         "expected_next_action": expected_next_action,
     }
     async with db.session() as s:
+        # Serialize concurrent writers on THIS agent+scope so the SELECT→INSERT below is
+        # atomic w.r.t. other upserts (no duplicate rows). hashtext→int is fine: a rare
+        # hash collision only over-serializes two unrelated checkpoints, never corrupts.
+        await s.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+            {"k": f"nmem_continuity_checkpoint:{agent_id}:{project_scope}"},
+        )
         row = (
             await s.execute(
                 select(ContinuityCheckpointModel).where(

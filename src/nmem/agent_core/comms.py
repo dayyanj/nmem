@@ -86,6 +86,12 @@ class CommsLoop:
             delivered = await self._sink.deliver(utt)
             if delivered:
                 await self._mark_delivered(row["id"])
+                # Reaching out proactively is an action — record it as "where I left off" so
+                # continuity reflects what the agent last DID, not only what it was asked.
+                from nmem.agent_core.continuity import record_action_checkpoint
+                await record_action_checkpoint(
+                    self._mem, self._agent_id,
+                    f"reached out to {utt.addressee or 'a peer'}: {utt.text}")
                 log.info("[comms] delivered utterance #%s to %s", row["id"], utt.addressee or "?")
             return 0.0                          # deferred discharge (async response)
         except Exception:  # noqa: BLE001
