@@ -239,28 +239,22 @@ def test_secrets_env_is_shell_safe(tmp_path, monkeypatch):
     assert env["OTHER"] == "has 'quotes' and spaces"
 
 
-def test_provision_db_tolerates_concurrent_hive_member_create(monkeypatch):
-    # A hive shares ONE NMEM_AGENT_DB; members race to CREATE it on first boot. The loser's
-    # DuplicateDatabaseError must be SWALLOWED (success), not raised — else that member fails to start.
-    import asyncio
+def _fake_asyncpg(monkeypatch, *, create_error, exists_after):
+    """Install a fake asyncpg where CREATE DATABASE raises `create_error`, and pg_database shows the
+    DB absent on the pre-check but present-or-not (`exists_after`) on the post-failure re-verify."""
     import sys
     import types
 
-    from nmem.agent_core import studio_server as S
-
-    class DupErr(Exception):
-        pass
-
-    calls = {"create": 0}
+    state = {"checks": 0}
 
     class _Conn:
         async def fetchval(self, *a, **k):
-            return None                                    # DB not present yet (both members see this)
+            state["checks"] += 1
+            return None if state["checks"] == 1 else (1 if exists_after else None)
 
         async def execute(self, sql, *a, **k):
-            if sql.strip().upper().startswith("CREATE DATABASE"):
-                calls["create"] += 1
-                raise DupErr()                             # another member won the race
+            if sql.strip().upper().startswith("CREATE DATABASE") and create_error is not None:
+                raise create_error
 
         async def close(self):
             pass
@@ -268,14 +262,36 @@ def test_provision_db_tolerates_concurrent_hive_member_create(monkeypatch):
     async def _connect(*a, **k):
         return _Conn()
 
-    fake = types.SimpleNamespace(
-        connect=_connect,
-        exceptions=types.SimpleNamespace(DuplicateDatabaseError=DupErr))
-    monkeypatch.setitem(sys.modules, "asyncpg", fake)
+    monkeypatch.setitem(sys.modules, "asyncpg",
+                        types.SimpleNamespace(connect=_connect, exceptions=types.SimpleNamespace()))
     monkeypatch.setenv("NMEM_AGENT_DB", "hive_world")
 
-    db = asyncio.run(S.provision_db("member-a"))           # must NOT raise
-    assert db == "hive_world" and calls["create"] == 1
+
+def test_provision_db_tolerates_concurrent_hive_member_create(monkeypatch):
+    # A hive shares ONE NMEM_AGENT_DB; members race to CREATE it. Whatever error the losing CREATE
+    # raises (DuplicateDatabase OR a UniqueViolation on the catalog index — codex), if the DB now
+    # EXISTS it was a concurrent win → success, not a fail-start. Uses a generic error to prove the
+    # handling isn't tied to one exception type.
+    import asyncio
+
+    from nmem.agent_core import studio_server as S
+
+    _fake_asyncpg(monkeypatch, create_error=RuntimeError("unique_violation"), exists_after=True)
+    assert asyncio.run(S.provision_db("member-a")) == "hive_world"   # must NOT raise
+
+
+def test_provision_db_reraises_when_create_fails_and_db_absent(monkeypatch):
+    # A create that fails AND leaves the DB genuinely absent is a REAL failure → propagate (so the
+    # appliance rolls back rather than restart-looping into a DB-less agent).
+    import asyncio
+
+    import pytest as _pytest
+
+    from nmem.agent_core import studio_server as S
+
+    _fake_asyncpg(monkeypatch, create_error=RuntimeError("disk full"), exists_after=False)
+    with _pytest.raises(RuntimeError):
+        asyncio.run(S.provision_db("member-a"))
 
 
 def test_test_llm_bad_spec_is_reported_not_raised():

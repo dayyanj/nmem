@@ -21,12 +21,11 @@ graph. Exactly one member is the **keeper** that runs the heavy graph-global mai
 ## Run
 
 ```bash
-# 1. build the images once (from the studio appliance dir):
-cd ../studio && docker compose build            # builds nmem-studio:latest
-cd ../../nmem-viz && docker build -t nmem-viz:latest .
+# 1. build the images once — the studio compose builds BOTH nmem-studio:latest and nmem-viz:latest:
+cd ../studio && docker compose build
 
-# 2. bring the hive up:
-cd ../nmem/docker/hive && docker compose up
+# 2. bring the hive up (from this directory):
+cd ../hive && docker compose up
 ```
 
 Then configure each member through its wizard (bound to loopback by default):

@@ -133,8 +133,15 @@ async def provision_db(agent_id: str) -> str:
             try:
                 await conn.execute(f'CREATE DATABASE "{db}"')      # cannot run in a txn; asyncpg autocommits
                 log.info("[studio] provisioned database %s", db)
-            except asyncpg.exceptions.DuplicateDatabaseError:
-                log.info("[studio] database %s already created by a concurrent hive member", db)
+            except Exception:  # noqa: BLE001
+                # A concurrent hive member may have created it first — Postgres surfaces this race as
+                # DuplicateDatabaseError OR a UniqueViolation on pg_database_datname_index (or another
+                # transient). Whatever it was, if the DB now EXISTS the create succeeded (just not by us);
+                # only a create that left the DB absent is a real failure.
+                if await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", db):
+                    log.info("[studio] database %s already created by a concurrent hive member", db)
+                else:
+                    raise
     finally:
         await conn.close()
     # pgvector: the extension is created per-DB by the nmem bootstrap; ensure it here too.
