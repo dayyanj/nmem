@@ -31,6 +31,7 @@
     --line-2:#40392e;--accent:#f0a83a;--accent-ink:#1c1509;--accent-soft:#3a2c12;--accent-line:#63501f;
     --ok:#57c08a;--warn:#e2726f;--shadow:0 1px 2px rgba(0,0,0,.45),0 14px 34px -16px rgba(0,0,0,.7);}
   *{box-sizing:border-box}
+  [hidden]{display:none!important}  /* the hidden attr must win over element display rules (e.g. label.fld) */
   body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.5;font-size:14px;
     -webkit-font-smoothing:antialiased;background-image:radial-gradient(circle at 88% -5%,var(--accent-soft),transparent 45%)}
   .eyebrow{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}

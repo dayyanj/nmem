@@ -40,6 +40,9 @@ def test_wizard_spa_authors_hive_membership(tmp_path):
     assert 'id="hive_role"' in body and 'value="keeper"' in body and 'value="contributor"' in body
     assert "function collectHive" in body and "body.hive=hive" in body   # collected + posted
     assert "onHiveMode" in body                                          # role field show/hide wired
+    # the show/hide relies on the `hidden` attr actually hiding a label.fld — assert the CSS reset
+    # that makes it win over `label.fld{display:block}` (else Keeper shows in Solo mode; codex P2)
+    assert "[hidden]{display:none!important}" in body
 
 
 def test_catalog_exposes_map_presets_and_groups():
