@@ -147,6 +147,41 @@ def test_keeper_watch_loop_revokes_authority_when_its_lock_dies(monkeypatch):
     assert rt.runs_graph_global is False                           # global maintenance halted here
 
 
+def test_lifecycle_loop_drives_run_goal_lifecycle_owner_scoped():
+    """B-ii Decision 2: _lifecycle_loop drives the agent's OWN goal-lifecycle via the nmem-sym
+    entrypoint, owner-scoped. Isolated ⇒ owner_agent=None (the exact unscoped set dreamstate ran
+    today — the §18 invariant). A fake bridge records the calls; no DB/boot needed."""
+    import asyncio
+    from nmem.agent_core.runtime import AgentRuntime
+
+    rt = AgentRuntime.__new__(AgentRuntime)
+    rt.hive = HiveConfig.from_dict({"mode": "isolated"})     # isolated ⇒ agent_id None ⇒ owner_agent=None
+
+    calls = []
+
+    class _Bridge:
+        async def run_goal_lifecycle(self, *, owner_agent):
+            calls.append(owner_agent)
+            return {}
+
+    rt.bridge = _Bridge()
+
+    async def go():
+        task = asyncio.ensure_future(rt._lifecycle_loop(0.001))
+        for _ in range(200):
+            if calls:
+                break
+            await asyncio.sleep(0.005)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(asyncio.wait_for(go(), timeout=3))
+    assert calls and all(o is None for o in calls)          # ticked, unscoped (isolated=today)
+
+
 @pytest.mark.skipif(not os.environ.get("NMEM_TEST_PG_DSN"),
                     reason="needs a Postgres (set NMEM_TEST_PG_DSN)")
 def test_single_keeper_by_construction_and_failover():

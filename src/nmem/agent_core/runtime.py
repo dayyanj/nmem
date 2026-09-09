@@ -73,6 +73,7 @@ class AgentRuntime:
         self._consol_task = None
         self._drive_task = None
         self._pursue_task = None
+        self._lifecycle_task = None
         self._keeper_watch_task = None
         self._keeper_dsn = self._keeper_key = None
         self.status: dict = {"enabled": False}
@@ -200,14 +201,14 @@ class AgentRuntime:
                 log.warning("[runtime] keeper release: %s", e)
             self._keeper_lock = None
             self.is_keeper = False
-        for t in (self._pursue_task, self._drive_task):
+        for t in (self._pursue_task, self._drive_task, self._lifecycle_task):
             if t is not None:
                 t.cancel()
                 try:
                     await t
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
-        self._drive_task = self._pursue_task = self._pursuit = None
+        self._drive_task = self._pursue_task = self._lifecycle_task = self._pursuit = None
         try:
             if self.mem is not None and hasattr(self.mem, "stop_consolidation"):
                 self.mem.stop_consolidation()
@@ -300,6 +301,20 @@ class AgentRuntime:
         # Loop #3: goal pursuit — only if the agent gave us hands + a proposal builder.
         pursuit_on = self._start_pursuit()
 
+        # Loop #3b: goal-lifecycle (B-ii Decision 2) — per-agent, EVERY mode (owner_agent=None=isolated
+        # =today). This REPLACES the dreamstate-embedded lifecycle, which nmem-sym removes in the same
+        # co-land round; running BOTH double-ticks impasse_cycles (hive doc §23). So it is DEFAULT-OFF
+        # (goal_lifecycle.loop_enabled) until that removal + this loop are deployed together — flipping
+        # the flag is the atomic cutover, protecting live isolated agents (michelle) from a double-tick.
+        lcfg = (self._config.get("goal_lifecycle", {}) or {})
+        lifecycle_on = False
+        if s.goals_enabled and lcfg.get("loop_enabled", False):
+            lc_interval = float(lcfg.get("tick_seconds", 3600))
+            self._lifecycle_task = asyncio.create_task(self._lifecycle_loop(lc_interval))
+            lifecycle_on = True
+            log.info("[runtime] goal-lifecycle loop started (every %ss, owner=%s)",
+                     lc_interval, self.hive.agent_id)
+
         # Loop #4: keeper watch — every WILLING process (graph_role=keeper) runs it, the elected keeper
         # to self-check its lock liveness and contributors to take over live if it dies (see
         # _keeper_watch_loop). A pure contributor (graph_role=contributor) never runs it → no change.
@@ -311,7 +326,8 @@ class AgentRuntime:
         self.status = {
             "enabled": True, "plugins": plugins, "prediction": pred_on,
             "drives": drives_on, "consolidation": self._consol_task is not None,
-            "actuation": pursuit_on, "hive": self.hive.mode, "keeper": self.is_keeper,
+            "actuation": pursuit_on, "lifecycle": lifecycle_on,
+            "hive": self.hive.mode, "keeper": self.is_keeper,
         }
 
     def _wire_goal_enrichment(self) -> None:
@@ -419,6 +435,21 @@ class AgentRuntime:
                 raise
             except Exception:  # noqa: BLE001
                 log.warning("[runtime] pursuit cycle failed", exc_info=True)
+            await asyncio.sleep(interval)
+
+    async def _lifecycle_loop(self, interval: float) -> None:
+        """B-ii Decision 2: drive THIS agent's goal-lifecycle tick (impasse-tick → decompose → detect/
+        resolve impasses → abandon stale → reap orphaned) via nmem-sym's owner-scoped entrypoint, for
+        EVERY mode. ``owner_agent=self.hive.agent_id`` — None (isolated/legacy) = the exact unscoped set
+        that ran inside dreamstate before D2 de-dreamstated it. Gated OFF by default during the co-land
+        (see run()); once live it is the SOLE lifecycle driver."""
+        while True:
+            try:
+                await self.bridge.run_goal_lifecycle(owner_agent=self.hive.agent_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                log.warning("[runtime] goal-lifecycle tick failed", exc_info=True)
             await asyncio.sleep(interval)
 
     async def _keeper_watch_loop(self, interval: float) -> None:
