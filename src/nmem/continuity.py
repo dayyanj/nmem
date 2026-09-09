@@ -389,11 +389,22 @@ def assemble_continuity(
     #     costs nothing in continuous operation and never adds noise mid-session).
     if long_gap and delta:
         delta_lines = []
+        # External — what others / the world changed.
         for item in (delta.get("shared_new") or [])[:5]:
             key = (item.get("key") or "").strip()
             by = (item.get("by") or "another agent").strip()
             if key:
                 delta_lines.append(f"- {by} added to shared knowledge: {key}")
+        # Introspective — what the agent's own dreamstate did while away.
+        if delta.get("narrative_regrounded"):
+            delta_lines.append("- your self-narrative was re-grounded by consolidation")
+        lp = int(delta.get("ltm_promoted") or 0)
+        if lp:
+            # "at least" — this is a conservative floor (see continuity_store.delta_since:
+            # promotions into a pre-existing key keep their old created_at and aren't counted).
+            delta_lines.append(f"- at least {lp} memor{'y' if lp == 1 else 'ies'} consolidated "
+                               f"into long-term memory")
+        # Activity volume.
         jn = int(delta.get("journal_new") or 0)
         if jn:
             delta_lines.append(f"- {jn} new entr{'y' if jn == 1 else 'ies'} accrued in your "

@@ -1051,6 +1051,12 @@ class MemorySystem:
                 elapsed_seconds = max(0.0, (now - ck_dt).total_seconds())
                 if elapsed_seconds >= _LONG_GAP_SECONDS:
                     delta = await _continuity_store.delta_since(self._db, agent_id, scope, ck_dt)
+                    # Introspective signal (free — narrative already fetched): was the
+                    # self-narrative re-grounded by dreamstate while the agent was away?
+                    grounded = narrative.get("grounded_at") if narrative else None
+                    if grounded is not None and isinstance(delta, dict):
+                        g_dt = grounded if grounded.tzinfo else grounded.replace(tzinfo=timezone.utc)
+                        delta["narrative_regrounded"] = g_dt > ck_dt
             except Exception as e:
                 logger.warning("Continuity delta/elapsed failed: %s", e, exc_info=True)
 

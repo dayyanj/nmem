@@ -18,6 +18,7 @@ from sqlalchemy import func, or_, select, text
 from nmem.db.models import (
     ContinuityCheckpointModel,
     JournalEntryModel,
+    LTMModel,
     NarrativeSelfModel,
     SharedKnowledgeModel,
 )
@@ -202,16 +203,24 @@ async def delta_since(
 ) -> dict:
     """What changed while the agent was away — the "returning after a gap" delta.
 
-    Returns ``{"shared_new": [{"key","by"}...], "journal_new": int}``:
+    Returns ``{"shared_new": [{"key","by"}...], "journal_new": int, "ltm_promoted": int}``:
       * ``shared_new`` — recent cross-agent canonical writes (another agent added to the
         shared tier since ``since``); in an isolated single-agent DB this is naturally
-        empty (no other writer), which is correct.
+        empty (no other writer), which is correct.  [external change]
       * ``journal_new`` — how many of THIS agent's own journal entries accrued since
-        ``since`` (consolidation output, logged activity) — the volume of what piled up.
+        ``since`` — the volume of logged activity that piled up.  [external/activity]
+      * ``ltm_promoted`` — a conservative FLOOR on long-term memories the agent's own
+        consolidation promoted since ``since`` — an INTROSPECTIVE signal of what its
+        dreamstate did while away. Counts only ``source='promotion'`` rows (so direct API
+        saves / importer writes, which are ``source='agent'``, are NOT misattributed to
+        dreamstate) created since the cutoff. It UNDERCOUNTS promotions into a pre-existing
+        key (``_promote_entry`` does ON CONFLICT DO UPDATE, preserving the old ``created_at``)
+        — hence a floor, surfaced as "at least N". The narrative-regrounded flag independently
+        confirms consolidation ran, so "dreamstate did work" still lands even when this is 0.
 
     Read-only, scoped, fail-open (returns the zero delta on any error). Intended to be
     called ONLY on a long-gap wake, so it never costs anything in continuous operation."""
-    out: dict = {"shared_new": [], "journal_new": 0}
+    out: dict = {"shared_new": [], "journal_new": 0, "ltm_promoted": 0}
     # The ``created_at`` columns are tz-naive (TIMESTAMP WITHOUT TIME ZONE); asyncpg rejects
     # a tz-aware bind against them, so normalize the cutoff to naive UTC. (wake() keeps the
     # aware timestamp for elapsed-time arithmetic; only this DB comparison needs naive.)
@@ -244,6 +253,21 @@ async def delta_since(
                 )
             ).scalar()
             out["journal_new"] = int(cnt or 0)
+            # Introspective: long-term memories the agent's own consolidation promoted while
+            # away (journal→LTM promotion writes an LTM row). "What my dreamstate did."
+            ltm = (
+                await s.execute(
+                    select(func.count())
+                    .select_from(LTMModel)
+                    .where(
+                        LTMModel.agent_id == agent_id,
+                        LTMModel.created_at > cutoff,
+                        LTMModel.source == "promotion",   # consolidation, not direct saves/imports
+                        *_scope_or_global(LTMModel, project_scope),
+                    )
+                )
+            ).scalar()
+            out["ltm_promoted"] = int(ltm or 0)
     except Exception as e:  # noqa: BLE001
         logger.warning("continuity delta_since failed: %s", e, exc_info=True)
     return out

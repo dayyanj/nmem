@@ -161,6 +161,31 @@ def test_long_gap_renders_delta_of_what_changed():
     assert "delta" in r.sections
 
 
+def test_long_gap_renders_introspective_delta():
+    """The delta also surfaces what the agent's OWN dreamstate did while away —
+    narrative re-grounding + long-term promotions (introspective, not just external)."""
+    r = _assemble(
+        checkpoint={"last_interaction_summary": "left off here"},
+        elapsed_seconds=4 * 86400,
+        delta={"shared_new": [], "journal_new": 0,
+               "narrative_regrounded": True, "ltm_promoted": 12},
+    )
+    assert "Since you were last active" in r.content
+    assert "self-narrative was re-grounded by consolidation" in r.content
+    assert "at least 12 memories consolidated into long-term memory" in r.content
+
+
+def test_introspective_delta_singular_grammar():
+    r = _assemble(
+        checkpoint={"last_interaction_summary": "x"},
+        elapsed_seconds=2 * 86400,
+        delta={"narrative_regrounded": False, "ltm_promoted": 1, "journal_new": 1},
+    )
+    assert "at least 1 memory consolidated into long-term memory" in r.content
+    assert "1 new entry accrued" in r.content
+    assert "re-grounded" not in r.content     # narrative_regrounded False → not shown
+
+
 def test_delta_without_gap_flag_is_ignored():
     """Delta only renders under long-gap mode — passing a delta with a short elapsed must
     not surface it (guards against noise from a spurious delta fetch)."""
