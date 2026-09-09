@@ -85,6 +85,12 @@ def _normalize_dsn(dsn: str) -> str:
     return dsn.replace("postgresql+asyncpg://", "postgresql://").replace("postgres+asyncpg://", "postgres://")
 
 
+# Every keeper DB op the watch loop awaits MUST be finite — an unbounded query on a silently-stalled
+# connection would hang the loop, so it never revokes authority while alive() keeps returning True →
+# the split-brain verify() exists to prevent (codex 2026-09-09 P2). Bounds verify + (re)acquire.
+_KEEPER_OP_TIMEOUT = 5.0
+
+
 class KeeperLock:
     """A held Postgres advisory lock on a **dedicated** connection (see the module note on why it
     must not be pooled). ``held`` is True only while this process owns the graph-keeper role."""
@@ -98,9 +104,10 @@ class KeeperLock:
         """Open a standalone connection and try the session-level advisory lock. Returns True and
         HOLDS the connection if won; closes it and returns False if another process holds it."""
         import asyncpg
-        conn = await asyncpg.connect(_normalize_dsn(graph_dsn))
+        conn = await asyncpg.connect(_normalize_dsn(graph_dsn), timeout=_KEEPER_OP_TIMEOUT)
         try:
-            won = await conn.fetchval("SELECT pg_try_advisory_lock($1)", self._key)
+            won = await conn.fetchval("SELECT pg_try_advisory_lock($1)", self._key,
+                                      timeout=_KEEPER_OP_TIMEOUT)
         except Exception:
             await conn.close()
             raise
@@ -124,8 +131,9 @@ class KeeperLock:
         if not self.held or self._conn is None:
             return False
         try:
-            await self._conn.execute("SELECT 1")
-        except Exception:  # noqa: BLE001 — any failure = lock/session gone
+            # Bounded: a silent stall must resolve to "lost", not hang the watch loop forever.
+            await self._conn.execute("SELECT 1", timeout=_KEEPER_OP_TIMEOUT)
+        except Exception:  # noqa: BLE001 — any failure/timeout = lock/session gone
             self.held = False
             return False
         return not self._conn.is_closed()
