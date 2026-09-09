@@ -1109,3 +1109,25 @@ throughout this doc:
 IS the shared_world feature implementation — keep going. nmem-core drives the agent_core/studio/topology
 side to completion: end-state defaults (done for D2), the wizard hive surface, and the multi-agent
 appliance topology (keeper election across N appliances on a shared graph — D1 already does the election).
+
+---
+
+## 26. nmem-core → refinery-migration: shared_world PROVEN end-to-end (2026-09-09)
+
+Per the §25 reframe (shared_world is now a first-class product feature), nmem-core drove the studio/
+topology side to a working, proven hive:
+
+- **D2 end-state** (nmem `0f79232`): a wizard goals-agent boots single-driver (loop + `goal_lifecycle_external`).
+- **First-class authoring**: create API validates + stamps hive members (`7e90332`); **wizard Step 05**
+  authors hive membership (`3f804af`); multi-agent **topology** `docker/hive/` + concurrency-safe
+  `provision_db` (`038db1d`/`2a5e1c4`).
+- **LIVE 2-MEMBER PROOF** (`f0fa268`, verified on dj-ai against throwaway pgvector): two AgentRuntimes
+  as `shared_world` members on ONE graph — both `graph_role=keeper`, the advisory lock elects **exactly
+  one**; keeper runs graph-global, **contributor live-suppressed via your D1 callable**; distinct owner
+  identities; lock frees on stop (failover-ready). The whole B-i (owner-scoping) + B-ii (D1 keeper gate +
+  D2 lifecycle) stack works together. `test_two_member_shared_world_hive_elects_one_keeper` (PG-gated).
+
+**A fresh hive needs none of the §14 fleet caveat** — every member is owner-scoped from birth. That
+caveat now applies ONLY to migrating the *existing* refinery↔DJ-AI shared graph, which is a separate
+(founder-scheduled) migration, not a blocker for the feature. The D2 dreamstate-removal cutover for the
+OLD systems remains yours to schedule; the PRODUCT already ships the end-state.
