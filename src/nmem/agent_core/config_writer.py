@@ -183,6 +183,12 @@ def build_agent_files(spec: dict) -> dict:
     if goal_lifecycle is None and goals_on:
         goal_lifecycle = {"loop_enabled": True, "tick_seconds": _LIFECYCLE_TICK_SECONDS}
 
+    # A shared_world hive member owns a distinct agent_id (agency is owner_agent-scoped to it). Stamp
+    # it into the hive block so the generated config is self-contained (not reliant on a runtime default).
+    hive = spec.get("hive")
+    if hive and str(hive.get("mode", "")).lower() == "shared_world":
+        hive = {**hive, "agent_id": hive.get("agent_id") or agent_id}
+
     return {
         "capabilities.env": render_capabilities_env(
             spec.get("enabled") or set(), agent_id=agent_id,
@@ -191,7 +197,7 @@ def build_agent_files(spec: dict) -> dict:
             agent_id=agent_id, llm=llm, embedding=emb,
             symbol_graph=spec.get("symbol_graph"), pursuit=spec.get("pursuit"),
             db_url=spec.get("db_url"), actors=spec.get("actors"), autonomy=spec.get("autonomy"),
-            hive=spec.get("hive"), goal_lifecycle=goal_lifecycle),
+            hive=hive, goal_lifecycle=goal_lifecycle),
         "persona.yaml": yaml.safe_dump(persona.to_dict(), sort_keys=False) if persona else "",
         "secrets": split_secrets(agent_id=agent_id, llm_key=key, llm_key_env=key_env,
                                  embed_key=emb_key),

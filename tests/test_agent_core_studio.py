@@ -97,6 +97,33 @@ def test_create_requires_agent_id():
     assert r.json()["ok"] is False
 
 
+def test_create_authors_shared_world_hive_member(tmp_path):
+    # shared_world is a FIRST-CLASS create option: a valid member writes a self-contained hive block
+    # (mode + role + its own owner agent_id) into agent.yaml; a bad mode/role is a clean ok:false.
+    import yaml
+    c = _client(config_dir=str(tmp_path))
+    ok = c.post("/studio/create", json={
+        "agent_id": "scout", "enabled": [],
+        "llm": {"provider": "openai", "base_url": "http://x/v1", "model": "m"},
+        "hive": {"mode": "shared_world", "graph_role": "keeper"},
+    }).json()
+    assert ok["ok"] is True
+    doc = yaml.safe_load((tmp_path / "scout" / "agent.yaml").read_text())
+    assert doc["hive"]["mode"] == "shared_world"
+    assert doc["hive"]["graph_role"] == "keeper"
+    assert doc["hive"]["agent_id"] == "scout"        # owner identity stamped in → self-contained
+
+    bad_mode = c.post("/studio/create", json={
+        "agent_id": "s2", "llm": {"provider": "openai", "base_url": "http://x/v1", "model": "m"},
+        "hive": {"mode": "swarm"}}).json()
+    assert bad_mode["ok"] is False and "hive.mode" in bad_mode["error"]
+
+    bad_role = c.post("/studio/create", json={
+        "agent_id": "s3", "llm": {"provider": "openai", "base_url": "http://x/v1", "model": "m"},
+        "hive": {"mode": "shared_world", "graph_role": "overlord"}}).json()
+    assert bad_role["ok"] is False and "graph_role" in bad_role["error"]
+
+
 def test_create_reports_failure_when_start_agent_raises(tmp_path):
     # codex re-review: if start_agent (provisioning) fails + tears down the config, create must
     # report ok:false — not ok:true/started:false while announcing files that were just deleted.

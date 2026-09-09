@@ -178,6 +178,18 @@ def make_studio_router(get_runtime: Callable | None = None, *, config_dir: str =
             return {"ok": False, "error": "llm.model is required (the reasoning brain)"}
         if (llm.get("provider") or "openai").lower() != "anthropic" and not llm.get("base_url"):
             return {"ok": False, "error": "llm.base_url is required for an OpenAI-compatible brain"}
+        # Hive membership (shared_world) is a first-class create option. Validate its shape early so a
+        # bad member config is a clean 200-with-ok:false, not a runtime boot crash. A shared_world member
+        # MUST own a distinct agent_id (agency is owner_agent-scoped to it) — already required above.
+        hive = (spec or {}).get("hive") or {}
+        if hive:
+            mode = str(hive.get("mode", "isolated")).lower()
+            if mode not in ("isolated", "shared_world"):
+                return {"ok": False, "error": "hive.mode must be 'isolated' or 'shared_world'"}
+            if mode == "shared_world":
+                role = str(hive.get("graph_role", "contributor")).lower()
+                if role not in ("keeper", "contributor"):
+                    return {"ok": False, "error": "hive.graph_role must be 'keeper' or 'contributor'"}
         # the writer auto-completes the dependency closure (so the on-disk env is always
         # dependency-complete); report what it pulled in beyond the user's explicit selection.
         enabled = {f for f in (spec.get("enabled") or []) if f in caps.CAPABILITIES}
