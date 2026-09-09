@@ -186,7 +186,7 @@ def build_agent_files(spec: dict) -> dict:
     # A shared_world hive member owns a distinct agent_id (agency is owner_agent-scoped to it). Stamp
     # it into the hive block so the generated config is self-contained (not reliant on a runtime default).
     hive = spec.get("hive")
-    if hive and str(hive.get("mode", "")).lower() == "shared_world":
+    if isinstance(hive, dict) and str(hive.get("mode", "")).lower() == "shared_world":
         hive = {**hive, "agent_id": hive.get("agent_id") or agent_id}
 
     return {

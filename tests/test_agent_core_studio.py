@@ -123,6 +123,12 @@ def test_create_authors_shared_world_hive_member(tmp_path):
         "hive": {"mode": "shared_world", "graph_role": "overlord"}}).json()
     assert bad_role["ok"] is False and "graph_role" in bad_role["error"]
 
+    # codex: a truthy NON-object hive must be a clean ok:false, not an AttributeError → HTTP 500
+    non_obj = c.post("/studio/create", json={
+        "agent_id": "s4", "llm": {"provider": "openai", "base_url": "http://x/v1", "model": "m"},
+        "hive": "shared_world"})
+    assert non_obj.status_code == 200 and non_obj.json()["ok"] is False
+
 
 def test_create_reports_failure_when_start_agent_raises(tmp_path):
     # codex re-review: if start_agent (provisioning) fails + tears down the config, create must

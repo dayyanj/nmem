@@ -183,6 +183,8 @@ def make_studio_router(get_runtime: Callable | None = None, *, config_dir: str =
         # MUST own a distinct agent_id (agency is owner_agent-scoped to it) — already required above.
         hive = (spec or {}).get("hive") or {}
         if hive:
+            if not isinstance(hive, dict):
+                return {"ok": False, "error": "hive must be an object {mode, graph_role, ...}"}
             mode = str(hive.get("mode", "isolated")).lower()
             if mode not in ("isolated", "shared_world"):
                 return {"ok": False, "error": "hive.mode must be 'isolated' or 'shared_world'"}
