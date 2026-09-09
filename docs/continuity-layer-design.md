@@ -217,8 +217,11 @@ every target inherits it:
   (anchor = `checkpoint.updated_at`, no new schema); past `_LONG_GAP_SECONDS` (12h) the assembler adds a
   reorientation frame + age-qualifies the immediate lane (staleness/long-gap boot), and `delta_since()`
   renders "what changed while away" (cross-agent shared writes + the agent's own new-journal count). Gated
-  on the gap → zero cost in continuous operation. External delta only for now; an introspective
-  dreamstate-delta ("what consolidation changed") is a later add (no cheap per-agent read at wake yet).
+  on the gap → zero cost in continuous operation. The delta spans **external** (cross-agent shared
+  writes), **introspective** (narrative re-grounded — free from the fetched narrative; + a conservative
+  `source='promotion'` LTM-consolidation floor, "at least N"), and **activity** (new-journal count).
+  ConsolidationStats is logged but not persisted, so finer structural counts (dedup/conflict/schema)
+  remain a later add if a per-cycle stats row is ever stored.
 
 **Phase 3 — measure & tune**
 - Run the eval suite vs baseline. Prove (or disprove) the layer beats a 500-token summary before
