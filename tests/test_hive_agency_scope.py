@@ -193,6 +193,76 @@ def test_resolve_recursive_propagation_stops_at_owner_boundary():
     asyncio.run(go())
 
 
+def test_run_goal_lifecycle_is_owner_scoped(monkeypatch):
+    """B-ii D2: an agent's goal-lifecycle tick (impasse-tick + abandon + reap) touches ONLY its own
+    goals — never another agent's. The graph-needing steps (decompose/detect-impasses) are monkey-
+    patched to no-op so the SQL-level owner-scoping is exercised without a populated graph."""
+    import nmem_sym.goals as g
+    from nmem_sym.goals import GoalDecomposition
+
+    async def _noop_decompose(*a, **k):
+        return GoalDecomposition(parent_goal_id=0)
+
+    async def _no_impasses(*a, **k):
+        return []
+
+    monkeypatch.setattr(g, "decompose_goal", _noop_decompose)
+    monkeypatch.setattr(g, "detect_impasses", _no_impasses)
+
+    async def go():
+        async with _pool() as pool:
+            from nmem_sym.goals import run_goal_lifecycle
+            ins = ("INSERT INTO symbol_goals (objective, status, source_type, owner_agent, "
+                   "impasse_cycles, priority) VALUES ($1,'active','drive_intent',$2,999,0.0) RETURNING id")
+            ga = await pool.fetchval(ins, "A stale", _A)
+            gb = await pool.fetchval(ins, "B stale", _B)
+            await run_goal_lifecycle(pool, None, owner_agent=_A)   # graph unused (steps patched)
+            assert await pool.fetchval("SELECT status FROM symbol_goals WHERE id=$1", ga) == "abandoned", \
+                "A's own stale goal is abandoned by A's lifecycle"
+            assert await pool.fetchval("SELECT status FROM symbol_goals WHERE id=$1", gb) == "active", \
+                "B's goal MUST NOT be abandoned by A's lifecycle"
+            assert await pool.fetchval("SELECT impasse_cycles FROM symbol_goals WHERE id=$1", gb) == 999, \
+                "B's impasse counter MUST NOT be ticked by A's lifecycle"
+    asyncio.run(go())
+
+
+def test_lifecycle_impasse_resolution_is_owner_scoped(monkeypatch):
+    """B-ii D2 / codex L2: resolve_impasse's abandon path (a low-priority stalled goal) must not
+    propagate into a FOREIGN-owned parent. Mixed-owner tree: B-owned parent P, A-owned stalled child
+    G, an A-owned child of G with procedures (→ the 'stalled' branch). A's lifecycle abandons G but
+    must leave P untouched."""
+    import nmem_sym.goals as g
+    from nmem_sym.goals import GoalDecomposition
+
+    async def _noop_decompose(*a, **k):
+        return GoalDecomposition(parent_goal_id=0)
+
+    monkeypatch.setattr(g, "decompose_goal", _noop_decompose)
+
+    async def go():
+        async with _pool() as pool:
+            from nmem_sym.goals import run_goal_lifecycle
+            p = await pool.fetchval(
+                "INSERT INTO symbol_goals (objective,status,source_type,owner_agent,progress) "
+                "VALUES ('B parent','active','external',$1,0.75) RETURNING id", _B)
+            gg = await pool.fetchval(
+                "INSERT INTO symbol_goals (objective,status,source_type,owner_agent,parent_id,"
+                "priority,impasse_cycles) VALUES ('A child','active','drive_intent',$1,$2,0.0,999) "
+                "RETURNING id", _A, p)
+            await pool.execute(
+                "INSERT INTO symbol_goals (objective,status,source_type,owner_agent,parent_id,"
+                "procedure_ids) VALUES ('A grandchild','active','drive_intent',$1,$2,'[1]'::jsonb)",
+                _A, gg)
+            await run_goal_lifecycle(pool, None, owner_agent=_A)
+            assert await pool.fetchval("SELECT status FROM symbol_goals WHERE id=$1", gg) == "abandoned", \
+                "A's stalled low-priority child is abandoned"
+            assert await pool.fetchval("SELECT progress FROM symbol_goals WHERE id=$1", p) == 0.75, \
+                "B parent progress MUST NOT be propagated by A's impasse resolution"
+            assert await pool.fetchval("SELECT status FROM symbol_goals WHERE id=$1", p) == "active", \
+                "B parent MUST NOT be resolved by A's lifecycle"
+    asyncio.run(go())
+
+
 class _Node:
     """Duck-typed stand-in for activation.ActivatedNode — decompose only reads .id/.label/.hop."""
     def __init__(self, id, label, hop):
