@@ -263,6 +263,195 @@ def test_lifecycle_impasse_resolution_is_owner_scoped(monkeypatch):
     asyncio.run(go())
 
 
+# ── B-ii D2 §7 isolated-parity gate: run_goal_lifecycle(None) == the OLD dreamstate set ──
+#
+# The cutover gate. Decision 2 moved goal-lifecycle OFF the keeper's global dreamstate into a
+# per-agent `run_goal_lifecycle`. Cutover flips `goal_lifecycle_external=True` (the dreamstate copy
+# early-returns) and starts the external driver. This asserts the UNSCOPED path is byte-identical
+# to the PRE-D2 dreamstate order, which was (verified in bridge._do_dreamstate + dreamstate.py):
+#     reap_orphaned_drive_goals()   (Step 9b, inside dreamstate_once())
+#     THEN _dreamstate_goals()      (tick → decompose → detect+resolve → abandon; a post-hook)
+# i.e. REAP FIRST. run_goal_lifecycle(None) must reproduce that exact order (it reaps first too).
+# If they diverge, cutover silently changes an agent's behavior — e.g. a low-priority impassed
+# verify goal whose prediction confirmed: old reaps it 'achieved' (credit_procedures=False) BEFORE
+# abandon_stale can see it; reap-last would let abandon_stale abandon it (a false A2 failure trial).
+#
+# Isolation: the OLD path is table-wide unscoped, so it must see ONLY our seed → a throwaway schema
+# whose symbol_goals/symbol_predictions start empty. Identical seed for both runs: one transaction,
+# a SAVEPOINT after seeding, run A → snapshot → ROLLBACK TO SAVEPOINT (restores exact rows + ids) →
+# run B → snapshot. The single graph-dependent leaf (decompose_goal) is stubbed IDENTICALLY for both
+# runs; the stub RECORDS its calls so an orchestration regression that decomposes twice (invisible to
+# an idempotent UPDATE) is caught by the call-sequence assertion. viz_emit is no-op'd, and the
+# thresholds + utility-plasticity are pinned so branch targeting is deterministic and the A2 reward
+# path (which would UPDATE public.symbol_procedures, outside the scratch schema) can never fire.
+
+_PARITY_SCHEMA = "parity_goal_lifecycle_bii_d2"
+_OWNER_X = "parity_owner_x"   # a NAMED owner: proves owner_agent=None means ALL owners, not NULL-only
+
+
+async def _seed_lifecycle_fixture(conn):
+    """Seed one goal per lifecycle branch, mixing NULL and named owners (thresholds pinned to
+    impasse>=3 / abandon<0.2 by the caller). No return — reap wiring is self-contained."""
+    import json
+
+    async def ig(*, objective, status, priority=0.5, impasse_cycles=0, owner=None,
+                 source_type="external", source_ref="{}", parent_id=None, procedure_ids="[]"):
+        return await conn.fetchval(
+            "INSERT INTO symbol_goals (objective, status, priority, impasse_cycles, owner_agent, "
+            "source_type, source_ref, parent_id, procedure_ids) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9::jsonb) RETURNING id",
+            objective, status, priority, impasse_cycles, owner, source_type, source_ref,
+            parent_id, procedure_ids)
+
+    # predictions backing the three reap branches
+    p_conf = await conn.fetchval("INSERT INTO symbol_predictions (status) VALUES ('confirmed') RETURNING id")
+    p_pend = await conn.fetchval("INSERT INTO symbol_predictions (status) VALUES ('pending') RETURNING id")
+    p_gone = (p_pend or 0) + 987654          # an id with no row → reap treats target as pruned
+
+    # 1. plain active goal below impasse threshold → only the +1 tick (NAMED owner)
+    await ig(objective="tick only", status="active", priority=0.8, impasse_cycles=0, owner=_OWNER_X)
+    # 2. pending high-priority → activated + decomposed (stub → 'decomposed')
+    await ig(objective="decompose me", status="pending", priority=0.9)
+    # 2b. NAMED-owner pending goal → the unscoped path (owner=None) MUST still decompose it; a
+    #     regression making the pending SELECT NULL-owner-only would skip it → snapshot diverges.
+    await ig(objective="decompose me (named)", status="pending", priority=0.7, owner=_OWNER_X)
+    # 3. impassed high-priority WITH a procedure'd child → resolve_impasse re-decomposes ('stalled')
+    g3 = await ig(objective="impasse re-decompose", status="pursuing", priority=0.9, impasse_cycles=5)
+    await ig(objective="g3 child", status="active", parent_id=g3, procedure_ids="[1]")
+    # 3b. THRESHOLD-CROSSING (impasse_cycles=2, threshold=3): only the tick pushes it to 3 so detect
+    #     picks it up THIS cycle. Makes the tick-BEFORE-detect order load-bearing — a detect-before-
+    #     tick reorder would leave it at 2, undetected, ending 'active' not 'decomposed'. Priority
+    #     0.85 (distinct from g3's 0.9) keeps the detect_impasses order — and thus the decompose
+    #     call sequence — deterministic (no priority tie).
+    g_cross = await ig(objective="impasse crossing", status="pursuing", priority=0.85, impasse_cycles=2)
+    await ig(objective="g_cross child", status="active", parent_id=g_cross, procedure_ids="[3]")
+    # 4. impassed LOW-priority, NO child → resolve_impasse 'no_procedure', then abandon_stale abandons
+    await ig(objective="no-proc then stale-abandon", status="active", priority=0.1, impasse_cycles=5)
+    # 5. impassed LOW-priority WITH procedure'd child → resolve_impasse itself abandons ('stalled' path)
+    g5 = await ig(objective="impasse abandon", status="pursuing", priority=0.1, impasse_cycles=5)
+    await ig(objective="g5 child", status="active", parent_id=g5, procedure_ids="[2]")
+    # 6/7/8. reap branches (pursuing so the pending-decompose step never claims them). #6 NAMED owner.
+    await ig(objective="reap→achieved", status="pursuing", owner=_OWNER_X, source_type="drive_intent",
+             source_ref=json.dumps({"target_key": f"verify:prediction_id={p_conf}"}))
+    await ig(objective="reap→abandoned", status="pursuing", source_type="drive_intent",
+             source_ref=json.dumps({"target_key": f"verify:prediction_id={p_gone}"}))
+    await ig(objective="reap skip (still pending)", status="pursuing", source_type="drive_intent",
+             source_ref=json.dumps({"target_key": f"verify:prediction_id={p_pend}"}))
+
+
+async def _snapshot(conn):
+    """Behavioral state, ORDER BY id, timestamps excluded (resolved_at → boolean only). Includes
+    owner_agent / procedure_ids / source_ref so an owner-scope or procedure-mutation regression can't
+    hide behind the terminal status."""
+    rows = await conn.fetch(
+        "SELECT id, status, impasse_cycles, impasse_type, priority, progress, parent_id, owner_agent, "
+        "procedure_ids::text, source_ref::text, source_type, (resolved_at IS NOT NULL) AS resolved "
+        "FROM symbol_goals ORDER BY id")
+    return [tuple(r) for r in rows]
+
+
+def test_lifecycle_parity_unscoped_equals_old_dreamstate_set(monkeypatch):
+    """§7 CUTOVER GATE: run_goal_lifecycle(owner_agent=None) is byte-identical to the pre-D2
+    dreamstate-embedded lifecycle (reap → _dreamstate_goals body). Same seed, deterministic +
+    call-recorded decompose, pinned thresholds, isolated schema so the unscoped old path sees only
+    our rows. Asserts BOTH the final DB state AND the decompose call-sequence match."""
+    import asyncio
+    import os
+    from unittest.mock import MagicMock
+
+    import asyncpg
+    import nmem_sym.goals as g
+    import nmem_sym.config as symconfig
+
+    def _make_decompose_stub(calls):
+        async def _decompose_stub(pool, graph, goal_id):
+            # Deterministic stand-in for the graph/LLM decompose: mirror its parent effect
+            # (status→'decomposed') with no child inserts. Records each call so a double-decompose
+            # (which an idempotent UPDATE would otherwise hide) fails the call-sequence assertion.
+            calls.append(goal_id)
+            await pool.execute(
+                "UPDATE symbol_goals SET status='decomposed', updated_at=NOW() WHERE id=$1", goal_id)
+            return g.GoalDecomposition(parent_goal_id=goal_id)
+        return _decompose_stub
+
+    async def _viz_noop(*a, **k):
+        return None
+
+    monkeypatch.setattr(g, "viz_emit", _viz_noop)
+    # Pin everything the fixture's branch targeting relies on so a live DB's config can't shift a
+    # goal into/out of a branch — AND so the A2 reward path (public.symbol_procedures, outside the
+    # scratch schema) can never fire. The old path early-returns iff external → force pre-cutover.
+    monkeypatch.setattr(symconfig.settings, "goal_lifecycle_external", False)
+    monkeypatch.setattr(symconfig.settings, "utility_plasticity_enabled", False)
+    monkeypatch.setattr(symconfig.settings, "goal_impasse_threshold", 3)
+    monkeypatch.setattr(symconfig.settings, "goal_priority_abandon_threshold", 0.2)
+
+    async def go():
+        dsn = os.environ["NMEM_TEST_PG_DSN"].replace("+asyncpg", "")
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+        calls_old, calls_new = [], []
+        try:
+            async with pool.acquire() as ddl:
+                if not await ddl.fetchval("SELECT to_regclass('public.symbol_goals')"):
+                    pytest.skip("symbol_goals absent — run nmem-sym migrations on the test DB first")
+                await ddl.execute(f"DROP SCHEMA IF EXISTS {_PARITY_SCHEMA} CASCADE")
+                await ddl.execute(f"CREATE SCHEMA {_PARITY_SCHEMA}")
+            try:
+                async with pool.acquire() as conn:
+                    # isolate to the scratch schema; public still resolves the `vector` type/opclass
+                    await conn.execute(f"SET search_path TO {_PARITY_SCHEMA}, public")
+                    await conn.execute(g.GOALS_TABLE_SQL)
+                    await conn.execute(
+                        "CREATE TABLE symbol_predictions (id BIGSERIAL PRIMARY KEY, status TEXT)")
+
+                    graph = MagicMock()
+                    graph.pool = conn
+                    plugin = g.GoalPlugin.__new__(g.GoalPlugin)   # skip __init__/graph wiring
+                    plugin._graph = graph
+
+                    tx = conn.transaction()
+                    await tx.start()
+                    try:
+                        await _seed_lifecycle_fixture(conn)
+                        await conn.execute("SAVEPOINT seeded")
+
+                        # ── run A: the OLD dreamstate order — REAP FIRST (Step 9b, bounded by its
+                        #    own try/except so a reap failure doesn't abort the hook), then the
+                        #    post-dreamstate goal hook (_dreamstate_goals body). ──
+                        monkeypatch.setattr(g, "decompose_goal", _make_decompose_stub(calls_old))
+                        try:
+                            await g.reap_orphaned_drive_goals(conn, None)
+                        except Exception:            # pragma: no cover — mirrors Step 9b's boundary
+                            pass
+                        await plugin._dreamstate_goals()
+                        snap_old = await _snapshot(conn)
+
+                        await conn.execute("ROLLBACK TO SAVEPOINT seeded")   # exact seed restored
+
+                        # ── run B: the NEW single per-agent entrypoint, unscoped ──
+                        monkeypatch.setattr(g, "decompose_goal", _make_decompose_stub(calls_new))
+                        await g.run_goal_lifecycle(conn, graph, owner_agent=None)
+                        snap_new = await _snapshot(conn)
+                    finally:
+                        await tx.rollback()
+            finally:
+                async with pool.acquire() as ddl:
+                    await ddl.execute(f"DROP SCHEMA IF EXISTS {_PARITY_SCHEMA} CASCADE")
+        finally:
+            await pool.close()
+
+        assert snap_new == snap_old, (
+            "run_goal_lifecycle(None) diverged from the old dreamstate lifecycle set — "
+            "cutover would change behavior.\n"
+            f"  old: {snap_old}\n  new: {snap_new}")
+        assert calls_new == calls_old, (
+            "decompose_goal was called differently (count/order/ids) — an orchestration regression "
+            f"an idempotent snapshot would miss.\n  old: {calls_old}\n  new: {calls_new}")
+        assert calls_new, "the fixture must exercise decompose_goal (else the call-parity check is vacuous)"
+
+    asyncio.run(go())
+
+
 class _Node:
     """Duck-typed stand-in for activation.ActivatedNode — decompose only reads .id/.label/.hop."""
     def __init__(self, id, label, hop):
