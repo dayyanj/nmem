@@ -92,19 +92,22 @@ class Persona:
         }
 
 
-async def seed_persona(mem, graph, persona: Persona) -> None:
+async def seed_persona(mem, graph, persona: Persona, *, owner_agent: str | None = None) -> None:
     """Idempotently seed a persona's objectives, world mandate, and baseline KB.
 
     Safe to call every boot: objectives + world topics dedup by objective text, and
     baseline-KB writes are upserts by key. Fail-open per section — a seed hiccup must
-    not abort startup."""
-    await _seed_objectives(graph, persona)
-    await _seed_world_goals(graph, persona)
+    not abort startup.
+
+    Path B / B-i: `owner_agent` stamps (and dedup-scopes) the seeded goals so a shared-graph
+    agent's owner-scoped pursuit sees its OWN seed goals; `None` = unscoped/legacy (additive)."""
+    await _seed_objectives(graph, persona, owner_agent)
+    await _seed_world_goals(graph, persona, owner_agent)
     await _seed_baseline_kb(mem, persona)
 
 
-async def _seed_objectives(graph, persona: Persona) -> None:
-    """Standing objectives -> `external` goals (deduped by text)."""
+async def _seed_objectives(graph, persona: Persona, owner_agent: str | None = None) -> None:
+    """Standing objectives -> `external` goals (deduped by text, owner-scoped in a hive)."""
     if graph is None or not persona.objectives:
         return
     try:
@@ -113,19 +116,19 @@ async def _seed_objectives(graph, persona: Persona) -> None:
         seeded = 0
         for label, text in persona.objectives:
             exists = await pool.fetchval(
-                "SELECT 1 FROM symbol_goals WHERE source_type='external' AND objective=$1 LIMIT 1",
-                text)
+                "SELECT 1 FROM symbol_goals WHERE source_type='external' AND objective=$1 "
+                "AND ($2::text IS NULL OR owner_agent=$2) LIMIT 1", text, owner_agent)
             if not exists:
                 await create_goal(pool, embedder, text,
                                   priority=persona.goal_priorities.get(label, 0.5),
-                                  source_type="external")
+                                  source_type="external", owner_agent=owner_agent)
                 seeded += 1
         log.info("seed_persona: %d new objective(s) (of %d)", seeded, len(persona.objectives))
     except Exception as e:  # noqa: BLE001
         log.warning("seed_persona objectives failed: %s", e)
 
 
-async def _seed_world_goals(graph, persona: Persona) -> None:
+async def _seed_world_goals(graph, persona: Persona, owner_agent: str | None = None) -> None:
     """Knowledge-seeking mandate -> `drive_intent` goals the pursuit loop actuates."""
     if graph is None or not persona.world_seed_topics:
         return
@@ -135,10 +138,11 @@ async def _seed_world_goals(graph, persona: Persona) -> None:
         seeded = 0
         for _label, text, priority in persona.world_seed_topics:
             exists = await pool.fetchval(
-                "SELECT 1 FROM symbol_goals WHERE objective=$1 LIMIT 1", text)
+                "SELECT 1 FROM symbol_goals WHERE objective=$1 "
+                "AND ($2::text IS NULL OR owner_agent=$2) LIMIT 1", text, owner_agent)
             if not exists:
                 await create_goal(pool, embedder, text, priority=priority,
-                                  source_type="drive_intent")
+                                  source_type="drive_intent", owner_agent=owner_agent)
                 seeded += 1
         log.info("seed_persona: %d new world-seed goal(s) (of %d)", seeded, len(persona.world_seed_topics))
     except Exception as e:  # noqa: BLE001

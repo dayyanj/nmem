@@ -466,3 +466,104 @@ holds ids it owns — but for defense-in-depth, scope `resolve` too when the cre
 **Commit ownership:** `goal_store.py` + `test_hive_agency_scope.py` are your in-flight B-i unit (paired
 with nmem-sym `goals.py` + migration 017 in the sibling repo) — I've left them for you to land as one
 cross-repo commit rather than preempt it; verified-green on my side, ready when you are.
+
+---
+
+## 14. codex adversarial pass over the full B-i diff (2026-09-08, refinery-migration session)
+
+Ran codex (gpt-6-astra, read-only, in-memory reproductions) over the whole B-i change. **Verdict:
+the PRIMARY path is solid — the SECONDARY agency surface is not, and there's a fleet caveat.**
+
+**Verified correct + byte-identical (codex-reproduced):** `owner_agent=None` NULL-compat
+(`NULL IS NULL OR owner_agent=NULL` true for every row incl. legacy); default `actionable` parity vs
+HEAD across **18 param combos**; owner-scoped recovery (A recovers only A; None = table-wide legacy);
+owner stamping on the 3 bridge create sites + both persona sites; no SQL-injection/cast defect. So the
+Phase-1/2 goal-pursuit path holds.
+
+**FIXED now:** finding 3 (below) — `shared_world` without an owner identity → runtime guard added
+(`runtime.py`: shared_world defaults agent_id to persona, else raises). Prevents the catastrophic
+"unscoped shared_world → table-wide recovery + claims everyone's goals".
+
+**LEAK BACKLOG — the goal scoping is ~PRIMARY-ONLY; these secondary reads still cross owners** (both
+codex + an independent grep agree). All are `shared_world`-only (isolated/NULL = unchanged):
+| # | Path | Leak |
+|---|---|---|
+| 1 | `abandon_stale_goals`(goals.py:466), `reap_orphaned_drive_goals`(708), `_dreamstate_goals` GoalPlugin impasse tick(842+), pending-goal activation(863), impasse processing(493/536) | **Global bulk lifecycle** — one agent's/keeper's maintenance abandons/reaps/ticks EVERY owner's goals |
+| 2 | drive dedup `SELECT 1 FROM symbol_goals` (bridge.py:2081) | **Cross-owner suppression** — A's goal makes B skip its own INSERT → B pursues nothing (repro'd) |
+| 4 | `decompose_goal` (goals.py:239/289) | Sub-goals created **NULL-owner** (parent owner not read/stamped) → agent can't see its own children (repro'd) |
+| 5 | `SymbolGoalStore.resolve` + cross-owner `parent_id` propagation | resolve() discards owner; A-child resolve can achieve B-parent via progress propagation (repro'd) |
+| 6 | `find_active_goals` (goals.py:605) | Unscoped similarity search injects B's objective into A's "Active Goals" context (masked today by a pre-existing async-embedder bug — not a guarantee) |
+| 7 | obligation persistence + linked-goal SELECT (bridge.py:1703) | Rehydrated foreign obligations expose/mutate B's linked-goal state |
+| 8 | interoception impasse aggregates (interoception.py:231/236) | **Global** — B's stalls raise A's impasse_rate → contaminate A's emotional regulation |
+| 9 | `GOALS_TABLE_SQL`(goals.py:41) + `schema.sql:435` omit `owner_agent` | Non-migration init paths can't run the new INSERT/SELECT even at NULL owner — sync both |
+| + | **concerns** (my prior Phase-2b note) | concerns drive goal-gen; same class — scope create + query |
+
+**THE FLEET CAVEAT (reshapes Stage-2) — codex's sharpest point:** because NULL=unscoped-legacy is
+preserved by design, a **frozen/unscoped refinery or DJ-AI process on the shared graph still SEES and
+MUTATES sales_head's scoped rows.** Compatibility ≠ bilateral isolation. **sales_head cannot be safely
+isolated in `shared_world` until the refinery AND DJ-AI ALSO owner-scope (pass their own agent_id).**
+So Stage-2 is a **fleet migration** (scope the incumbents + close the leak backlog + keeper), NOT a
+one-agent flip. This is the single most important finding.
+
+**Also:** 3 existing nmem-sym goal tests assert old arg tuples (brittle, not behavior) → update. Full
+B-i (goal scoping) is **substantially incomplete**; do NOT go `shared_world` until the backlog + fleet
+scoping land + a re-run codex pass is clean.
+
+## 15. leak-backlog: clean-mechanical pass CLOSED (2026-09-08, refinery-migration session)
+
+Worked the §14 backlog with the standing discipline (additive / default-`None` = byte-identical;
+py_compile + import + live-health after each; acceptance test extended; goal suite kept green). The
+**clean-mechanical** items — a single owner predicate or owner-preservation, no architectural choice —
+are now closed and guarded:
+
+| §14 # | Item | Fix | Guard |
+|---|---|---|---|
+| 2 | drive dedup (bridge.py) | `SELECT 1 … AND ($2 IS NULL OR owner_agent=$2)` with `self._agent_id` — A no longer suppresses B | shared predicate (same as actionable/claim) |
+| 4 | `decompose_goal` (goals.py) | read parent `owner_agent`, stamp every sub-goal with it (owner-preserving; correct regardless of *who* triggers decompose) | **new** `test_decompose_stamps_children_with_parent_owner` (synthetic activation, real child-create loop) |
+| 5 | `SymbolGoalStore.resolve` + `resolve_goal` + `update_goal_progress` | `resolve_goal(..., owner_agent=None)`; UPDATE `… AND ($4 IS NULL OR owner_agent=$4) RETURNING id`; **short-circuits emit/A2-reward/parent-prop when scoped-and-not-ours**; parent progress-propagation now **owner-scoped through the FULL recursion** — `update_goal_progress(..., owner_agent)` threads the resolver's owner into its terminal `resolve_goal`, so propagation stops at the first foreign/NULL-owner ancestor; store threads `self._owner` | **new** `test_resolve_is_owner_scoped`, `test_resolve_does_not_propagate_across_owners`, `test_resolve_recursive_propagation_stops_at_owner_boundary` |
+| 6 | `find_active_goals` (goals.py) | `owner_agent` param + `AND ($3 IS NULL OR owner_agent=$3)`; `_surface_goals` threads `self._agent_id` | shared predicate |
+| 9 | `GOALS_TABLE_SQL` + `schema.sql` | both now declare `owner_agent TEXT` + `idx_goals_owner_status` → schema-first and migration-first (017) installs converge | — |
+| — | 3 brittle arg-tuple tests | updated for the appended `owner_agent` param (21 pass) | — |
+
+Acceptance now **8 green** (`test_hive_agency_scope.py`): actionable / claim / recover_orphaned /
+created-e2e / decompose-inherit / resolve-scoped / **resolve-no-cross-owner-propagate** /
+**resolve-recursion-stops-at-owner-boundary**.
+
+**Codex round (2026-09-08, this session) — CLEAN.** Two adversarial passes over the full uncommitted
+B-i diff:
+- Pass 1 found **P2** (a regression I introduced: `GOALS_TABLE_SQL`/`schema.sql` added the owner index
+  but `CREATE TABLE IF NOT EXISTS` won't add the column to a *pre-existing* table → `UndefinedColumn` on
+  legacy/standalone setup that skips migrations) → **fixed** with an idempotent
+  `ALTER TABLE … ADD COLUMN IF NOT EXISTS owner_agent` before the index in both files (verified idempotent
+  against the live schema); and **P1** (parent progress-propagation was unscoped — a mixed-owner tree,
+  reachable via an explicit `create_goal(parent_id=…, owner_agent=…)` OR legacy NULL-owner data, let a
+  scoped child resolve a foreign parent) → **fixed** by gating propagation on same-owner.
+- Pass 2 confirmed P1's immediate-parent fix + byte-identical `None` path (13 HEAD-match cases) but
+  caught a **residual**: recursion still lost scope (`update_goal_progress`'s internal `resolve_goal` was
+  unscoped) → **fixed** by threading `owner_agent` through `update_goal_progress`.
+- Pass 3 (final): **"Fully closed for C1–C3. No residual or new defect found"** — 1,164 unscoped
+  HEAD-parity comparisons + 1,092 scoped combos through six levels all stop at the first foreign/NULL
+  ancestor. So the earlier "#5 is only a one-time data concern" note is **superseded**: propagation is now
+  genuinely owner-scoped in code (not merely masked by decompose's owner-preservation).
+
+**STILL OPEN — DESIGN-NEEDED, not mechanical (belongs with the §4 keeper split — other session):**
+- **#1 global bulk lifecycle** (`abandon_stale_goals`, `reap_orphaned_drive_goals`, `_dreamstate_goals`
+  impasse-tick / pending-activation / impasse-processing). The blocker is **not** a missing filter — it's
+  *where these run*. Goal-lifecycle is **agency** (per-agent), yet today it rides the **dreamstate**
+  cycle (keeper, graph-global). Adding an `owner_agent` param alone doesn't fix it: if the keeper still
+  calls them table-wide (owner=None) they stay global. **Recommendation:** treat goal-lifecycle as
+  per-agent — each runtime runs its own abandon/reap/impasse-tick scoped to its `owner_agent`; the
+  keeper's graph-global dreamstate must **not** advance other agents' goal lifecycles (split the goal
+  portion out of the keeper cycle, or run it per-agent). The `owner_agent` params on these fns should be
+  added **in the same stroke as the caller-placement decision** (adding them speculatively also churns
+  `test_reap_orphaned_drive_goals`'s `fake_resolve` signature — do it once, together).
+- **#7 obligation persistence** + linked-goal SELECT (bridge.py ~1703) — rehydrated foreign obligations.
+- **#8 interoception impasse aggregates** (interoception.py ~231/236) — **global**: B's stalls raise A's
+  `impasse_rate` and contaminate A's emotional regulation. Needs owner-scoped aggregation, which couples
+  to the per-agent-vs-keeper decision above.
+- **concerns** — drive goal-gen; scope create + query (same class as goals).
+
+So: the **goal-pursuit read/claim/resolve/surface/create/decompose** surface is now owner-safe on a
+shared graph; the **maintenance/regulation** surface (#1/#7/#8/concerns) remains, and its correct fix is
+a keeper-split design decision, not a filter. `shared_world` still gated on: these + the FLEET CAVEAT
+(§14) + a clean re-run codex pass.

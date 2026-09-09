@@ -78,6 +78,13 @@ class AgentRuntime:
         # Hive (Path B): isolated (default) = today, byte-identical. shared_world elects a single
         # graph-keeper by advisory lock (see agent_core.hive); is_keeper gates the graph-global loops.
         self.hive = HiveConfig.from_dict(config.get("hive"))
+        # Fail CLOSED (codex B-i finding 3): shared_world WITHOUT an owner identity would forward
+        # owner_agent=None everywhere → unscoped agency = table-wide recovery + claiming EVERY
+        # agent's goals. A shared-world agent MUST have an agent_id; default None to the persona's.
+        if self.hive.is_shared_world and not self.hive.agent_id:
+            self.hive.agent_id = persona.agent_id
+            if not self.hive.agent_id:
+                raise RuntimeError("hive shared_world requires a non-empty agent_id (owner identity)")
         self.is_keeper = False
         self._keeper_lock = None
 
@@ -113,7 +120,7 @@ class AgentRuntime:
         if self.backend is None:
             from nmem.agent_core.backend import build_backend
             self.backend = build_backend(self._config)
-        await seed_persona(self.mem, self.graph, self._persona)
+        await seed_persona(self.mem, self.graph, self._persona, owner_agent=self.hive.agent_id)
         await self._elect_keeper()
         await self._wire_cognition()
         return self.status
@@ -213,7 +220,7 @@ class AgentRuntime:
             schemas_enabled=s.schemas_enabled, analogy_enabled=s.analogy_enabled,
             self_model_enabled=s.self_model_enabled, procedures_enabled=s.procedures_enabled,
             goals_enabled=s.goals_enabled, extract_max_parallel=s.extract_max_parallel,
-        ))
+        ), agent_id=self.hive.agent_id)   # B-i: owner-stamp this agent's agency writes (None=isolated)
         self.bridge.connect(mem)
 
         self._wire_goal_enrichment()
@@ -327,7 +334,8 @@ class AgentRuntime:
         from nmem.agent_core.goal_store import SymbolGoalStore
         self._pursuit = GoalPursuit(
             SymbolGoalStore(self.graph.pool,
-                            source_type=pcfg.get("source_type", "drive_intent")),
+                            source_type=pcfg.get("source_type", "drive_intent"),
+                            owner_agent=self.hive.agent_id),   # B-i: pursue only our own goals (None=isolated)
             self._runner, self._build_proposal)
         interval = float(pcfg.get("interval_seconds", 300))
         cap = max(1, int(pcfg.get("max_per_cycle", 1)))

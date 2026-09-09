@@ -26,15 +26,23 @@ def _goal_objective(g: Any) -> str:
 
 
 class SymbolGoalStore:
-    """nmem-act ``GoalStore`` over ``symbol_goals``, filtered to one ``source_type``."""
+    """nmem-act ``GoalStore`` over ``symbol_goals``, filtered to one ``source_type`` and —
+    in a hive (Path B / B-i) — to one ``owner_agent``.
 
-    def __init__(self, pool, *, source_type: str = "drive_intent") -> None:
+    ``owner_agent=None`` = unscoped = today's behavior (additive). When set, EVERY operation
+    is strictly scoped to that agent: an agent only sees / claims / releases / recovers its
+    OWN goals — it can never touch another agent's on a shared graph. Requires the
+    ``owner_agent`` column (nmem-sym migration 017)."""
+
+    def __init__(self, pool, *, source_type: str = "drive_intent",
+                 owner_agent: str | None = None) -> None:
         self._pool = pool
         self._source_type = source_type
+        self._owner = owner_agent
 
     async def actionable(self, limit: int) -> list[PursuitGoal]:
         rows = await get_actionable_goals(
-            self._pool, source_type=self._source_type, limit=limit)
+            self._pool, source_type=self._source_type, limit=limit, owner_agent=self._owner)
         out: list[PursuitGoal] = []
         for r in rows:
             gid, obj = _goal_id(r), _goal_objective(r)
@@ -43,20 +51,25 @@ class SymbolGoalStore:
         return out
 
     async def claim(self, goal_id: Any) -> bool:
-        # Atomic pending/active/decomposed -> pursuing (False if a concurrent cycle
-        # already claimed it).
-        return await mark_goal_pursuing(self._pool, goal_id)
+        # Atomic pending/active/decomposed -> pursuing (False if a concurrent cycle already
+        # claimed it, OR — when owner-scoped — if the goal isn't ours).
+        return await mark_goal_pursuing(self._pool, goal_id, self._owner)
 
     async def resolve(self, goal_id: Any, *, achieved: bool) -> None:
-        await resolve_goal(self._pool, goal_id, "achieved" if achieved else "failed")
+        await resolve_goal(self._pool, goal_id, "achieved" if achieved else "failed",
+                           owner_agent=self._owner)
 
     async def release(self, goal_id: Any) -> None:
         await self._pool.execute(
             "UPDATE symbol_goals SET status='pending', updated_at=now() "
-            "WHERE id=$1 AND status='pursuing'", goal_id)
+            "WHERE id=$1 AND status='pursuing' AND ($2::text IS NULL OR owner_agent = $2)",
+            goal_id, self._owner)
 
     async def recover_orphaned(self) -> int:
+        # OWNER-SCOPED (§10.2 — the sharpest edge): one agent's startup recovery must NEVER
+        # reset another agent's in-flight goals. $1 IS NULL = legacy unscoped (table-wide).
         rows = await self._pool.fetch(
             "UPDATE symbol_goals SET status='pending', updated_at=now() "
-            "WHERE status='pursuing' RETURNING id")
+            "WHERE status='pursuing' AND ($1::text IS NULL OR owner_agent = $1) RETURNING id",
+            self._owner)
         return len(rows)
