@@ -1037,6 +1037,23 @@ class MemorySystem:
         narrative = data.get("narrative") if isinstance(data.get("narrative"), dict) else None
         checkpoint = data.get("checkpoint") if isinstance(data.get("checkpoint"), dict) else None
 
+        # Returning-after-a-gap (G4/G5): if the last turn is old, measure the gap and fetch
+        # the "what changed while away" delta. Only on a genuine long gap, so continuous
+        # operation pays nothing (no extra query). Fail-open — a failure just omits the delta.
+        elapsed_seconds: float | None = None
+        delta: dict | None = None
+        ck_updated = checkpoint.get("updated_at") if checkpoint else None
+        if ck_updated is not None:
+            try:
+                from nmem.continuity import _LONG_GAP_SECONDS
+
+                ck_dt = ck_updated if ck_updated.tzinfo else ck_updated.replace(tzinfo=timezone.utc)
+                elapsed_seconds = max(0.0, (now - ck_dt).total_seconds())
+                if elapsed_seconds >= _LONG_GAP_SECONDS:
+                    delta = await _continuity_store.delta_since(self._db, agent_id, scope, ck_dt)
+            except Exception as e:
+                logger.warning("Continuity delta/elapsed failed: %s", e, exc_info=True)
+
         return assemble_continuity(
             agent_id=agent_id,
             now=now,
@@ -1052,6 +1069,8 @@ class MemorySystem:
             curiosity_total=curiosity_total,
             narrative=narrative,
             checkpoint=checkpoint,
+            elapsed_seconds=elapsed_seconds,
+            delta=delta,
         )
 
     async def continuity(self, agent_id: str = "default", **kwargs: Any) -> ContinuityResult:

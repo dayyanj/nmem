@@ -37,7 +37,9 @@ if TYPE_CHECKING:  # avoid runtime import cycles; the functions are duck-typed
 _SECTION_ORDER = (
     "identity",
     "narrative",
+    "gap",          # "returning after a gap" reorientation frame (only on a long gap)
     "immediate",
+    "delta",        # what changed while away (only on a long gap)
     "warnings",
     "recent",
     "open_loops",
@@ -46,6 +48,24 @@ _SECTION_ORDER = (
     "internal_state",
     "relevant",
 )
+
+# A gap since the agent's last turn longer than this flips the snapshot into
+# "returning after a gap" mode: the immediate state is age-qualified (it is no longer
+# safely "current"), a reorientation frame is added, and the delta lane is populated.
+_LONG_GAP_SECONDS = 12 * 3600
+
+
+def _age_phrase(seconds: float) -> str:
+    """A compact human age for an elapsed duration ("~3 days", "~5 hours", "~20 minutes")."""
+    s = max(0.0, seconds)
+    if s >= 86400:
+        n = round(s / 86400)
+        return f"~{n} day{'s' if n != 1 else ''}"
+    if s >= 3600:
+        n = round(s / 3600)
+        return f"~{n} hour{'s' if n != 1 else ''}"
+    n = max(1, round(s / 60))
+    return f"~{n} minute{'s' if n != 1 else ''}"
 
 # Commitments are prospective obligations to others; even a low-"importance" one
 # should not sink below curiosity noise. Floor its salience so it stays visible.
@@ -190,6 +210,8 @@ def assemble_continuity(
     curiosity_total: int | None = None,
     narrative: dict | None = None,
     checkpoint: dict | None = None,
+    elapsed_seconds: float | None = None,
+    delta: dict | None = None,
 ) -> ContinuityResult:
     """Assemble the wake snapshot from already-gathered inputs. Pure — no I/O.
 
@@ -215,7 +237,9 @@ def assemble_continuity(
     soft = {
         "identity": int(max_chars * 0.12),
         "narrative": int(max_chars * 0.20),
+        "gap": int(max_chars * 0.10),
         "immediate": int(max_chars * 0.12),
+        "delta": int(max_chars * 0.18),
         "warnings": int(max_chars * 0.15),
         "recent": int(max_chars * 0.15),
         "open_loops": int(max_chars * 0.30),
@@ -224,6 +248,12 @@ def assemble_continuity(
         "internal_state": int(max_chars * 0.10),
         "relevant": int(max_chars * 0.16),
     }
+
+    # "Returning after a gap" mode: the agent's last turn is old enough that its
+    # immediate state is no longer safely current (G5). Drives the age qualifier on the
+    # checkpoint, the reorientation frame, and whether the delta lane (G4) renders.
+    long_gap = elapsed_seconds is not None and elapsed_seconds >= _LONG_GAP_SECONDS
+    age = _age_phrase(elapsed_seconds) if elapsed_seconds is not None else ""
 
     def _emit(name: str, header: str, lines: Sequence[str], *, fair: bool = False) -> int:
         """Render a section within both its soft ceiling and the global budget.
@@ -325,13 +355,21 @@ def assemble_continuity(
                 label = f"### Where I've been (as of {date_str})"
         has_narrative = _emit("narrative", label, lines) > 0
 
+    # 1b-gap. Returning-after-a-gap reorientation (G5): when the last turn is old, say so
+    #     plainly and tell the agent to re-orient before acting on stale immediate state.
+    if long_gap and age:
+        _emit("gap", "### Returning after a gap",
+              [f"Your last turn was {age} ago — things may have moved on. Re-orient against "
+               f"the current state below before acting on where you left off."])
+
     # 1c. Immediate continuity — "where I left off", for resuming across a gap.
     #     Freshest-first order (interaction → interrupted work → last action → next): the
     #     checkpoint is a partial upsert, so a stale long ``last_action`` from an earlier
     #     writer can linger; rendering it ahead of a just-written interaction summary would
     #     let it displace the summary (codex P2). Each field also gets a fair bounded share
     #     of the lane so *every* present field renders a preview rather than the first few
-    #     crowding out the rest.
+    #     crowding out the rest. On a long gap the header is age-qualified so the state
+    #     does not read as current (present evidence still wins — it is shown, just dated).
     has_checkpoint = False
     if checkpoint:
         ck_lines = []
@@ -344,7 +382,24 @@ def assemble_continuity(
         if checkpoint.get("expected_next_action"):
             ck_lines.append(f"- Expected next: {checkpoint['expected_next_action']}")
         if ck_lines:
-            has_checkpoint = _emit("immediate", "### Picking up from", ck_lines, fair=True) > 0
+            ck_header = f"### Picking up from ({age} ago)" if long_gap and age else "### Picking up from"
+            has_checkpoint = _emit("immediate", ck_header, ck_lines, fair=True) > 0
+
+    # 1d. Delta (G4) — what changed while the agent was away. Only on a long gap (so it
+    #     costs nothing in continuous operation and never adds noise mid-session).
+    if long_gap and delta:
+        delta_lines = []
+        for item in (delta.get("shared_new") or [])[:5]:
+            key = (item.get("key") or "").strip()
+            by = (item.get("by") or "another agent").strip()
+            if key:
+                delta_lines.append(f"- {by} added to shared knowledge: {key}")
+        jn = int(delta.get("journal_new") or 0)
+        if jn:
+            delta_lines.append(f"- {jn} new entr{'y' if jn == 1 else 'ies'} accrued in your "
+                               f"journal while you were away")
+        if delta_lines:
+            _emit("delta", "### Since you were last active", delta_lines)
 
     # 2. Warnings — governance red-lines, surfaced regardless of stimulus.
     warnings = [

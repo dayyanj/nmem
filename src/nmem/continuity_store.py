@@ -11,9 +11,18 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select, text
+import logging
 
-from nmem.db.models import ContinuityCheckpointModel, NarrativeSelfModel
+from sqlalchemy import func, or_, select, text
+
+from nmem.db.models import (
+    ContinuityCheckpointModel,
+    JournalEntryModel,
+    NarrativeSelfModel,
+    SharedKnowledgeModel,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def _scope_filter(model: Any, project_scope: str | None):
@@ -22,6 +31,15 @@ def _scope_filter(model: Any, project_scope: str | None):
         if project_scope is None
         else model.project_scope == project_scope
     )
+
+
+def _scope_or_global(model: Any, project_scope: str | None) -> list:
+    """Visibility conditions matching the tiers' ``recent()`` semantics: a None (unscoped)
+    instance sees everything (no filter); a scoped instance sees its own scope OR global
+    (NULL). Returned as a list so it drops cleanly into a ``where(*conds)``."""
+    if project_scope is None:
+        return []
+    return [or_(model.project_scope == project_scope, model.project_scope.is_(None))]
 
 
 async def latest_narrative(db: Any, agent_id: str, project_scope: str | None = None) -> dict | None:
@@ -172,3 +190,60 @@ async def save_checkpoint(
             for k, v in fields.items():
                 if v is not None:
                     setattr(row, k, v)
+
+
+async def delta_since(
+    db: Any,
+    agent_id: str,
+    project_scope: str | None,
+    since: datetime,
+    *,
+    limit: int = 5,
+) -> dict:
+    """What changed while the agent was away — the "returning after a gap" delta.
+
+    Returns ``{"shared_new": [{"key","by"}...], "journal_new": int}``:
+      * ``shared_new`` — recent cross-agent canonical writes (another agent added to the
+        shared tier since ``since``); in an isolated single-agent DB this is naturally
+        empty (no other writer), which is correct.
+      * ``journal_new`` — how many of THIS agent's own journal entries accrued since
+        ``since`` (consolidation output, logged activity) — the volume of what piled up.
+
+    Read-only, scoped, fail-open (returns the zero delta on any error). Intended to be
+    called ONLY on a long-gap wake, so it never costs anything in continuous operation."""
+    out: dict = {"shared_new": [], "journal_new": 0}
+    # The ``created_at`` columns are tz-naive (TIMESTAMP WITHOUT TIME ZONE); asyncpg rejects
+    # a tz-aware bind against them, so normalize the cutoff to naive UTC. (wake() keeps the
+    # aware timestamp for elapsed-time arithmetic; only this DB comparison needs naive.)
+    cutoff = since.astimezone(timezone.utc).replace(tzinfo=None) if since.tzinfo else since
+    try:
+        async with db.session() as s:
+            rows = (
+                await s.execute(
+                    select(SharedKnowledgeModel.key, SharedKnowledgeModel.created_by)
+                    .where(
+                        SharedKnowledgeModel.created_at > cutoff,
+                        SharedKnowledgeModel.created_by != agent_id,
+                        SharedKnowledgeModel.superseded_by_id.is_(None),
+                        *_scope_or_global(SharedKnowledgeModel, project_scope),
+                    )
+                    .order_by(SharedKnowledgeModel.created_at.desc())
+                    .limit(limit)
+                )
+            ).all()
+            out["shared_new"] = [{"key": k, "by": by} for k, by in rows]
+            cnt = (
+                await s.execute(
+                    select(func.count())
+                    .select_from(JournalEntryModel)
+                    .where(
+                        JournalEntryModel.agent_id == agent_id,
+                        JournalEntryModel.created_at > cutoff,
+                        *_scope_or_global(JournalEntryModel, project_scope),
+                    )
+                )
+            ).scalar()
+            out["journal_new"] = int(cnt or 0)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("continuity delta_since failed: %s", e, exc_info=True)
+    return out

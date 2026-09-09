@@ -121,6 +121,57 @@ def _assemble(**over):
     return assemble_continuity(**base)
 
 
+# ── Pure: returning-after-a-gap (G4 delta + G5 staleness/long-gap) ────────────
+
+
+def test_no_gap_suppresses_reorientation_and_delta():
+    """In continuous operation (no/short gap) the snapshot must NOT add the gap frame,
+    age-qualify the checkpoint, or render a delta — those are reorientation-only."""
+    r = _assemble(
+        checkpoint={"last_interaction_summary": "discussed the plan"},
+        elapsed_seconds=120,                       # 2 minutes — not a gap
+        delta={"shared_new": [{"key": "x", "by": "djai"}], "journal_new": 3},
+    )
+    assert "Returning after a gap" not in r.content
+    assert "Since you were last active" not in r.content
+    assert "### Picking up from\n" in r.content     # plain header, not age-qualified
+    assert "gap" not in r.sections and "delta" not in r.sections
+
+
+def test_long_gap_adds_reorientation_and_ages_the_checkpoint():
+    r = _assemble(
+        checkpoint={"last_interaction_summary": "was mid-way through the API audit"},
+        elapsed_seconds=3 * 86400,                  # ~3 days
+    )
+    assert "Returning after a gap" in r.content
+    assert "~3 days ago" in r.content               # age surfaced in the frame
+    assert "Picking up from (~3 days ago)" in r.content   # checkpoint header age-qualified
+    assert "gap" in r.sections
+
+
+def test_long_gap_renders_delta_of_what_changed():
+    r = _assemble(
+        checkpoint={"last_interaction_summary": "left off here"},
+        elapsed_seconds=2 * 86400,
+        delta={"shared_new": [{"key": "pricing model v2", "by": "djai"}], "journal_new": 7},
+    )
+    assert "Since you were last active" in r.content
+    assert "djai added to shared knowledge: pricing model v2" in r.content
+    assert "7 new entries accrued" in r.content
+    assert "delta" in r.sections
+
+
+def test_delta_without_gap_flag_is_ignored():
+    """Delta only renders under long-gap mode — passing a delta with a short elapsed must
+    not surface it (guards against noise from a spurious delta fetch)."""
+    r = _assemble(
+        checkpoint={"last_interaction_summary": "x"},
+        elapsed_seconds=60,
+        delta={"shared_new": [{"key": "y", "by": "djai"}], "journal_new": 1},
+    )
+    assert "Since you were last active" not in r.content
+
+
 def test_empty_is_the_morning_case_and_does_not_raise():
     r = _assemble()
     assert isinstance(r, ContinuityResult)
