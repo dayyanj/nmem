@@ -124,7 +124,21 @@ function onProvider(){const p=PROVIDERS[document.getElementById('provider2').val
   const r=document.getElementById('testres');r.textContent='';r.className='tres';}
 
 // ── live wiring to /studio/* ─────────────────────────────────────────────────────
-async function api(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});return r.json();}
+// api() posts JSON and attaches the CSRF token (required on mutations when auth is on); a 401 means
+// the session lapsed → re-show the login overlay.
+async function api(path,body){const h={'Content-Type':'application/json'};if(window.__CSRF)h['X-CSRF-Token']=window.__CSRF;
+  const r=await fetch(path,{method:'POST',headers:h,body:JSON.stringify(body)});
+  if(r.status===401){showLogin();} return r.json();}
+// ── auth gate (only bites when the appliance has STUDIO_AUTH_PASSWORD set) ──
+function showLogin(){document.getElementById('loginOverlay').hidden=false;}
+async function doLogin(){
+  const u=document.getElementById('login_user').value,p=document.getElementById('login_pass').value;
+  const err=document.getElementById('login_err');err.textContent='';
+  try{const r=await (await fetch('/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({user:u,password:p})})).json();
+    if(r.ok){window.__CSRF=r.csrf;document.getElementById('loginOverlay').hidden=true;document.getElementById('login_pass').value='';initApp();}
+    else{err.textContent='✗ '+(r.error||'login failed');}
+  }catch(e){err.textContent='✗ could not reach the studio';}}
 function providerKeyEnv(){return PROVIDERS[document.getElementById('provider2').value]?.keyenv||'LLM_API_KEY';}
 function llmSpec(){const dialect=document.getElementById('prov').value;
   return {provider:dialect==='anthropic'?'anthropic':'openai',
@@ -211,8 +225,8 @@ async function create(){const aid=document.getElementById('aid').value.trim();co
     flash(`✓ ${aid} created · ${res.written.length} files${dep}${res.started?' · started':''}`);}
   else flash('✗ '+(res.error||'create failed'));}
 
-// ── boot: fetch the live catalog, then render ──
-(async function(){
+// ── boot: gate on auth (if enabled), then fetch the live catalog + render ──
+async function initApp(){
   try{
     const data=await (await fetch('/studio/catalog')).json();
     CATALOG={caps:data.capabilities.map(c=>({f:c.flag,g:c.group,s:c.summary,r:c.requires||[],sub:c.substrate||''})),
@@ -224,6 +238,12 @@ async function create(){const aid=document.getElementById('aid').value.trim();co
     return;
   }
   renderTemplates();applyTemplate('researcher');selectPreset('reflective');setView('basic');initProviders();onProvider();setToolType('webhook');onHiveMode();
+}
+(async function boot(){
+  try{const s=await (await fetch('/auth/status')).json();
+    if(s.enabled && !s.authenticated){showLogin();return;}   // locked → login first; initApp runs on success
+  }catch(e){}
+  initApp();
 })();
 </script>"""
 

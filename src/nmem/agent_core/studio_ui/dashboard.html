@@ -112,6 +112,24 @@
 </style>
 </head>
 <body>
+<!-- Login overlay — shown only when the agent app has auth on and there's no session (JS checks
+     /auth/status at boot). Visibility toggled via style.display so it needs no extra CSS rule. -->
+<div id="loginOverlay" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:1000;align-items:center;justify-content:center;padding:20px">
+  <div style="max-width:380px;width:100%;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:24px">
+    <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)">Locked</div>
+    <h2 style="margin:6px 0 4px;color:var(--ink)">Sign in</h2>
+    <p style="color:var(--muted);margin:0 0 14px;font-size:14px">This agent requires authentication.</p>
+    <label style="display:block;font-size:12.5px;font-weight:600;color:var(--ink);margin-bottom:4px">User</label>
+    <input type="text" id="login_user" value="admin" autocomplete="username"
+           style="width:100%;padding:9px;border:1px solid var(--line-2);border-radius:8px;background:var(--bg);color:var(--ink);margin-bottom:10px">
+    <label style="display:block;font-size:12.5px;font-weight:600;color:var(--ink);margin-bottom:4px">Password</label>
+    <input type="password" id="login_pass" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"
+           style="width:100%;padding:9px;border:1px solid var(--line-2);border-radius:8px;background:var(--bg);color:var(--ink)">
+    <button type="button" onclick="doLogin()"
+            style="margin-top:16px;width:100%;padding:10px;border:0;border-radius:8px;background:var(--accent);color:var(--accent-ink);font-weight:600;cursor:pointer">Sign in →</button>
+    <div id="login_err" style="margin-top:10px;color:var(--warn);font-size:13px"></div>
+  </div>
+</div>
 <header class="top">
   <span class="brand"><svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="6" fill="var(--accent)"/><circle cx="9" cy="10" r="2" fill="var(--accent-ink)"/><circle cx="15" cy="10" r="2" fill="var(--accent-ink)"/><path d="M8 15c1.5 1.6 6.5 1.6 8 0" stroke="var(--accent-ink)" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>
     nmem-studio <small id="agentname">· agent</small></span>
@@ -200,7 +218,24 @@
 </main>
 
 <script>
-async function getJSON(path,opts){const r=await fetch(path,opts);return r.json();}
+// getJSON attaches the CSRF token on mutations (required when auth is on) and re-shows the login
+// overlay on a 401 (session lapsed). window.__CSRF is set at login.
+async function getJSON(path,opts){opts=opts||{};
+  if(opts.method&&opts.method!=='GET'&&window.__CSRF)
+    opts.headers=Object.assign({},opts.headers,{'X-CSRF-Token':window.__CSRF});
+  const r=await fetch(path,opts);
+  if(r.status===401)showLogin();
+  return r.json();}
+function showLogin(){document.getElementById('loginOverlay').style.display='flex';}
+async function doLogin(){
+  const u=document.getElementById('login_user').value,p=document.getElementById('login_pass').value;
+  const err=document.getElementById('login_err');err.textContent='';
+  try{const r=await (await fetch('/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({user:u,password:p})})).json();
+    if(r.ok){window.__CSRF=r.csrf;document.getElementById('loginOverlay').style.display='none';
+      document.getElementById('login_pass').value='';startDash();}
+    else{err.textContent='✗ '+(r.error||'login failed');}
+  }catch(e){err.textContent='✗ could not reach the agent';}}
 
 function chip(status){
   const c=document.getElementById('statuschip'),t=document.getElementById('statustxt');
@@ -313,7 +348,12 @@ async function sendAct(){
   finally{ btn.disabled=false; }
 }
 
-refresh(); setInterval(refresh, 5000); loadTools();
+function startDash(){refresh(); setInterval(refresh, 5000); loadTools();}
+(async function(){                          // gate on auth if the appliance has it enabled
+  try{const s=await (await fetch('/auth/status')).json();
+    if(s.enabled && !s.authenticated){showLogin();return;}}catch(e){}
+  startDash();
+})();
 </script>
 </body>
 </html>

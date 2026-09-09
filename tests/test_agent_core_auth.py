@@ -90,6 +90,21 @@ def test_sessionauth_unit_verify_and_expiry(monkeypatch):
     assert a.session("never-issued") is None
 
 
+def test_wizard_spa_shell_has_login_wiring():
+    # the served wizard must implement login + CSRF (else enabling auth breaks the browser — codex P1)
+    from nmem.agent_core.studio import studio_index_html
+    html = studio_index_html()
+    assert 'id="loginOverlay"' in html and "function doLogin" in html
+    assert "/auth/status" in html and "/auth/login" in html and "X-CSRF-Token" in html
+
+
+def test_dashboard_has_login_wiring():
+    from nmem.agent_core.studio import agent_dashboard_html
+    html = agent_dashboard_html()
+    assert 'id="loginOverlay"' in html and "function doLogin" in html
+    assert "/auth/status" in html and "X-CSRF-Token" in html
+
+
 def test_hash_verify_roundtrip():
     from nmem.agent_core.auth import _verify_hash
     enc = hash_password("correct horse")

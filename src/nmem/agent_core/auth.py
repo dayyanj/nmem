@@ -95,13 +95,14 @@ class SessionAuth:
     def _password_ok(self, pw: str) -> bool:
         if self._pw_hash:
             return _verify_hash(pw, self._pw_hash)
-        # constant-time compare; empty configured password can never authenticate
-        return bool(self._pw) and hmac.compare_digest(pw, self._pw)
+        # constant-time compare on UTF-8 bytes (compare_digest raises TypeError on non-ASCII str, so a
+        # unicode password would otherwise 500 instead of authenticating). Empty pw never authenticates.
+        return bool(self._pw) and hmac.compare_digest(pw.encode("utf-8"), self._pw.encode("utf-8"))
 
     def verify(self, user: str, pw: str) -> bool:
         # check BOTH sides in constant time so a wrong username isn't faster to reject than a wrong
         # password (no user-enumeration timing signal). `&` not `and` — evaluate both unconditionally.
-        u_ok = hmac.compare_digest(user or "", self.user)
+        u_ok = hmac.compare_digest((user or "").encode("utf-8"), self.user.encode("utf-8"))
         p_ok = self._password_ok(pw or "")
         return bool(u_ok & p_ok)
 
@@ -185,7 +186,7 @@ def install_session_auth(app, auth: SessionAuth) -> None:
             return JSONResponse({"ok": False, "error": "authentication required"}, status_code=401)
         if request.method not in _SAFE_METHODS:
             token = request.headers.get("x-csrf-token", "")
-            if not hmac.compare_digest(token, sess.csrf):
+            if not hmac.compare_digest(token.encode("utf-8"), sess.csrf.encode("utf-8")):
                 return JSONResponse({"ok": False, "error": "invalid or missing CSRF token"},
                                     status_code=403)
         return await call_next(request)
