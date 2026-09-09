@@ -15,8 +15,11 @@ services:
     image: nmem-studio:latest
     restart: unless-stopped        # the create→boot seam restarts the container into agent mode
     ports:
-      # override the host port if 8080 is taken:  STUDIO_HOST_PORT=18080 docker compose up
-      - "${STUDIO_HOST_PORT:-8080}:8080"
+      # Bound to LOOPBACK by default — the wizard + /studio/create + /act are an UNAUTHENTICATED
+      # admin surface (Create can register an MCP stdio command that runs on restart). Only expose
+      # it beyond localhost behind your own auth/proxy: STUDIO_BIND=0.0.0.0 docker compose up.
+      # Override the host port if 8080 is taken: STUDIO_HOST_PORT=18080 docker compose up.
+      - "${STUDIO_BIND:-127.0.0.1}:${STUDIO_HOST_PORT:-8080}:8080"
     environment:
       STUDIO_DATA_DIR: /data
       STUDIO_PORT: "8080"
@@ -64,7 +67,7 @@ services:
     image: nmem-viz:latest
     restart: unless-stopped
     ports:
-      - "${VIZ_HOST_PORT:-5174}:5174"
+      - "${STUDIO_BIND:-127.0.0.1}:${VIZ_HOST_PORT:-5174}:5174"   # loopback by default (see studio)
     environment:
       NMEM_VIZ_DATABASE_URL: postgresql://nmem:nmem@postgres:5432/agent_nmem
       NMEM_VIZ_AGENT_ID: appliance

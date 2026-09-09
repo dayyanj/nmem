@@ -42,6 +42,19 @@ async def _fetch_card(url: str, headers: dict) -> dict | None:
     return None
 
 
+_A2A_DONE = {"completed"}   # the only terminal state that means the delegated work succeeded
+
+
+def _result_ok(result) -> bool:
+    """Whether an A2A ``result`` represents completed work. A Task carries ``status.state``
+    (completed / working / failed / canceled / rejected / …); only ``completed`` is success.
+    A plain Message result has no lifecycle state → treat as ok (the agent just answered)."""
+    if not isinstance(result, dict):
+        return True
+    state = str((result.get("status") or {}).get("state") or result.get("state") or "").strip().lower()
+    return not state or state in _A2A_DONE
+
+
 def _extract_text(result) -> str:
     """Pull the reply text out of an A2A result, tolerant of Task / Message / artifact shapes."""
     if result is None:
@@ -107,7 +120,11 @@ async def _delegate(endpoint: str, instruction: str, headers: dict) -> tuple[boo
                 if err.get("code") == -32601 and method == "message/send":
                     continue
                 return False, f"a2a error {err.get('code')}: {err.get('message')}"
-            return True, _extract_text(data.get("result"))
+            # A JSON-RPC "result" is not automatically success: a Task can carry
+            # status.state=failed/canceled, and an HTTP 4xx/5xx can still return JSON. Reward
+            # only a genuinely completed task (or a plain Message result with no lifecycle).
+            result = data.get("result")
+            return (r.is_success and _result_ok(result)), _extract_text(result)
     return False, "a2a: no supported send method"
 
 

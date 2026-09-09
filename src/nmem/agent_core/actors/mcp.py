@@ -77,12 +77,21 @@ async def connect_mcp(server: dict):
     transport = (server.get("transport") or ("http" if server.get("url") else "stdio")).lower()
     try:
         if transport in ("http", "streamable-http", "streamable_http"):
-            # SDK renamed this between v1 (streamablehttp_client) and v2 (streamable_http_client);
-            # support both so the adapter works whichever `pip install mcp` gave the user.
             import mcp.client.streamable_http as _sh
-            http_client = getattr(_sh, "streamable_http_client", None) or _sh.streamablehttp_client
-            streams = await stack.enter_async_context(
-                http_client(server["url"], headers=server.get("headers") or None))
+            hdrs = server.get("headers") or None
+            newer = getattr(_sh, "streamable_http_client", None)
+            if newer is not None:
+                # Newer SDK: streamable_http_client(url, *, http_client=…) — NO headers kwarg.
+                # Auth headers must ride a pre-built client via create_mcp_http_client(headers=…).
+                kwargs = {}
+                if hdrs and hasattr(_sh, "create_mcp_http_client"):
+                    kwargs["http_client"] = await stack.enter_async_context(
+                        _sh.create_mcp_http_client(headers=hdrs))
+                streams = await stack.enter_async_context(newer(server["url"], **kwargs))
+            else:
+                # Older SDK: streamablehttp_client(url, headers=…) directly.
+                streams = await stack.enter_async_context(
+                    _sh.streamablehttp_client(server["url"], headers=hdrs))
             read, write = streams[0], streams[1]      # (read, write, get_session_id) in newer SDKs
         else:
             from mcp import StdioServerParameters

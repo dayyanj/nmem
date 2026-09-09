@@ -145,19 +145,28 @@ def build_agent_files(spec: dict) -> dict:
     llm = dict(spec.get("llm") or {})
     key = llm.pop("api_key", "")
     key_env = llm.get("api_key_env", "")   # a NAME, not a secret — stays in agent.yaml (backends.brain)
+    if key and not key_env:                # a key with no env name → default one so it's resolvable
+        key_env = f"{agent_id.upper()}_LLM_TOKEN"
+        llm["api_key_env"] = key_env
+    # embedding: strip the inline key, but leave an api_key_env so build_memory can resolve the
+    # stored secret (split_secrets keeps it under <AGENT>_EMBED_TOKEN).
+    emb = dict(spec.get("embedding") or {}) or None
+    emb_key = emb.pop("api_key", "") if emb else ""
+    if emb_key and emb is not None:
+        emb["api_key_env"] = f"{agent_id.upper()}_EMBED_TOKEN"
 
     return {
         "capabilities.env": render_capabilities_env(
             spec.get("enabled") or set(), agent_id=agent_id,
             outward_actions=spec.get("outward_actions", "explore")),
         "agent.yaml": render_agent_yaml(
-            agent_id=agent_id, llm=llm, embedding=spec.get("embedding"),
+            agent_id=agent_id, llm=llm, embedding=emb,
             symbol_graph=spec.get("symbol_graph"), pursuit=spec.get("pursuit"),
             db_url=spec.get("db_url"), actors=spec.get("actors"), autonomy=spec.get("autonomy"),
             hive=spec.get("hive")),
         "persona.yaml": yaml.safe_dump(persona.to_dict(), sort_keys=False) if persona else "",
         "secrets": split_secrets(agent_id=agent_id, llm_key=key, llm_key_env=key_env,
-                                 embed_key=(spec.get("embedding") or {}).get("api_key", "")),
+                                 embed_key=emb_key),
     }
 
 

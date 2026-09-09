@@ -24,6 +24,7 @@ callable; the response reports only the secret env-var NAMES, never their values
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable
 
@@ -31,6 +32,9 @@ log = logging.getLogger(__name__)
 
 # Providers we know how to build a backend for (mirrors agent_core.backend).
 _PROVIDERS = ("openai", "anthropic")
+# A path-safe agent id: alphanumeric start, then [A-Za-z0-9_-], max 64. Blocks ../, absolute
+# paths, dots, slashes, spaces, and shell/SQL metacharacters before it touches the filesystem.
+_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
 def _build_test_backend(spec: dict):
@@ -159,6 +163,12 @@ def make_studio_router(get_runtime: Callable | None = None, *, config_dir: str =
         agent_id = (spec or {}).get("agent_id", "").strip()
         if not agent_id:
             return {"ok": False, "error": "agent_id required"}
+        # Path-safety: agent_id becomes a directory + a DB name + a memory-author key. Reject
+        # anything that could escape config_dir (../, absolute, slashes, dots) or carry shell/SQL
+        # metacharacters — a strict slug, validated BEFORE any os.path.join / write.
+        if not _AGENT_ID_RE.match(agent_id):
+            return {"ok": False, "error": "agent_id must be 1-64 chars of [A-Za-z0-9_-], "
+                                          "starting alphanumeric (no slashes, dots, or spaces)"}
         # the writer auto-completes the dependency closure (so the on-disk env is always
         # dependency-complete); report what it pulled in beyond the user's explicit selection.
         enabled = {f for f in (spec.get("enabled") or []) if f in caps.CAPABILITIES}

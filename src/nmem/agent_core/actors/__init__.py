@@ -138,7 +138,10 @@ async def assemble_registry(spec: dict, *, backend=None) -> tuple[Any, Any]:
         load_plugins(plugins_dir, reg)
 
     async def aclose():
-        for c in closers:
+        # REVERSE order (LIFO): each MCP/A2A session opened nested AnyIO cancel scopes on the
+        # lifespan task; unwinding them out of order raises "Attempted to exit a cancel scope that
+        # isn't the current task's current cancel scope" and aborts the rest of the teardown.
+        for c in reversed(closers):
             try:
                 await c()
             except Exception as e:  # noqa: BLE001

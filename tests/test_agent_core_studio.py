@@ -97,6 +97,37 @@ def test_create_requires_agent_id():
     assert r.json()["ok"] is False
 
 
+def test_create_rejects_path_traversal_agent_ids(tmp_path):
+    # codex P1: agent_id becomes a filesystem path — ../, absolute, slashes, dots must be refused
+    # BEFORE any write, so a request can't escape config_dir.
+    c = _client(config_dir=str(tmp_path))
+    for bad in ["../evil", "/etc/passwd", "a/b", "..", ".", "has space", "x;rm", "..\\win"]:
+        r = c.post("/studio/create", json={"agent_id": bad, "enabled": [],
+                                           "llm": {"provider": "openai", "model": "m"}})
+        assert r.json()["ok"] is False, f"{bad!r} should be rejected"
+    # nothing was written outside a valid slug dir
+    assert not any(p.name in ("etc", "..") for p in tmp_path.iterdir())
+
+
+def test_secrets_env_is_shell_safe(tmp_path, monkeypatch):
+    # codex P1: secrets.env is SOURCED by entrypoint.sh — a value with shell metacharacters must
+    # be quoted so it can't execute, and must round-trip back to the original string.
+    monkeypatch.setattr("nmem.agent_core.studio_server.DATA_DIR", str(tmp_path))
+    from nmem.agent_core import studio_server as S
+    agent = tmp_path / "scout"
+    agent.mkdir()
+    (agent / "capabilities.env").write_text("")          # makes find_agent_dir() see it
+    S.store_secrets({"OPENAI_API_KEY": "$(touch /tmp/pwned)", "OTHER": "has 'quotes' and spaces"})
+    text = (agent / "secrets.env").read_text()
+    assert "$(touch" not in text.replace("'$(touch", "")   # the raw substitution isn't left unquoted
+    # round-trips: a second merge reads the quoted values back intact
+    import shlex
+    env = {k: shlex.split(v)[0] for k, v in
+           (ln.split("=", 1) for ln in text.splitlines() if "=" in ln and not ln.startswith("#"))}
+    assert env["OPENAI_API_KEY"] == "$(touch /tmp/pwned)"
+    assert env["OTHER"] == "has 'quotes' and spaces"
+
+
 def test_test_llm_bad_spec_is_reported_not_raised():
     # no model → a clean ok:false, and nothing that looks like a key echoed back
     r = _client().post("/studio/test-llm", json={"provider": "openai", "api_key": "sk-XYZ"})

@@ -47,6 +47,16 @@ async def build_memory(config: dict):
     db = config.get("db", {}) or {}
     emb = ncfg.get("embedding", {}) or {}
     llm = ncfg.get("llm", {}) or {}
+
+    def _key(d: dict, default: str = "") -> str:
+        # Resolve the provider key: an inline api_key, else the env var NAMED by api_key_env
+        # (the studio keeps keys in secrets.env, not agent.yaml — the writer strips inline keys,
+        # so a hosted LLM / remote embedder would otherwise reach here with no credential).
+        k = d.get("api_key")
+        if not k and d.get("api_key_env"):
+            k = os.environ.get(d["api_key_env"], "")
+        return k or default
+
     cfg = NmemConfig(
         database_url=_db_url(config, env_key=db.get("env_key"),
                              config_key=db.get("config_key", "default")),
@@ -54,14 +64,14 @@ async def build_memory(config: dict):
             "provider": emb.get("provider", "sentence-transformers"),
             "model": emb.get("model", "all-MiniLM-L6-v2"),
             "base_url": emb.get("base_url"),
-            "api_key": emb.get("api_key", ""),
+            "api_key": _key(emb),
             "dimensions": emb.get("dimensions", 384),
         },
         llm={
             "provider": llm.get("provider", "openai"),
             "base_url": llm.get("base_url"),
             "model": llm.get("model", ""),
-            "api_key": llm.get("api_key", "not-needed"),
+            "api_key": _key(llm, "not-needed"),
         },
         belief=ncfg.get("belief", {"default_trust": 0.5}),
         policy=ncfg.get("policy", {"writers": {"system"}, "max_chars_in_prompt": 4000}),

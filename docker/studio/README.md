@@ -21,6 +21,11 @@ docker compose up --build        # first run builds the image (installs CPU torc
 
 Then open <http://localhost:8080>. (If 8080 is taken: `STUDIO_HOST_PORT=18080 docker compose up`.)
 
+> **Security — this is an unauthenticated admin surface.** The wizard, `/studio/create`, and `/act`
+> have no auth, and Create can register a tool (e.g. an MCP stdio command) that runs in the container.
+> The compose file therefore binds the studio + viz ports to **loopback (`127.0.0.1`)** by default.
+> Only expose it beyond localhost behind your own authenticating proxy: `STUDIO_BIND=0.0.0.0 docker compose up`.
+
 The **LLM is external** — you bring your own endpoint and key:
 
 - **Local model** (vLLM / Ollama / LM Studio on your host): in the wizard set the endpoint to

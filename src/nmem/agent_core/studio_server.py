@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import signal
 
 log = logging.getLogger("nmem.studio")
@@ -50,22 +51,39 @@ def agent_exists() -> bool:
 
 
 # ── secret store + DB DSN wiring (wizard mode) ──────────────────────────────────
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
 def _merge_env_file(path: str, kv: dict) -> None:
-    """Merge KEY=VALUE pairs into an env file (create/replace keys, keep the rest). Values are
-    written raw on their own line — the entrypoint sources this file, so no inline comments."""
+    """Merge KEY=VALUE pairs into an env file (create/replace keys, keep the rest).
+
+    ``entrypoint.sh`` SOURCES this file, so values are written **shell-quoted** (``shlex.quote``)
+    and read back **unquoted** (``shlex.split``). Writing them raw would let a secret containing
+    shell metacharacters — e.g. an API key ``$(rm -rf /)`` typed into the wizard — execute on
+    boot, or silently corrupt any key with spaces/quotes. Env-var names are validated too."""
+    import shlex
+
     existing: dict = {}
     if os.path.exists(path):
         for line in open(path):
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, _, v = line.partition("=")
+            line = line.rstrip("\n")
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            try:
+                parts = shlex.split(v)                 # undo the shell-quoting we wrote
+                existing[k.strip()] = parts[0] if parts else ""
+            except ValueError:
                 existing[k.strip()] = v.strip()
     existing.update(kv)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as fh:
         fh.write("# secrets + DSN for this agent — sourced by entrypoint.sh, never committed\n")
         for k, v in existing.items():
-            fh.write(f"{k}={v}\n")
+            if not _ENV_NAME_RE.match(k):
+                log.warning("[studio] skipping invalid env-var name %r in secrets", k)
+                continue
+            fh.write(f"{k}={shlex.quote(str(v))}\n")    # shell-safe: source can't execute it
     os.chmod(path, 0o600)
 
 
@@ -137,9 +155,17 @@ async def _start_agent(spec: dict, agent_dir: str) -> None:
     secrets.env, and restart into agent mode. The restart is deferred so the HTTP response for
     Create flushes to the browser first."""
     import asyncio
+    import shutil
 
     agent_id = spec["agent_id"]
-    db = await provision_db(agent_id)
+    # Provision BEFORE committing to agent mode. write_agent already wrote the config that the
+    # entrypoint keys agent mode on, so if provisioning fails we must REMOVE it — else the
+    # restart would boot a broken agent (no DB) and restart-loop. Fail back to the wizard instead.
+    try:
+        db = await provision_db(agent_id)
+    except Exception:
+        shutil.rmtree(agent_dir, ignore_errors=True)
+        raise
     _merge_env_file(os.path.join(agent_dir, "secrets.env"),
                     {f"{agent_id.upper()}_DB_DSN_ASYNC": _agent_dsn(agent_id)})
     log.info("[studio] staged agent %s (db=%s); scheduling restart", agent_id, db)

@@ -25,9 +25,25 @@ def test_openapi_params_merge_path_and_body():
         "requestBody": {"content": {"application/json": {"schema": {
             "type": "object", "properties": {"note": {"type": "string"}}, "required": ["note"]}}}},
     }
-    schema = _openapi_params(op)
+    schema, query, header = _openapi_params(op, {})
     assert set(schema["properties"]) == {"id", "note"}
     assert set(schema["required"]) == {"id", "note"}
+    assert query == [] and header == []          # id is in:path (URL placeholder), note is body
+
+
+def test_openapi_params_resolves_refs_and_locations():
+    # $ref request body (as FastAPI emits) + a required query param + a header param.
+    doc = {"components": {"schemas": {"Note": {
+        "type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}}}
+    op = {
+        "parameters": [
+            {"name": "q", "in": "query", "required": True, "schema": {"type": "string"}},
+            {"name": "X-Token", "in": "header", "schema": {"type": "string"}}],
+        "requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Note"}}}},
+    }
+    schema, query, header = _openapi_params(op, doc)
+    assert "text" in schema["properties"]        # $ref resolved → body field present (was empty before)
+    assert query == ["q"] and header == ["X-Token"]   # locations retained for correct routing
 
 
 def test_safe_name():
@@ -102,6 +118,89 @@ def test_webhook_get_preserves_url_query_string():
             await fq.handler({})                                 # fixed query, no params → kept
         asyncio.run(go())
         assert seen == ["/time?city=Auckland", "/s?key=abc"]
+    finally:
+        srv.shutdown()
+
+
+def test_webhook_routes_query_and_header_params_by_location():
+    # codex P2: a POST's query/header params must NOT be buried in the JSON body.
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    seen = {}
+
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0)
+            seen["path"] = self.path
+            seen["token"] = self.headers.get("X-Token")
+            seen["body"] = json.loads(body) if body else {}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        from nmem.agent_core.actors.webhook import webhook_action
+
+        async def go():
+            a = webhook_action({"name": "mk", "url": f"http://127.0.0.1:{port}/items", "method": "POST",
+                                "query_params": ["q"], "header_params": ["X-Token"]})
+            await a.handler({"q": "hello", "X-Token": "sekret", "text": "body-field"})
+        asyncio.run(go())
+        assert seen["path"] == "/items?q=hello"      # query param → query string
+        assert seen["token"] == "sekret"             # header param → header
+        assert seen["body"] == {"text": "body-field"}  # only the real body field remains
+    finally:
+        srv.shutdown()
+
+
+def test_a2a_failed_task_state_is_not_success():
+    # codex P2: a JSON-RPC result carrying status.state=failed must NOT be rewarded as success.
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def _send(self, obj):
+            b = json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b)
+
+        def do_GET(self):
+            if "agent-card.json" in self.path:
+                self._send({"name": "flaky", "url": f"http://127.0.0.1:{self.server.server_address[1]}/rpc"})
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            self._send({"jsonrpc": "2.0", "id": req["id"], "result": {
+                "status": {"state": "failed", "message": {"parts": [{"kind": "text", "text": "nope"}]}}}})
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        from nmem.agent_core.actors.a2a import a2a_action
+
+        async def go():
+            action, _ = await a2a_action({"card_url": f"http://127.0.0.1:{srv.server_address[1]}"})
+            res = await action.handler({"task": "do it"})
+            assert res.success is False and res.task_success == 0.0   # failed task ≠ success
+        asyncio.run(go())
     finally:
         srv.shutdown()
 

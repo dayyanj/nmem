@@ -41,21 +41,35 @@ def webhook_action(spec: dict):
     headers = spec.get("headers") or {}
     timeout = float(spec.get("timeout") or 20.0)
     cap = _cap(method, spec.get("capability_class"))
+    # OpenAPI encodes each argument's location; these route named params to the query string or
+    # request headers regardless of method (so a POST's required query/header param isn't buried
+    # in the JSON body). Empty for a plain webhook → today's behavior.
+    query_ps = set(spec.get("query_params") or [])
+    header_ps = set(spec.get("header_params") or [])
 
     async def handler(params: dict) -> ActionResult:
         params = dict(params or {})
         target = url
-        for k in [k for k in params if "{" + k + "}" in target]:
+        for k in [k for k in params if "{" + k + "}" in target]:   # path (& query) placeholders
             target = target.replace("{" + k + "}", str(params.pop(k)))
+        req_headers = dict(headers)
+        for k in [k for k in params if k in header_ps]:            # in: header
+            req_headers[k] = str(params.pop(k))
+        # query: everything remaining for GET; the explicitly-tagged params for other methods.
+        query = params if method == "GET" else {k: params.pop(k) for k in list(params) if k in query_ps}
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
+                if query:
+                    # MERGE into the URL's existing query (httpx `params=` would REPLACE it,
+                    # dropping a fixed ?k=v or a {placeholder} already substituted into the query).
+                    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+                    u = urlsplit(target)
+                    q = parse_qsl(u.query, keep_blank_values=True) + [(k, str(v)) for k, v in query.items()]
+                    target = urlunsplit(u._replace(query=urlencode(q)))
                 if method == "GET":
-                    # `params or None`: an EMPTY dict makes httpx replace (drop) any query string
-                    # already on the URL — so a URL whose query held a {placeholder} (now filled)
-                    # would lose it. None leaves the URL's own query intact.
-                    r = await client.get(target, params=params or None, headers=headers)
+                    r = await client.get(target, headers=req_headers)
                 else:
-                    r = await client.request(method, target, json=params or None, headers=headers)
+                    r = await client.request(method, target, json=params or None, headers=req_headers)
             try:
                 data = r.json()
             except Exception:  # noqa: BLE001
@@ -90,24 +104,52 @@ def _openapi_base(doc: dict, spec_url: str | None) -> str:
     return ""
 
 
-def _openapi_params(op: dict) -> dict:
-    """Merge an operation's path/query parameters + JSON requestBody into one JSON Schema
-    object (what the LLM sees as the tool's arguments)."""
+def _resolve_ref(node, doc: dict):
+    """Resolve a local ``$ref`` (``#/components/schemas/Foo``) against the document. Non-local or
+    absent refs return the node unchanged. Bounded depth so a cyclic ref can't loop forever."""
+    for _ in range(8):
+        if not (isinstance(node, dict) and isinstance(node.get("$ref"), str) and node["$ref"].startswith("#/")):
+            return node
+        cur = doc
+        for part in node["$ref"][2:].split("/"):
+            cur = (cur or {}).get(part) if isinstance(cur, dict) else None
+        node = cur or {}
+    return node
+
+
+def _openapi_params(op: dict, doc: dict) -> tuple[dict, list, list]:
+    """Merge an operation's parameters + JSON requestBody into one JSON Schema, resolving any
+    ``$ref`` (FastAPI request bodies are `$ref`s — unresolved they'd yield an EMPTY schema so the
+    tool takes no args). Returns ``(schema, query_param_names, header_param_names)`` so the caller
+    can route each argument to its OpenAPI ``in:`` location instead of dumping all into the body."""
     props: dict = {}
     required: list = []
+    query_names: list = []
+    header_names: list = []
     for p in op.get("parameters", []) or []:
-        schema = p.get("schema") or {"type": "string"}
+        p = _resolve_ref(p, doc)
+        if not isinstance(p, dict) or not p.get("name"):
+            continue
+        schema = _resolve_ref(p.get("schema") or {"type": "string"}, doc)
         props[p["name"]] = {**schema, "description": p.get("description", "")}
         if p.get("required"):
             required.append(p["name"])
+        loc = p.get("in")
+        if loc == "query":
+            query_names.append(p["name"])
+        elif loc == "header":
+            header_names.append(p["name"])
+        # in:path is carried by the URL's {name} placeholder (handled in the webhook handler)
     body = (((op.get("requestBody") or {}).get("content") or {}).get("application/json") or {}).get("schema")
+    body = _resolve_ref(body, doc) if body else None
     if isinstance(body, dict) and body.get("properties"):
-        props.update(body["properties"])
+        for k, v in body["properties"].items():
+            props[k] = _resolve_ref(v, doc)
         required += list(body.get("required", []))
     out = {"type": "object", "properties": props}
     if required:
         out["required"] = sorted(set(required))
-    return out
+    return out, query_names, header_names
 
 
 async def openapi_actions(spec: dict) -> list:
@@ -132,13 +174,16 @@ async def openapi_actions(spec: dict) -> list:
             op_id = op.get("operationId") or f"{method}_{path}"
             if include and op_id not in include and path not in include:
                 continue
+            schema, query_names, header_names = _openapi_params(op, doc)
             actions.append(webhook_action({
                 "name": _safe_name(op_id),
                 "url": base.rstrip("/") + path,
                 "method": method,
                 "headers": headers,
                 "description": op.get("summary") or op.get("description") or f"{method.upper()} {path}",
-                "parameters": _openapi_params(op),
+                "parameters": schema,
+                "query_params": query_names,      # route these to the query string, not the body
+                "header_params": header_names,    # route these to request headers
             }))
     log.info("[actors] openapi import: %d operation(s) from %s", len(actions), spec.get("spec_url") or "inline")
     return actions
