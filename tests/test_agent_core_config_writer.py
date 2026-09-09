@@ -123,3 +123,25 @@ def test_build_agent_files_end_to_end():
     assert "sk-XYZ" not in files["agent.yaml"]
     assert files["secrets"] == {"OPENAI_API_KEY": "sk-XYZ"}
     assert "objectives" in files["persona.yaml"]
+
+
+def test_goals_agent_boots_single_driver_lifecycle_end_state():
+    """B-ii D2 end-state: an appliance agent WITH goals boots single-driver — capabilities.env sets
+    NMEM_SYM_GOAL_LIFECYCLE_EXTERNAL=true (dreamstate skips it) AND agent.yaml carries
+    goal_lifecycle.loop_enabled (the per-agent loop drives it). Pulled in via the dependency closure
+    (DRIVES_CREATE_GOALS requires GOALS_ENABLED). A goals-LESS agent gets neither (both inert)."""
+    import yaml
+
+    goals = build_agent_files({
+        "agent_id": "g", "enabled": {"NMEM_SYM_DRIVES_CREATE_GOALS"},   # requires GOALS_ENABLED → closure
+        "llm": {"provider": "openai", "base_url": "http://x/v1", "model": "m"},
+    })
+    assert "NMEM_SYM_GOAL_LIFECYCLE_EXTERNAL=true" in goals["capabilities.env"]
+    assert yaml.safe_load(goals["agent.yaml"])["goal_lifecycle"]["loop_enabled"] is True
+
+    nogoals = build_agent_files({
+        "agent_id": "n", "enabled": {"NMEM_SYM_SCHEMAS_ENABLED"},
+        "llm": {"provider": "openai", "base_url": "http://x/v1", "model": "m"},
+    })
+    assert "GOAL_LIFECYCLE_EXTERNAL" not in nogoals["capabilities.env"]
+    assert "goal_lifecycle" not in (yaml.safe_load(nogoals["agent.yaml"]) or {})

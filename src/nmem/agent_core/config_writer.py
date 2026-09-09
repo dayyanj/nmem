@@ -13,6 +13,18 @@ from nmem.agent_core.capabilities import CAPABILITIES, requires_closure
 # Flags whose value is not a boolean toggle (they carry a value when enabled).
 _VALUE_FLAGS = {"NMEM_SYM_DRIVES_OUTWARD_ACTIONS"}
 
+# End-state cadence for the per-agent goal-lifecycle tick (agent_core._lifecycle_loop). Tunable;
+# the lifecycle (impasse-tick / decompose / abandon-stale / reap) is not latency-sensitive.
+_LIFECYCLE_TICK_SECONDS = 3600
+
+
+def _flag_closure(enabled) -> set:
+    """The dependency-complete flag set (every enabled flag's transitive ``requires`` pulled in)."""
+    flags = set(enabled)
+    for f in list(flags):
+        flags |= requires_closure(f)
+    return flags
+
 
 def render_capabilities_env(enabled, *, agent_id: str = "", outward_actions: str = "explore") -> str:
     """Render ``capabilities.env`` from a set of enabled capability flags.
@@ -22,9 +34,7 @@ def render_capabilities_env(enabled, *, agent_id: str = "", outward_actions: str
     would crash env parsing), defaults omitted (only enabled flags written), grouped by
     capability area. Also auto-writes value-constraints the flags imply (e.g. RECALL_DRIVE
     needs RECALL_AGENT_ID = the agent's id)."""
-    flags = set(enabled)
-    for f in list(flags):
-        flags |= requires_closure(f)
+    flags = _flag_closure(enabled)
 
     # group order = order the groups first appear in the capability map
     order: list[str] = []
@@ -48,6 +58,14 @@ def render_capabilities_env(enabled, *, agent_id: str = "", outward_actions: str
         lines += [f"{f}={value_for(f)}" for f in gflags]
         lines.append("")
 
+    # B-ii D2 (end-state): agent_core's _lifecycle_loop is the per-agent goal-lifecycle driver, so
+    # the shared-graph dreamstate must NOT also run it (double-ticking the monotonic impasse counter).
+    # Paired with agent.yaml goal_lifecycle.loop_enabled=true. Only meaningful when goals exist.
+    if "NMEM_SYM_GOALS_ENABLED" in flags:
+        lines.append("# goal-lifecycle (agent_core owns it — dreamstate skips it)")
+        lines.append("NMEM_SYM_GOAL_LIFECYCLE_EXTERNAL=true")
+        lines.append("")
+
     # value-constraints implied by enabled flags
     extras = []
     if "NMEM_SYM_RECALL_DRIVE_ENABLED" in flags and agent_id:
@@ -66,6 +84,7 @@ def render_agent_yaml(
     db_env_key: str | None = None, db_url=None,
     belief: dict | None = None, policy: dict | None = None,
     actors: dict | None = None, autonomy: dict | None = None, hive: dict | None = None,
+    goal_lifecycle: dict | None = None,
 ) -> str:
     """Render the NON-SECRET ``agent.yaml`` (structural config for agent_core.build_memory /
     build_symbol_graph / AgentRuntime). API keys are NOT written here — they are secrets
@@ -112,6 +131,8 @@ def render_agent_yaml(
         doc["autonomy"] = autonomy
     if hive:
         doc["hive"] = hive
+    if goal_lifecycle:
+        doc["goal_lifecycle"] = goal_lifecycle
     return yaml.safe_dump(doc, sort_keys=False, default_flow_style=False)
 
 
@@ -155,6 +176,13 @@ def build_agent_files(spec: dict) -> dict:
     if emb_key and emb is not None:
         emb["api_key_env"] = f"{agent_id.upper()}_EMBED_TOKEN"
 
+    # B-ii D2 end-state: if this agent has goals, agent_core's _lifecycle_loop drives their lifecycle
+    # (paired with NMEM_SYM_GOAL_LIFECYCLE_EXTERNAL=true in capabilities.env). Spec may override.
+    goals_on = "NMEM_SYM_GOALS_ENABLED" in _flag_closure(spec.get("enabled") or set())
+    goal_lifecycle = spec.get("goal_lifecycle")
+    if goal_lifecycle is None and goals_on:
+        goal_lifecycle = {"loop_enabled": True, "tick_seconds": _LIFECYCLE_TICK_SECONDS}
+
     return {
         "capabilities.env": render_capabilities_env(
             spec.get("enabled") or set(), agent_id=agent_id,
@@ -163,7 +191,7 @@ def build_agent_files(spec: dict) -> dict:
             agent_id=agent_id, llm=llm, embedding=emb,
             symbol_graph=spec.get("symbol_graph"), pursuit=spec.get("pursuit"),
             db_url=spec.get("db_url"), actors=spec.get("actors"), autonomy=spec.get("autonomy"),
-            hive=spec.get("hive")),
+            hive=spec.get("hive"), goal_lifecycle=goal_lifecycle),
         "persona.yaml": yaml.safe_dump(persona.to_dict(), sort_keys=False) if persona else "",
         "secrets": split_secrets(agent_id=agent_id, llm_key=key, llm_key_env=key_env,
                                  embed_key=emb_key),
