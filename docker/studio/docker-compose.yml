@@ -28,6 +28,12 @@ services:
       POSTGRES_USER: nmem
       POSTGRES_PASSWORD: nmem
       NMEM_AGENT_DB: agent_nmem            # fixed single-agent DB (so viz knows the URL up-front)
+      # AUTH: set STUDIO_AUTH_PASSWORD (your shell or a .env) to REQUIRE login on the whole admin
+      # surface — do this before exposing the studio beyond loopback (then STUDIO_BIND=0.0.0.0 is safe).
+      # Unset = unauthenticated (loopback only). STUDIO_COOKIE_SECURE=1 when serving over HTTPS.
+      STUDIO_AUTH_PASSWORD: ${STUDIO_AUTH_PASSWORD:-}
+      STUDIO_AUTH_USER: ${STUDIO_AUTH_USER:-admin}
+      STUDIO_COOKIE_SECURE: ${STUDIO_COOKIE_SECURE:-}
       # live cognition → the bundled nmem-viz hub (agent mode streams deltas to its /ingest)
       NMEM_SYM_VIZ_ENABLED: "1"
       NMEM_VIZ_INGEST_URL: http://viz:5174/ingest

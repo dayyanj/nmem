@@ -60,6 +60,10 @@ services:
       POSTGRES_USER: nmem
       POSTGRES_PASSWORD: nmem
       NMEM_AGENT_DB: hive_world                       # ← the SHARED hive DB (identical across members)
+      # AUTH (per member): set STUDIO_AUTH_PASSWORD before exposing any wizard beyond loopback.
+      STUDIO_AUTH_PASSWORD: ${STUDIO_AUTH_PASSWORD:-}
+      STUDIO_AUTH_USER: ${STUDIO_AUTH_USER:-admin}
+      STUDIO_COOKIE_SECURE: ${STUDIO_COOKIE_SECURE:-}
       NMEM_SYM_VIZ_ENABLED: "1"
       NMEM_VIZ_INGEST_URL: http://viz:5174/ingest
       NMEM_VIZ_PUBLIC_URL: "http://localhost:${VIZ_HOST_PORT:-5174}/"

@@ -53,5 +53,6 @@ restarts into agent mode and joins `hive_world`. The shared brain is at http://l
 - **Keeper role vs the lock:** the wizard's "Keeper" choice is a *willingness* — it makes that member
   contend for the lock. The lock decides the actual keeper, so a hive with zero explicit keepers has
   no graph-global maintenance (fine for a pure contributor swarm), and one with several has exactly one.
-- **Security:** each wizard/`/act` is an unauthenticated admin surface, bound to `127.0.0.1` by
-  default. Expose beyond localhost only behind your own auth (`STUDIO_BIND=0.0.0.0`).
+- **Security:** each member's wizard/`/act` is an admin surface. Set `STUDIO_AUTH_PASSWORD` (applied to
+  every member) to require login before exposing any of them; unset = unauthenticated (keep on
+  `127.0.0.1`). See [`../studio`](../studio/) for the auth details.

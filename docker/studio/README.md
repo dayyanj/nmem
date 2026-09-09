@@ -21,10 +21,17 @@ docker compose up --build        # first run builds the image (installs CPU torc
 
 Then open <http://localhost:8080>. (If 8080 is taken: `STUDIO_HOST_PORT=18080 docker compose up`.)
 
-> **Security — this is an unauthenticated admin surface.** The wizard, `/studio/create`, and `/act`
-> have no auth, and Create can register a tool (e.g. an MCP stdio command) that runs in the container.
-> The compose file therefore binds the studio + viz ports to **loopback (`127.0.0.1`)** by default.
-> Only expose it beyond localhost behind your own authenticating proxy: `STUDIO_BIND=0.0.0.0 docker compose up`.
+> **Security — the admin surface can create + run agents and register container-executing tools.**
+> By default it is **unauthenticated** and the compose binds the studio + viz ports to **loopback
+> (`127.0.0.1`)**. To expose it beyond localhost, turn on **login** first:
+> ```bash
+> STUDIO_AUTH_PASSWORD=change-me STUDIO_BIND=0.0.0.0 docker compose up
+> ```
+> That gates the whole surface (wizard, `/studio/*`, `/admin/*`, `/act`, `/chat`, `/tools`) behind a
+> username + password → an HttpOnly, SameSite=Strict session cookie, with CSRF on every mutation.
+> Default user is `admin` (`STUDIO_AUTH_USER` to change); set `STUDIO_COOKIE_SECURE=1` when serving over
+> HTTPS. With no password set the surface stays open — keep it on loopback, or front it with your own
+> auth proxy.
 
 The **LLM is external** — you bring your own endpoint and key:
 
