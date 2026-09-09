@@ -209,11 +209,16 @@ every target inherits it:
   host-side (michelle's `_on_challenge` just injects the supplied `continuity` into her own system prompt).
   agent_core is the source; the agent is the target.
 
-**Phase 2 — narrative_self + delta (still michelle)**
-- Add `nmem_narrative_self` + `nmem_continuity_checkpoint` (schema v5→6; codex review before landing).
+**Phase 2 — narrative_self + delta (shipped)**
+- Add `nmem_narrative_self` + `nmem_continuity_checkpoint` (schema v5→6; codex review before landing). ✅
 - Narrative writer in per-agent `consolidation.run_nightly_synthesis` with provenance + bounded length
-  + periodic full reconstruction + consistency check (Gap 2).
-- Introspective + external `sleep_delta` at boot; precedence + staleness + long-gap boot mode (Gap 4).
+  + periodic full reconstruction + consistency check (Gap 2). ✅
+- **Returning-after-a-gap (Gap 4 + Gap 7), shipped:** `wake()` measures elapsed since the last turn
+  (anchor = `checkpoint.updated_at`, no new schema); past `_LONG_GAP_SECONDS` (12h) the assembler adds a
+  reorientation frame + age-qualifies the immediate lane (staleness/long-gap boot), and `delta_since()`
+  renders "what changed while away" (cross-agent shared writes + the agent's own new-journal count). Gated
+  on the gap → zero cost in continuous operation. External delta only for now; an introspective
+  dreamstate-delta ("what consolidation changed") is a later add (no cheap per-agent read at wake yet).
 
 **Phase 3 — measure & tune**
 - Run the eval suite vs baseline. Prove (or disprove) the layer beats a 500-token summary before
