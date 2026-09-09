@@ -198,9 +198,12 @@ every target inherits it:
   reasoning/prompt seam to inject into.
 - **Shared helpers.** `continuity_block()` / `record_turn_checkpoint()` / `record_action_checkpoint()`
   live in `agent_core/continuity.py` (re-exported from `chat`), so chat/peer/comms consume ONE tested path.
-- **Goal pursuit (remaining).** The pursuit loop (`GoalPursuit`, in the separate `nmem_act` package) is
-  the other autonomous-turn seam — a checkpoint on each pursued goal + continuity into the proposal. Left
-  as a follow-up because it crosses package boundaries.
+- **Goal pursuit — `agent_core/actuation.py::build_experiential_sink`** (wired). Pursuing a goal is an
+  action: the experiential sink records each completed pursuit as an action checkpoint (WRITE, generic to
+  every acting agent). The READ (continuity into the proposal) stays host-side in the agent's
+  `build_proposal`, since the proposal schema is host-defined (michelle's `_build_pursuit_proposal` folds
+  it in). `nmem_act` itself stays **zero-dependency** — continuity rides its host seams (`build_proposal`,
+  `OutcomeSink`), never an `import nmem`.
 - **Targets consume via the seams, not bespoke wiring.** An agent routes its turns through the agent_core
   seams (chat `converse`, `PeerExchange`, `CommsLoop`) and inherits continuity; agent-specific voice stays
   host-side (michelle's `_on_challenge` just injects the supplied `continuity` into her own system prompt).
