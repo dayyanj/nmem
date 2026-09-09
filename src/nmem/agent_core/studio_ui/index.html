@@ -366,9 +366,9 @@ const TEMPLATES = {
   researcher:{nm:"Scout", aid:"scout",
     obj:"Continuously build an accurate model of your domain from primary sources.\nNever let an unknown drive a guessed answer. Seek it out and verify.",
     ent:"your domain, its primary sources"},
-  critic:{nm:"Michelle", aid:"michelle",
-    obj:"Challenge the reasoning of your peers: surface the missed assumption and the unpriced failure mode.\nOffer a genuinely different view; agree plainly when it's warranted.\nApply human psychology where it changes the answer.\nSeek and verify knowledge rather than confabulate.",
-    ent:"the peers you challenge, the domain you reason about"},
+  critic:{nm:"Critic", aid:"critic",
+    obj:"Challenge the reasoning you're given: surface the missed assumption and the unpriced risk.\nOffer a genuinely different view; agree plainly when it's warranted.\nSeek and verify rather than confabulate.",
+    ent:"the work you review, the domain you reason about"},
   support:{nm:"Ada", aid:"ada",
     obj:"Answer grounded in the product knowledge base; never invent capabilities.\nEscalate honestly when you can't verify something.\nBe concise and specific.",
     ent:"the product, its documentation, common user tasks"},
@@ -420,7 +420,7 @@ function renderEnv(){const on=[...enabled].sort();
   document.getElementById('env').innerHTML=html;}
 function renderTemplates(){const host=document.getElementById('tmpl');
   const meta={researcher:["Researcher","Learns a domain from primary sources; verifies rather than guesses."],
-    critic:["Diverse-prior critic","Challenges reasoning and offers a genuinely different view (michelle-style)."],
+    critic:["Critic","Challenges reasoning and surfaces the missed assumption or unpriced risk — an independent second opinion."],
     support:["Support responder","Answers grounded in a knowledge base and escalates honestly."]};
   for(const[k,[nm,bl]]of Object.entries(meta)){const b=document.createElement('button');b.className='pick';b.dataset.t=k;
     b.setAttribute('aria-pressed',k==='researcher');b.onclick=()=>applyTemplate(k);

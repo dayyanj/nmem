@@ -45,6 +45,15 @@ def test_wizard_spa_authors_hive_membership(tmp_path):
     assert "[hidden]{display:none!important}" in body
 
 
+def test_wizard_spa_has_no_internal_terminology():
+    # the shipped wizard must not leak internal names/jargon (peer agents, fleet, our framing) — a
+    # public user wouldn't parse them. Guard against regressions in the templates/copy.
+    from nmem.agent_core.studio import studio_index_html
+    html = studio_index_html().lower()
+    for term in ("michelle", "dj-ai", "djai", "diverse-prior", "refinery"):
+        assert term not in html, f"internal term '{term}' leaked into the wizard UI"
+
+
 def test_catalog_exposes_map_presets_and_groups():
     r = _client().get("/studio/catalog")
     assert r.status_code == 200
