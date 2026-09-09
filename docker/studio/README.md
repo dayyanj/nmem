@@ -73,6 +73,30 @@ Named volumes survive `docker compose down`:
 - `pg_data` — the agent's memory + symbol graph.
 - `redis_data` — reserved for comms.
 
+## Backup, restore & upgrade
+
+**Back up / restore** the two pieces of state that aren't in the image — the database (memory + symbol
+graph) and the agent config volume (`/data`, incl. `secrets.env`) — with `./backup.sh` (stack must be up):
+
+```bash
+./backup.sh backup                     # → ./backups/nmem-studio-agent_nmem-<UTC>.tgz
+./backup.sh restore ./backups/nmem-studio-agent_nmem-<UTC>.tgz    # drop-and-restore DB + /data, then restart
+```
+
+The archive contains `secrets.env` — keep it at least as protected as the appliance. (For a hive, back
+up the shared DB + each member's `/data` the same way.)
+
+**Upgrade** — the agent's schema self-migrates (forward-only) on boot, so upgrading is pull-and-restart:
+
+```bash
+./backup.sh backup                     # always snapshot first
+docker compose pull && docker compose up -d      # new image, SAME volumes → migrations run at startup
+```
+
+State lives in the named volumes, so a new image reuses your existing agent + memory. Roll back by
+restoring the pre-upgrade archive against the previous image tag. Pin a version
+(`registry.spwig.com/nmem-studio:1.0.0`) rather than `:latest` if you want upgrades to be deliberate.
+
 ## Notes
 
 - **One agent per appliance.** Capability flags are process-global (read from env at import), so
