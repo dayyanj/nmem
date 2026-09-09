@@ -154,6 +154,24 @@ def test_openapi_inherits_path_item_params_and_resolves_nested_refs():
     asyncio.run(go())
 
 
+def test_openapi_resolves_request_body_object_ref():
+    # codex round-3: the requestBody OBJECT itself can be a $ref, not just its schema.
+    doc = {
+        "components": {
+            "requestBodies": {"NoteBody": {"content": {"application/json": {
+                "schema": {"$ref": "#/components/schemas/Note"}}}}},
+            "schemas": {"Note": {"type": "object", "required": ["text"],
+                                 "properties": {"text": {"type": "string"}}}}},
+        "paths": {"/notes": {"post": {"operationId": "add_note",
+                                      "requestBody": {"$ref": "#/components/requestBodies/NoteBody"}}}},
+    }
+
+    async def go():
+        actions = await openapi_actions({"spec": doc, "base_url": "http://svc"})
+        assert "text" in actions[0].parameters["properties"]   # body no longer silently empty
+    asyncio.run(go())
+
+
 def test_webhook_url_encodes_path_placeholder_values():
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer

@@ -33,32 +33,50 @@ class VizBridge:
     """Forwards nmem-sym cognition events (and, if available, nmem memory-tier events) to a
     nmem-viz hub's /ingest endpoint, stamping each with the agent's system id."""
 
-    def __init__(self, ingest_url: str, system_id: str):
+    def __init__(self, ingest_url: str, system_id: str, *, maxsize: int = 1000):
+        import asyncio
         import httpx
         self.ingest_url = ingest_url
         self.system_id = system_id
         self._client = httpx.AsyncClient(timeout=2.0)
         self._sym_handler = None
         self._closed = False
+        # Emit on a BOUNDED background queue, NEVER inline: nmem's MemorySystem._emit awaits its
+        # handlers, so awaiting the POST here would block every journal/LTM/shared write on the viz
+        # HTTP round-trip (up to the 2s timeout) whenever the viz hub stalls. Handlers just enqueue
+        # (instant); one drain task does the I/O; a full queue drops events rather than back-pressure
+        # cognition.
+        self._q: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
+        self._drain_task = asyncio.ensure_future(self._drain())
 
-    async def _post(self, evt: dict) -> None:
-        if self._closed:
-            return
+    def _enqueue(self, evt: dict) -> None:
         try:
-            await self._client.post(self.ingest_url, json=evt)
-        except Exception:  # noqa: BLE001 — viz is best-effort; never surface into cognition
+            self._q.put_nowait(evt)
+        except Exception:  # noqa: BLE001 — QueueFull → drop (best-effort viz)
             pass
 
+    async def _drain(self) -> None:
+        while True:
+            evt = await self._q.get()
+            try:
+                if evt is None:                    # shutdown sentinel
+                    return
+                await self._client.post(self.ingest_url, json=evt)
+            except Exception:  # noqa: BLE001 — viz is best-effort; never surface into cognition
+                pass
+            finally:
+                self._q.task_done()
+
     def _sym(self, event_type: str, data: dict):
-        # nmem-sym's viz_emit create_tasks any coroutine a handler returns, so return the POST.
-        return self._post({"ts": time.time(), "source": "nmem-sym", "type": event_type,
-                           "data": {**(data or {}), "_system": self.system_id}})
+        # Enqueue + return None so nmem-sym's viz_emit doesn't create_task a coroutine (we own the I/O).
+        self._enqueue({"ts": time.time(), "source": "nmem-sym", "type": event_type,
+                       "data": {**(data or {}), "_system": self.system_id}})
 
     def _make_nmem(self, event_type: str):
-        async def handler(data):
+        async def handler(data):                   # awaited inline by mem._emit → must be instant
             payload = dict(data) if isinstance(data, dict) else {}
             payload["_system"] = self.system_id
-            await self._post({"ts": time.time(), "source": "nmem", "type": event_type, "data": payload})
+            self._enqueue({"ts": time.time(), "source": "nmem", "type": event_type, "data": payload})
         return handler
 
     def attach(self, mem) -> None:
@@ -75,6 +93,7 @@ class VizBridge:
                     log.debug("[viz] could not hook nmem event %s: %s", et, e)
 
     async def close(self) -> None:
+        import asyncio
         self._closed = True
         if self._sym_handler is not None:
             try:
@@ -82,6 +101,11 @@ class VizBridge:
                 viz_off(self._sym_handler)
             except Exception:  # noqa: BLE001
                 pass
+        self._enqueue(None)               # stop the drain
+        try:
+            await asyncio.wait_for(self._drain_task, timeout=3.0)
+        except Exception:  # noqa: BLE001
+            self._drain_task.cancel()
         try:
             await self._client.aclose()
         except Exception:  # noqa: BLE001

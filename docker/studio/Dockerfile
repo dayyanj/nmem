@@ -27,7 +27,7 @@ COPY nmem-exchange /src/nmem-exchange
 
 RUN pip install --upgrade pip \
  && pip install torch --index-url https://download.pytorch.org/whl/cpu \
- && pip install "/src/nmem[openai]" /src/nmem-sym /src/nmem-act /src/nmem-exchange \
+ && pip install "/src/nmem[openai,anthropic]" /src/nmem-sym /src/nmem-act /src/nmem-exchange \
  && pip install "uvicorn[standard]" fastapi asyncpg pyyaml \
  && pip install mcp    # actor layer: MCP client (webhook/a2a/plugins need no extra deps)
 

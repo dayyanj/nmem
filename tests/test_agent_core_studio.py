@@ -114,12 +114,41 @@ def test_create_reports_failure_when_start_agent_raises(tmp_path):
     assert not (tmp_path / "scout").exists()              # torn down, not left half-created
 
 
+def test_create_aborts_and_rolls_back_when_store_secrets_fails(tmp_path):
+    # codex round-3: a secret-store failure must also abort + roll back (committing to agent mode
+    # without the credentials would boot a keyless, broken agent) — the sibling of start_agent.
+    def bad_store(secrets):
+        raise RuntimeError("vault down")
+
+    c = _client(config_dir=str(tmp_path), store_secrets=bad_store)
+    r = c.post("/studio/create", json={
+        "agent_id": "scout", "enabled": [], "persona": {"agent_id": "scout", "objectives": ["x"]},
+        "llm": {"provider": "openai", "base_url": "http://x/v1", "model": "m",
+                "api_key": "sk-x", "api_key_env": "OPENAI_API_KEY"}})
+    body = r.json()
+    assert body["ok"] is False and "vault down" in body["error"]
+    assert not (tmp_path / "scout").exists()              # rolled back, not left keyless
+
+
+def test_create_rejects_brain_without_model_or_base_url(tmp_path):
+    # codex round-3: validate the brain before committing agent mode.
+    c = _client(config_dir=str(tmp_path))
+    no_model = c.post("/studio/create", json={"agent_id": "scout", "enabled": [],
+                                              "llm": {"provider": "openai", "base_url": "http://x/v1"}}).json()
+    no_url = c.post("/studio/create", json={"agent_id": "scout", "enabled": [],
+                                            "llm": {"provider": "openai", "model": "m"}}).json()
+    assert no_model["ok"] is False and "model" in no_model["error"]
+    assert no_url["ok"] is False and "base_url" in no_url["error"]
+
+
 def test_create_rejects_path_traversal_agent_ids(tmp_path):
     # codex P1: agent_id becomes a filesystem path — ../, absolute, slashes, dots must be refused
     # BEFORE any write, so a request can't escape config_dir.
     c = _client(config_dir=str(tmp_path))
-    # includes "my-agent": a hyphen is invalid in the derived env-var names (<AGENT>_DB_DSN_ASYNC)
-    for bad in ["../evil", "/etc/passwd", "a/b", "..", ".", "has space", "x;rm", "..\\win", "my-agent"]:
+    # "my-agent" (hyphen) + "1scout" (leading digit) both yield INVALID shell var names in the
+    # derived <AGENT>_DB_DSN_ASYNC, which _merge_env_file would skip → missing DSN → boot loop.
+    for bad in ["../evil", "/etc/passwd", "a/b", "..", ".", "has space", "x;rm", "..\\win",
+                "my-agent", "1scout"]:
         r = c.post("/studio/create", json={"agent_id": bad, "enabled": [],
                                            "llm": {"provider": "openai", "model": "m"}})
         assert r.json()["ok"] is False, f"{bad!r} should be rejected"

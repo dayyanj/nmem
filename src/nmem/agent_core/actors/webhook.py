@@ -166,7 +166,10 @@ def _openapi_params(op: dict, doc: dict, inherited: list | None = None) -> tuple
         elif loc == "header":
             header_names.append(p["name"])
         # in:path is carried by the URL's {name} placeholder (handled in the webhook handler)
-    body = (((op.get("requestBody") or {}).get("content") or {}).get("application/json") or {}).get("schema")
+    # The requestBody OBJECT itself can be a $ref (#/components/requestBodies/…) — resolve it
+    # before reading .content, else the whole body (and its args) silently disappears.
+    request_body = _resolve_ref(op.get("requestBody") or {}, doc)
+    body = ((request_body.get("content") or {}).get("application/json") or {}).get("schema")
     body = _deep_resolve(body, doc) if body else None
     if isinstance(body, dict) and body.get("properties"):
         props.update(body["properties"])

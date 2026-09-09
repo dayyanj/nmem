@@ -32,11 +32,11 @@ log = logging.getLogger(__name__)
 
 # Providers we know how to build a backend for (mirrors agent_core.backend).
 _PROVIDERS = ("openai", "anthropic")
-# A path-safe agent id: alphanumeric start, then [A-Za-z0-9_], max 64. Blocks ../, absolute
-# paths, dots, slashes, spaces, and shell/SQL metacharacters before it touches the filesystem.
-# NO hyphen: agent_id also becomes an env-var-name component (<AGENT>_DB_DSN_ASYNC etc.), and a
-# hyphen there is an invalid shell name that _merge_env_file would skip → missing DSN → boot loop.
-_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_]{0,63}$")
+# A path-safe agent id: LETTER start, then [A-Za-z0-9_], max 64. Blocks ../, absolute paths,
+# dots, slashes, spaces, and shell/SQL metacharacters before it touches the filesystem. It also
+# becomes an env-var-name component (<AGENT>_DB_DSN_ASYNC etc.), so no hyphen AND no leading digit
+# (both make an invalid shell name that _merge_env_file skips → missing DSN → boot loop).
+_AGENT_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 
 
 def _build_test_backend(spec: dict):
@@ -170,7 +170,14 @@ def make_studio_router(get_runtime: Callable | None = None, *, config_dir: str =
         # metacharacters — a strict slug, validated BEFORE any os.path.join / write.
         if not _AGENT_ID_RE.match(agent_id):
             return {"ok": False, "error": "agent_id must be 1-64 chars of [A-Za-z0-9_], "
-                                          "starting alphanumeric (no hyphens, slashes, dots, or spaces)"}
+                                          "starting with a letter (no leading digit, hyphens, slashes, dots, or spaces)"}
+        # Validate the reasoning brain BEFORE committing to agent mode — a config the runtime can't
+        # build a backend from would boot a non-reasoning agent (or loop). Mirror build_backend's needs.
+        llm = (spec or {}).get("llm") or {}
+        if not llm.get("model"):
+            return {"ok": False, "error": "llm.model is required (the reasoning brain)"}
+        if (llm.get("provider") or "openai").lower() != "anthropic" and not llm.get("base_url"):
+            return {"ok": False, "error": "llm.base_url is required for an OpenAI-compatible brain"}
         # the writer auto-completes the dependency closure (so the on-disk env is always
         # dependency-complete); report what it pulled in beyond the user's explicit selection.
         enabled = {f for f in (spec.get("enabled") or []) if f in caps.CAPABILITIES}
@@ -193,7 +200,12 @@ def make_studio_router(get_runtime: Callable | None = None, *, config_dir: str =
                 store_secrets(secrets)
                 stored = True
             except Exception as e:  # noqa: BLE001
+                # Committing to agent mode WITHOUT the secrets would boot a keyless, broken agent
+                # (or loop). Roll back the config and fail the create so the operator can retry.
                 log.warning("[studio] store_secrets failed for %s: %s", agent_id, e, exc_info=True)
+                import shutil
+                shutil.rmtree(agent_dir, ignore_errors=True)
+                return {"ok": False, "agent_id": agent_id, "error": f"could not store secrets: {e}"}
 
         started = False
         if start_agent is not None:
