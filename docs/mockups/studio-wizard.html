@@ -367,6 +367,18 @@ const TEMPLATES={
   support:{nm:"Ada",aid:"ada",
     obj:"Answer grounded in the product knowledge base; never invent capabilities.\nEscalate honestly when you can't verify something.\nBe concise and specific.",
     ent:"the product, its documentation, common user tasks"},
+  assistant:{nm:"Assistant",aid:"assistant",
+    obj:"Help me get things done: look things up, draft, and use the tools you're given.\nAsk before anything irreversible; act directly on the routine.\nRemember how I like things done and apply it next time.",
+    ent:"my tools, my recurring tasks, how I prefer things done"},
+  analyst:{nm:"Watcher",aid:"watcher",
+    obj:"Continuously watch your domain and notice what changed.\nSurface what matters, and why, before it's asked for.\nSeek out the unknown rather than guess at it.",
+    ent:"the domain you watch, its sources and signals"},
+  teammate:{nm:"Teammate",aid:"teammate",
+    obj:"Contribute to a shared understanding alongside other agents.\nDo your part and keep your own goals; build on what the others learn.",
+    ent:"the shared domain, the teammates you work alongside"},
+  companion:{nm:"Companion",aid:"companion",
+    obj:"Be a thoughtful companion who remembers our conversations.\nListen first, and pick up where we left off.\nNotice how things are going for me over time.",
+    ent:"our conversations, what matters to you, how things change over time"},
 };
 let enabled=new Set(), preset=null;
 
@@ -411,6 +423,10 @@ function renderEnv(){const on=[...enabled].sort();
   document.getElementById('env').innerHTML=html;}
 function renderTemplates(){const host=document.getElementById('tmpl');
   const meta={researcher:["Researcher","Learns a domain from primary sources; verifies rather than guesses."],
+    assistant:["Assistant","Gets things done with the tools you give it — the hands-on agent."],
+    analyst:["Analyst / watcher","Watches a domain and surfaces what changed and why it matters."],
+    teammate:["Team member","Joins a shared world-model with other agents (a hive)."],
+    companion:["Companion","A reflective companion that remembers your context over time."],
     critic:["Critic","Challenges reasoning and surfaces the missed assumption or unpriced risk — an independent second opinion."],
     support:["Support responder","Answers grounded in a knowledge base and escalates honestly."]};
   for(const[k,[nm,bl]]of Object.entries(meta)){const b=document.createElement('button');b.className='pick';b.dataset.t=k;

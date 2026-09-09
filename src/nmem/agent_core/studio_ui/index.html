@@ -363,15 +363,30 @@ const GROUP_LABEL = {drives:"Drives", concerns:"Concerns", goals:"Goals", learni
   comms:"Surprise to communication", recall:"Recall", graph:"World-model graph",
   prediction:"Prediction & hypotheses", obligations:"Obligations", meta:"Meta / self-improvement"};
 const TEMPLATES = {
-  researcher:{nm:"Scout", aid:"scout",
+  researcher:{nm:"Scout", aid:"scout", preset:"reflective",
     obj:"Continuously build an accurate model of your domain from primary sources.\nNever let an unknown drive a guessed answer. Seek it out and verify.",
     ent:"your domain, its primary sources"},
-  critic:{nm:"Critic", aid:"critic",
+  critic:{nm:"Critic", aid:"critic", preset:"reflective",
     obj:"Challenge the reasoning you're given: surface the missed assumption and the unpriced risk.\nOffer a genuinely different view; agree plainly when it's warranted.\nSeek and verify rather than confabulate.",
     ent:"the work you review, the domain you reason about"},
-  support:{nm:"Ada", aid:"ada",
+  support:{nm:"Ada", aid:"ada", preset:"memory",
     obj:"Answer grounded in the product knowledge base; never invent capabilities.\nEscalate honestly when you can't verify something.\nBe concise and specific.",
     ent:"the product, its documentation, common user tasks"},
+  assistant:{nm:"Assistant", aid:"assistant", preset:"full_cognition", autonomy:"tiered",
+    obj:"Help me get things done: look things up, draft, and use the tools you're given.\nAsk before anything irreversible; act directly on the routine.\nRemember how I like things done and apply it next time.",
+    ent:"my tools, my recurring tasks, how I prefer things done",
+    tool:{_type:"webhook", name:"get_weather", method:"GET",
+          url:"https://api.example.com/weather?city={city}",
+          parameters:{type:"object", properties:{city:{type:"string"}}}}},
+  analyst:{nm:"Watcher", aid:"watcher", preset:"reflective",
+    obj:"Continuously watch your domain and notice what changed.\nSurface what matters, and why, before it's asked for.\nSeek out the unknown rather than guess at it.",
+    ent:"the domain you watch, its sources and signals"},
+  teammate:{nm:"Teammate", aid:"teammate", preset:"full_cognition", hive:"shared_world",
+    obj:"Contribute to a shared understanding alongside other agents.\nDo your part and keep your own goals; build on what the others learn.",
+    ent:"the shared domain, the teammates you work alongside"},
+  companion:{nm:"Companion", aid:"companion", preset:"reflective",
+    obj:"Be a thoughtful companion who remembers our conversations.\nListen first, and pick up where we left off.\nNotice how things are going for me over time.",
+    ent:"our conversations, what matters to you, how things change over time"},
 };
 
 // ── capability graph (dependency-safe toggling; mirrors config_writer's closure) ──
@@ -419,15 +434,29 @@ function renderEnv(){const on=[...enabled].sort();
     html+=`<span class="c">\n# values\n</span><span class="k">NMEM_SYM_RECALL_AGENT_ID</span>=<span class="v">${aid}</span>\n`;}
   document.getElementById('env').innerHTML=html;}
 function renderTemplates(){const host=document.getElementById('tmpl');
-  const meta={researcher:["Researcher","Learns a domain from primary sources; verifies rather than guesses."],
+  const meta={
+    researcher:["Researcher","Learns a domain from primary sources; verifies rather than guesses."],
     critic:["Critic","Challenges reasoning and surfaces the missed assumption or unpriced risk — an independent second opinion."],
-    support:["Support responder","Answers grounded in a knowledge base and escalates honestly."]};
+    support:["Support responder","Answers grounded in a knowledge base and escalates honestly."],
+    assistant:["Assistant","Gets things done with the tools you give it — the hands-on agent."],
+    analyst:["Analyst / watcher","Watches a domain and surfaces what changed and why it matters."],
+    teammate:["Team member","Joins a shared world-model with other agents (a hive)."],
+    companion:["Companion","A reflective companion that remembers your context over time."]};
   for(const[k,[nm,bl]]of Object.entries(meta)){const b=document.createElement('button');b.className='pick';b.dataset.t=k;
     b.setAttribute('aria-pressed',k==='researcher');b.onclick=()=>applyTemplate(k);
     b.innerHTML=`<div class="nm">${nm}</div><div class="bl">${bl}</div>`;host.appendChild(b);}}
-function applyTemplate(k){const t=TEMPLATES[k];document.getElementById('nm').value=t.nm;document.getElementById('aid').value=t.aid;
+// applyTemplate seeds a COHERENT, runnable starting point: persona + the matching capability preset,
+// the autonomy tier, an example tool (so the actor step isn't empty), and hive mode — not just text.
+function applyTemplate(k){const t=TEMPLATES[k];
+  document.getElementById('nm').value=t.nm;document.getElementById('aid').value=t.aid;
   document.getElementById('obj').value=t.obj;document.getElementById('ent').value=t.ent;
   document.querySelectorAll('#tmpl .pick').forEach(b=>b.setAttribute('aria-pressed',b.dataset.t===k));
+  if(t.preset&&CATALOG)selectPreset(t.preset);                 // matching capability set
+  const au=document.getElementById('autonomy'); if(au)au.value=t.autonomy||'read_only';
+  TOOLS=TOOLS.filter(x=>!x._seeded);                           // drop a prior template's example tool
+  if(t.tool)TOOLS.push({...t.tool,_seeded:true});             // seed this one's (if any)
+  renderToolChips();
+  const hm=document.getElementById('hive_mode'); if(hm){hm.value=t.hive||'isolated';onHiveMode();}
   if(CATALOG)renderEnv();}
 function onName(){document.getElementById('aid').value=document.getElementById('nm').value.trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');if(CATALOG)renderEnv();}
 function onEmb(){document.getElementById('embremote').hidden=document.getElementById('emb').value!=='remote';}
@@ -535,9 +564,9 @@ function renderToolChips(){document.getElementById('toolchips').innerHTML=TOOLS.
   `<div class="bl">${t._type}${t.method?' · '+t.method:''}${t.url?' · '+t.url:''}${t.command?' · '+t.command+' '+(t.args||[]).join(' '):''}${t.card_url?' · '+t.card_url:''}</div>`+
   `<div class="cnt">remove ✕</div></button>`).join('');}
 function collectActors(){const a={};
-  const w=TOOLS.filter(t=>t._type==='webhook').map(({_type,...r})=>r);
-  const m=TOOLS.filter(t=>t._type==='mcp').map(({_type,...r})=>r);
-  const g=TOOLS.filter(t=>t._type==='a2a').map(({_type,...r})=>r);
+  const w=TOOLS.filter(t=>t._type==='webhook').map(({_type,_seeded,...r})=>r);
+  const m=TOOLS.filter(t=>t._type==='mcp').map(({_type,_seeded,...r})=>r);
+  const g=TOOLS.filter(t=>t._type==='a2a').map(({_type,_seeded,...r})=>r);
   if(w.length)a.webhooks=w;if(m.length)a.mcp=m;if(g.length)a.a2a=g;
   return Object.keys(a).length?a:null;}
 // ── hive membership (Step 05): solo (no block) or a shared_world member with a graph role ──
@@ -574,7 +603,9 @@ async function initApp(){
     document.getElementById('env').textContent='could not load /studio/catalog — is the studio backend running?';
     return;
   }
-  renderTemplates();applyTemplate('researcher');selectPreset('reflective');setView('basic');initProviders();onProvider();setToolType('webhook');onHiveMode();
+  setToolType('webhook');initProviders();onProvider();     // init tool form + provider before a template seeds into them
+  renderTemplates();applyTemplate('researcher');           // applyTemplate now also sets the preset/autonomy/tools/hive
+  setView('basic');onHiveMode();
   window.__INIT=true;                                        // one-time init done (guards re-auth re-runs)
 }
 (async function boot(){

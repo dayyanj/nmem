@@ -45,6 +45,17 @@ def test_wizard_spa_authors_hive_membership(tmp_path):
     assert "[hidden]{display:none!important}" in body
 
 
+def test_wizard_offers_the_starter_templates_wired_to_presets():
+    # the wizard ships starter templates that seed a COHERENT agent (persona + capability preset),
+    # not just pre-filled text — so a template click gives a runnable starting point.
+    from nmem.agent_core.studio import studio_index_html
+    html = studio_index_html()
+    for label in ("Researcher", "Critic", "Support responder", "Assistant",
+                  "Analyst / watcher", "Team member", "Companion"):
+        assert label in html, f"missing starter template: {label}"
+    assert "selectPreset(t.preset)" in html      # a template also applies its capability preset
+
+
 def test_wizard_spa_has_no_internal_terminology():
     # the shipped wizard must not leak internal names/jargon (peer agents, fleet, our framing) — a
     # public user wouldn't parse them. Guard against regressions in the templates/copy.
