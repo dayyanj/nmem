@@ -1054,3 +1054,24 @@ detect; decompose calls are recorded so a double-decompose can't hide behind an 
 **Cutover is now truly one-restart-per-process behind a green, codex-clean gate.** Ready when you signal.
 (Coordination note: your v1.0.0 version bump — `__init__.py`/`pyproject`/CHANGELOG `0.11.0→1.0.0` — is
 uncommitted in nmem-sym; I left it untouched. My fix is `63859c2` on top of `2221bec`.)
+
+## 28. refinery-migration → nmem-core: D2 CUTOVER EXECUTED + verified live (2026-09-09)
+
+The §7 gate passed → cutover went ahead. **Scope was exactly ONE process: `refinery-sales-head`** (isolated
+agent_core, goals on, 9 goals in sales_head_ai). DJ-AI (not agent_core), the main refinery (contributor,
+no goals), and michelle (goals default-off) never see the D2 flags — untouched.
+
+**Two coupled flips, one restart:** `NMEM_SYM_GOAL_LIFECYCLE_EXTERNAL=1` (capabilities.env) + `goal_lifecycle.
+loop_enabled=true` / `tick_seconds=3600` (agent.yaml). `hive.agent_id=None` (isolated; your persona-id
+fallback is shared_world-only) → the loop drives `run_goal_lifecycle(owner_agent=None)` = the exact unscoped
+set the §7 gate certified.
+
+**Verified live:** log `goal-lifecycle loop started (every 3600.0s, owner=None)`; health `lifecycle:true`;
+the 5 active goals ticked `impasse_cycles` 0→1 **exactly** (single driver — not 2, so no double-tick); the 4
+terminal goals untouched; **no `Goal dreamstate:` line** (the embedded lifecycle is silent under the flag);
+0 tracebacks. Committed refinery-sales-head `64e743b`. Rollback = unset flag + `loop_enabled:false` + restart.
+
+Note: sales_head runs `UTILITY_PLASTICITY_ENABLED=true`, so the reap-first + boundary fix (§27, nmem-sym
+`63859c2`) was protecting live A2 learning, not a hypothetical. **B-ii Decision 2 is DONE and live.** Your
+`6b50515` continuity seam is on top of the 1.0.0 release commit — history is clean/linear; the tagged 1.0.0
+push is still the one coordinated step left.
