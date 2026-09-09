@@ -130,6 +130,23 @@ def test_create_aborts_and_rolls_back_when_store_secrets_fails(tmp_path):
     assert not (tmp_path / "scout").exists()              # rolled back, not left keyless
 
 
+def test_create_rejects_existing_agent_and_never_deletes_it(tmp_path):
+    # codex round-4: a create over an EXISTING agent must be rejected (not overwritten), and the
+    # failure-rollback must NEVER delete a pre-existing agent's files.
+    agent = tmp_path / "scout"
+    agent.mkdir()
+    (agent / "secrets.env").write_text("PRECIOUS=keep-me\n")
+
+    def bad_store(secrets):
+        raise RuntimeError("vault down")
+
+    c = _client(config_dir=str(tmp_path), store_secrets=bad_store)
+    r = c.post("/studio/create", json={"agent_id": "scout", "enabled": [],
+                                       "llm": {"provider": "openai", "base_url": "http://x/v1", "model": "m"}}).json()
+    assert r["ok"] is False and "already exists" in r["error"]
+    assert (agent / "secrets.env").read_text() == "PRECIOUS=keep-me\n"   # untouched, not wiped
+
+
 def test_create_rejects_brain_without_model_or_base_url(tmp_path):
     # codex round-3: validate the brain before committing agent mode.
     c = _client(config_dir=str(tmp_path))

@@ -186,8 +186,15 @@ def make_studio_router(get_runtime: Callable | None = None, *, config_dir: str =
         for f in list(enabled):
             closure |= caps.requires_closure(f)
         auto_enabled = sorted(closure - enabled)
+        agent_dir = os.path.join(config_dir, agent_id)
+        # Reject a create over an EXISTING agent: create means a NEW agent, and the failure-rollback
+        # below removes agent_dir — which would destroy a pre-existing agent's secrets/config if we
+        # let a duplicate id through. (To replace an agent, remove it first.) This also guarantees
+        # the rollback only ever deletes a directory THIS request created.
+        if os.path.exists(agent_dir):
+            return {"ok": False, "agent_id": agent_id,
+                    "error": f"agent '{agent_id}' already exists — remove it before recreating"}
         try:
-            agent_dir = os.path.join(config_dir, agent_id)
             result = write_agent(agent_dir, spec)
         except Exception as e:  # noqa: BLE001
             log.warning("[studio] create failed for %s: %s", agent_id, e, exc_info=True)
