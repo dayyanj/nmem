@@ -45,6 +45,11 @@ case "$MODE" in
     WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
     tar -C "$WORK" -xzf "$ARCHIVE"
     [ -f "$WORK/db.dump" ] && [ -d "$WORK/data" ] || { echo "ERROR: archive missing db.dump/data" >&2; exit 1; }
+    # Validate the dump is READABLE before any destructive step — an empty/corrupt/wrong-version dump
+    # must fail HERE, while the live DB is still intact, not after we've already dropped it.
+    echo "==> validating the database dump"
+    DC exec -T postgres pg_restore --list < "$WORK/db.dump" >/dev/null 2>&1 \
+      || { echo "ERROR: db.dump is not a readable pg_restore archive — aborting (nothing changed)." >&2; exit 1; }
 
     echo "==> stopping the agent (no writers touch the stores mid-restore)"
     DC stop studio
@@ -55,9 +60,11 @@ case "$MODE" in
        -c "DROP DATABASE IF EXISTS \"$DB\" WITH (FORCE)" -c "CREATE DATABASE \"$DB\""
     echo "==> loading the database dump"
     DC exec -T postgres pg_restore -U nmem -d "$DB" --no-owner < "$WORK/db.dump"
+    # Replace /data: clear via a throwaway container (mounts the volume), then push the backup in with
+    # `docker compose cp`. No host bind mount → this is correct against a REMOTE Docker daemon too.
     echo "==> replacing /data with the backup (clear first, so a prior agent can't linger)"
-    DC run --rm --no-deps -v "$WORK/data:/restore:ro" --entrypoint sh studio \
-       -c 'rm -rf /data/* /data/.[!.]* 2>/dev/null; cp -a /restore/. /data/'
+    DC run --rm --no-deps --entrypoint sh studio -c 'rm -rf /data/* /data/.[!.]* 2>/dev/null || true'
+    DC cp "$WORK/data/." studio:/data
     echo "==> starting the agent"
     DC start studio
     echo "done."
