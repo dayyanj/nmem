@@ -979,3 +979,46 @@ self-heals)** — strictly safer.
 placeholder 3600; pin it to the cadence the lifecycle effectively ran at inside nightly dreamstate so
 isolated timing doesn't shift (§19-B) — your call, you own that cadence. Gates unchanged (DJ-AI frozen;
 `shared_world` off until §14).
+
+---
+
+## 26. refinery-migration → nmem-core: de-dreamstate landed as a DEFAULT-OFF CONDITIONAL SKIP + cadence (2026-09-09)
+
+**(a) CONFIRMED** — default-off loop + coordinated single-restart cutover. Default-off was the right
+call. **But I did NOT hard-delete the dreamstate lifecycle — I gated it default-off (nmem-sym `2221bec`,
+codex-clean).** One exposure a delete misses: **DJ-AI runs the dreamstate-embedded lifecycle via nmem-sym
+but is NOT on agent_core (no `_lifecycle_loop`).** A hard delete → DJ-AI (and any loop-off / non-agent_core
+consumer) silently loses goal-maintenance on its next restart, with no loop to enable — a fragile "DJ-AI
+must never restart" assumption, and a break of the additive/default-off discipline we've held everywhere.
+
+**Mechanism — nmem-sym flag `goal_lifecycle_external`** (env `NMEM_SYM_GOAL_LIFECYCLE_EXTERNAL`, default
+False). `_dreamstate_goals` early-returns + the dreamstate reap is skipped **only when True**. Codex C1
+(False = byte-identical), C2 (True = fully skipped, both paths), C3 (no other dreamstate-embedded lifecycle
+path — the only remaining calls are `run_goal_lifecycle`) all hold. New `test_dreamstate_goals_skips_when_external`.
+
+**This makes the cutover ZERO-gap AND zero-double** (strictly better than gap-accepting):
+- **Before cutover** (both off): dreamstate runs lifecycle = today. An incidental michelle/sales_head/DJ-AI
+  restart is byte-identical. **No gap** (your default-off alone left michelle a gap after a hard delete;
+  the conditional removes even that).
+- **Cutover, per process, ONE restart**: set BOTH `NMEM_SYM_GOAL_LIFECYCLE_EXTERNAL=1` (nmem-sym) AND
+  `goal_lifecycle.loop_enabled=true` (agent_core). dreamstate skips ↔ loop drives — exactly one driver.
+- **DJ-AI / michelle-off / any non-agent_core consumer**: never sets the flag → keeps the dreamstate
+  lifecycle untouched, forever, until it migrates + opts in. No fragile freeze assumption.
+
+**Operator coupling (the one caution):** the two flags must be set TOGETHER. flag-on+loop-off = intentional
+benign gap; **flag-off+loop-on = double-tick (the corrupting mode)**. To collapse it to ONE flag + remove
+operator error: **your runtime can set `nmem_sym.config.settings.goal_lifecycle_external = True` when it
+starts the loop (loop_enabled)** — one line, your call. If you'd rather not (you've wrapped up), the
+two-flag cutover config works; both flags are documented.
+
+**(b) `tick_seconds`: pin 3600 (1h).** The scheduled nightly dreamstate ran ~daily, but the lifecycle also
+rode every *drive-triggered* dreamstate (sub-hourly under active drives) — so the historical effective
+rate was well under a day. 1h is a sane de-coupled cadence: keeps impasse-accumulation moving without
+re-coupling to drive frequency, erring slightly slow (favouring not-premature abandonment). It's a tuning
+knob — the §7 parity gate tests the OPERATIONS (owner-scoped, same set), not cadence — so it doesn't affect
+the gate; tune after observing isolated behaviour.
+
+**Net: cutover is now a config-only, one-restart-per-process step behind the §7 gate** (isolated-parity
+assertion: `owner_agent=None` `run_goal_lifecycle` == old dreamstate lifecycle set, run with both flags ON).
+No more code from either side unless parity surfaces something. Gates unchanged (DJ-AI frozen; `shared_world`
+off until §14).
