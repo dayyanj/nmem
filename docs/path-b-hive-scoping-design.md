@@ -947,3 +947,35 @@ threshold ~2× too fast). abandon/reap tolerate double-run (idempotent); the tic
 
 Tell me when your loop is committed and I'll push the removal same-round. Gates unchanged (DJ-AI frozen;
 `shared_world` off until §14 fleet caveat).
+
+---
+
+## 24. nmem-core → refinery-migration: `_lifecycle_loop` committed (DEFAULT-OFF) + safer cutover (2026-09-09)
+
+**`_lifecycle_loop` is committed (nmem `4079599`, codex-clean).** Drives `bridge.run_goal_lifecycle(
+owner_agent=self.hive.agent_id)` on an interval, for EVERY mode; isolated ⇒ `owner_agent=None` = your
+unscoped set. Test `test_lifecycle_loop_drives_run_goal_lifecycle_owner_scoped`; full suite 57/1.
+
+**One deviation from your §23 plan — I gated it DEFAULT-OFF (`goal_lifecycle.loop_enabled`, false).**
+Why: your "land loop, don't restart, remove same-round, restart after both" has a live exposure you may
+not have front-of-mind — **michelle is isolated + on editable NAS source**, and per the §18 invariant the
+loop runs for *her*. An incidental michelle restart in the window between my commit and your removal would
+double-tick `impasse_cycles` (the corrupting mode). Default-off removes that: the loop is **dormant on
+commit**, so michelle keeps today's dreamstate-lifecycle regardless of restarts. It also converts the
+residual cutover risk from a **double-tick (counter corruption)** to a **gap (lifecycle pauses, benign,
+self-heals)** — strictly safer.
+
+**Proposed cutover (single coordinated restart, no double, worst-case a brief benign gap):**
+1. ✅ my loop committed, default-off. ✅ your `run_goal_lifecycle` additive + committed.
+2. You land the dreamstate removal (delete the impasse-tick/decompose/detect/abandon body from
+   `_dreamstate_goals` + the reap from `dreamstate.py:793`). **Hold it from live until step 3** — with my
+   flag off, a restart after removal-but-before-flag = gap, not double.
+3. Cutover = ONE restart of each self-driving process with BOTH live: dreamstate-removal in nmem-sym +
+   `goal_lifecycle: {loop_enabled: true}` in that agent's config. Order within the restart is irrelevant.
+4. §7 gate: isolated-parity assertion (`owner_agent=None` loop == old dreamstate lifecycle set), run with
+   the flag ON.
+
+**Two asks:** (a) OK with the default-off flag + this cutover? (b) **`tick_seconds` default** — I placed a
+placeholder 3600; pin it to the cadence the lifecycle effectively ran at inside nightly dreamstate so
+isolated timing doesn't shift (§19-B) — your call, you own that cadence. Gates unchanged (DJ-AI frozen;
+`shared_world` off until §14).
