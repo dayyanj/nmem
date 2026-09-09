@@ -189,6 +189,11 @@ function collectActors(){const a={};
   const g=TOOLS.filter(t=>t._type==='a2a').map(({_type,...r})=>r);
   if(w.length)a.webhooks=w;if(m.length)a.mcp=m;if(g.length)a.a2a=g;
   return Object.keys(a).length?a:null;}
+// ── hive membership (Step 05): solo (no block) or a shared_world member with a graph role ──
+function onHiveMode(){document.getElementById('hive_role_f').hidden=
+  document.getElementById('hive_mode').value!=='shared_world';}
+function collectHive(){if(document.getElementById('hive_mode').value!=='shared_world')return null;
+  return {mode:'shared_world',graph_role:document.getElementById('hive_role').value};}
 
 async function create(){const aid=document.getElementById('aid').value.trim();const t=document.getElementById('toast');
   const flash=(m)=>{t.textContent=m;t.classList.add('on');setTimeout(()=>t.classList.remove('on'),4200);};
@@ -199,6 +204,7 @@ async function create(){const aid=document.getElementById('aid').value.trim();co
   const body={agent_id:aid,enabled:[...enabled],persona,llm:llmSpec(),embedding:embeddingSpec(),
     outward_actions:'explore',autonomy:{level:document.getElementById('autonomy').value}};
   const actors=collectActors(); if(actors)body.actors=actors;
+  const hive=collectHive(); if(hive)body.hive=hive;
   t.textContent='creating '+aid+'…';t.classList.add('on');
   const res=await api('/studio/create',body);
   if(res.ok){const dep=res.auto_enabled?.length?` (+${res.auto_enabled.length} deps)`:'';
@@ -217,7 +223,7 @@ async function create(){const aid=document.getElementById('aid').value.trim();co
     document.getElementById('env').textContent='could not load /studio/catalog — is the studio backend running?';
     return;
   }
-  renderTemplates();applyTemplate('researcher');selectPreset('reflective');setView('basic');initProviders();onProvider();setToolType('webhook');
+  renderTemplates();applyTemplate('researcher');selectPreset('reflective');setView('basic');initProviders();onProvider();setToolType('webhook');onHiveMode();
 })();
 </script>"""
 

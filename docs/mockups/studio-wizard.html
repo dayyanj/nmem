@@ -293,6 +293,28 @@
         <span class="note">added tools appear below; click one to remove it.</span>
       </div>
       <div class="cards" id="toolchips" style="grid-template-columns:1fr;margin-top:6px"></div>
+    </section>
+
+    <section class="card">
+      <span class="eyebrow">Step 05 · Hive membership <span style="color:var(--muted);font-weight:400;font-size:13px">(optional)</span></span>
+      <h2>Solo, or part of a hive</h2>
+      <p class="sub">A solo agent owns its own world-model. A <b>hive</b> member shares ONE symbol-graph
+        world-model with other agents — each still keeps its own goals, drives and pursuit
+        (owner-scoped) — and exactly one member is the <b>keeper</b> that runs the heavy graph-global
+        maintenance (clustering, dreamstate). To form a hive, point every member's
+        <code>NMEM_AGENT_DB</code> at the same database.</p>
+
+      <label class="fld"><span class="lab">Mode</span>
+        <select id="hive_mode" onchange="onHiveMode()">
+          <option value="isolated">Solo · owns its own world-model (default)</option>
+          <option value="shared_world">Hive member · shares a world-model</option>
+        </select></label>
+
+      <label class="fld" id="hive_role_f" hidden><span class="lab">Graph role <span class="keynote">(who runs graph-global maintenance)</span></span>
+        <select id="hive_role">
+          <option value="contributor">Contributor · feeds + reads the shared graph (default)</option>
+          <option value="keeper">Keeper · also runs clustering + dreamstate (exactly one per hive)</option>
+        </select></label>
 
       <div class="create" style="margin-top:20px;border-top:1px solid var(--line);padding-top:18px">
         <button class="go" onclick="create()">Create agent →</button>

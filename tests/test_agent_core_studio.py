@@ -31,6 +31,17 @@ def test_studio_app_serves_wizard_and_router(tmp_path):
     assert c.get("/studio/catalog").status_code == 200
 
 
+def test_wizard_spa_authors_hive_membership(tmp_path):
+    # Step 05 (shared_world first-class): the served wizard offers hive membership — mode + graph role
+    # — and posts it as body.hive to /studio/create. (DSN is a deploy concern, not a wizard field.)
+    c = TestClient(create_studio_app(config_dir=str(tmp_path)))
+    body = c.get("/").text
+    assert 'id="hive_mode"' in body and 'value="shared_world"' in body
+    assert 'id="hive_role"' in body and 'value="keeper"' in body and 'value="contributor"' in body
+    assert "function collectHive" in body and "body.hive=hive" in body   # collected + posted
+    assert "onHiveMode" in body                                          # role field show/hide wired
+
+
 def test_catalog_exposes_map_presets_and_groups():
     r = _client().get("/studio/catalog")
     assert r.status_code == 200
