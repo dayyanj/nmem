@@ -467,6 +467,42 @@ def test_build_executor_returns_pursuit_contract_wrapper():
     assert hasattr(exe, "execute")                      # ActionExecutor protocol
 
 
+def test_chat_with_tools_forwards_reasoning_effort_both_paths():
+    # The tool loop's stop-decision needs thinking ON for a thinking-capable model (Qwen), else
+    # it thrashes to max_steps. _chat_with_tools must forward reasoning_effort to the backend on
+    # BOTH the tool turn and the no-tool conclude turn; omitting it stays byte-identical.
+    from nmem.agent_core.actors import _chat_with_tools
+
+    class _Rec:
+        def __init__(self):
+            self.chat_kw = None
+            self.cwt_kw = None
+        async def chat(self, messages, **kw):
+            self.chat_kw = kw
+            return "done"
+        async def chat_with_tools(self, messages, tools, **kw):
+            self.cwt_kw = kw
+            class _R:  # minimal ChatResult-shaped stub
+                content = "SUCCESS: ok"
+                tool_calls = []
+            return _R()
+
+    async def go():
+        rec = _Rec()
+        cwt = _chat_with_tools(rec, reasoning_effort="medium")
+        await cwt([{"role": "user", "content": "x"}], [{"type": "function"}])   # tool turn
+        await cwt([{"role": "user", "content": "x"}], [])                        # conclude turn
+        assert rec.cwt_kw.get("reasoning_effort") == "medium"
+        assert rec.chat_kw.get("reasoning_effort") == "medium"
+        # omitted → not forwarded (byte-identical for gemma/claude/off)
+        rec2 = _Rec()
+        cwt2 = _chat_with_tools(rec2)
+        await cwt2([{"role": "user", "content": "x"}], [{"type": "function"}])
+        await cwt2([{"role": "user", "content": "x"}], [])
+        assert "reasoning_effort" not in rec2.cwt_kw and "reasoning_effort" not in rec2.chat_kw
+    asyncio.run(go())
+
+
 def test_pursuit_contract_blocked_and_error_outcomes_enriched_and_sunk():
     # Non-SUCCESS composites (gate-blocked / tool error) must still be enriched (verified=False,
     # infra=False so the queue resolves them failed rather than retrying forever) and still reach

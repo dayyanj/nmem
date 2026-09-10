@@ -29,39 +29,54 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
-def _chat_with_tools(backend):
+def _chat_with_tools(backend, *, reasoning_effort: str | None = None):
     """Adapt an agent_core.backend to nmem-act's OpenAIToolSelector callable contract:
-    ``async (messages, tools) -> (content, [{id,name,arguments}])``."""
+    ``async (messages, tools) -> (content, [{id,name,arguments}])``.
+
+    ``reasoning_effort`` (when set) is forwarded to the backend on BOTH the tool turn and the
+    no-tool conclude turn, so a thinking-capable model (e.g. Qwen) runs the loop WITH reasoning
+    ON. This is load-bearing for the STOP-DECISION: with thinking off, Qwen never concludes
+    "I have the answer, stop" and thrashes tools to max_steps (the query-db gotcha). Omitted →
+    byte-identical to before (gemma/claude/thinking-off agents are unaffected)."""
+    eff = {"reasoning_effort": reasoning_effort} if reasoning_effort else {}
+
     async def cwt(messages: list[dict], tools: list[dict]):
         # No permitted tools this step (gate filtered them all out) → a plain chat. Passing an
         # empty `tools` array is rejected by strict servers ("tools must not be an empty array"),
         # and with nothing to call the model should just answer / conclude.
         if not tools:
-            return await backend.chat(messages, max_tokens=1024), []
-        res = await backend.chat_with_tools(messages, tools, tool_choice="auto", max_tokens=1024)
+            return await backend.chat(messages, max_tokens=1024, **eff), []
+        res = await backend.chat_with_tools(messages, tools, tool_choice="auto",
+                                            max_tokens=1024, **eff)
         calls = [{"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in res.tool_calls]
         return res.content, calls
     return cwt
 
 
-def build_selector(backend, *, preamble: str | None = None):
-    """An LLM tool-selector driven by `backend` (the agent's own reasoning brain)."""
+def build_selector(backend, *, preamble: str | None = None, reasoning_effort: str | None = None):
+    """An LLM tool-selector driven by `backend` (the agent's own reasoning brain). Pass
+    ``reasoning_effort`` (e.g. "medium") for a thinking-capable model so the loop's stop-decision
+    works — see ``_chat_with_tools``."""
     from nmem_act import OpenAIToolSelector
     from nmem_act.openai_selector import DEFAULT_PREAMBLE
-    return OpenAIToolSelector(_chat_with_tools(backend), system_preamble=preamble or DEFAULT_PREAMBLE)
+    return OpenAIToolSelector(_chat_with_tools(backend, reasoning_effort=reasoning_effort),
+                              system_preamble=preamble or DEFAULT_PREAMBLE)
 
 
 def build_executor(registry, *, backend, mem=None, agent_id: str = "agent", bridge=None,
                    gate=None, approval=None, max_steps: int = 8,
-                   reflect=None, record_skill=None, preamble: str | None = None):
+                   reflect=None, record_skill=None, preamble: str | None = None,
+                   reasoning_effort: str | None = None):
     """Wrap an ``ActionRegistry`` as a gated, outcome-recording ``ToolCallingExecutor`` driven by
     `backend`. When `bridge` + `mem` are provided, the run is recorded through the graduated
     experiential sink (episode + procedure reward + honest discharge + finding memory), optionally
     wrapped by nmem-act's reflective sink to capture tool-use skills (`reflect`/`record_skill`
-    injected). This is the object ``AgentRuntime(build_executor=…)`` returns."""
+    injected). Pass ``reasoning_effort`` (e.g. "medium") for a thinking-capable model so the loop
+    terminates instead of thrashing (see ``_chat_with_tools``). This is the object
+    ``AgentRuntime(build_executor=…)`` returns."""
     from nmem_act import ToolCallingExecutor
 
-    selector = build_selector(backend, preamble=preamble)
+    selector = build_selector(backend, preamble=preamble, reasoning_effort=reasoning_effort)
     sink = None
     if bridge is not None and mem is not None:
         from nmem.agent_core import build_experiential_sink
