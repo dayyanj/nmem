@@ -207,18 +207,16 @@ def build_wizard_app():
 
 
 def build_agent_app():
-    """AGENT mode: build the app for the one agent on the data volume (env already sourced by
-    the entrypoint) — the ops router (+ /health) and the dashboard at ``/``. Returns (app,
-    runtime). The runtime is started in a **lifespan hook**, NOT here: its asyncpg connections
-    must be created on the SAME event loop that serves requests, or every DB-backed endpoint
-    hits 'another operation is in progress'. So build synchronously, start under uvicorn's loop."""
-    from contextlib import asynccontextmanager
-
+    """AGENT mode: the app for the one agent on the data volume. Now a thin caller of the reusable
+    ``agent_core.host.create_agent_app`` (host-shell-convergence-plan.md Step 1) — the generic host
+    owns the lifespan/bootstrap/ops + the default /chat; this function layers only the STUDIO-specific
+    features (the selector executor, dashboard, ``/tools``, ``/act``, SessionAuth). Returns (app, ctx);
+    the runtime is built in the lifespan (``ctx.runtime`` is None until startup), started on uvicorn's
+    loop (asyncpg binds to the serving loop)."""
     import yaml
-    from fastapi import FastAPI
     from fastapi.responses import HTMLResponse
 
-    from nmem.agent_core import AgentRuntime, make_ops_router
+    from nmem.agent_core.host import create_agent_app
     from nmem.agent_core.persona import Persona
     from nmem.agent_core.studio import agent_dashboard_html
 
@@ -231,110 +229,86 @@ def build_agent_app():
     persona = Persona.from_dict(yaml.safe_load(open(persona_yaml))) if os.path.exists(persona_yaml) \
         else Persona(agent_id=config.get("db", {}).get("config_key", "agent"))
 
-    # Actor executor holder — filled in the lifespan (async registry assembly), read by the
-    # build_executor closure the runtime calls during start(). Pure thinker if no actors: config.
-    actors = {"reg": None, "gate": None, "close": None}
-
-    def _build_executor(bridge):
-        reg = actors["reg"]
-        if reg is None or len(reg) == 0:
-            return None                                # nothing to act with → stays a pure thinker
-        from nmem.agent_core.actors import build_executor as _mk
-        return _mk(reg, backend=runtime.backend, mem=runtime.mem, agent_id=runtime.agent_id,
-                   bridge=bridge, gate=actors["gate"])
-
-    runtime = AgentRuntime(config, persona, build_executor=_build_executor)
-    viz = {"bridge": None}
-
-    @asynccontextmanager
-    async def lifespan(app):
+    # Studio's SELECTOR executor: the assembled tool registry (built async in pre_start, stashed on
+    # ctx.state) wrapped as a gated ToolCallingExecutor. Pure thinker if the agent declares no actors.
+    async def _pre_start(ctx):
         actors_cfg = config.get("actors")
         if actors_cfg:                                 # connect MCP/A2A + register tools BEFORE start()
             from nmem.agent_core.actors import assemble_registry
-            actors["reg"], actors["close"] = await assemble_registry(actors_cfg)
-            actors["gate"] = _build_gate(config.get("autonomy"))
-        await runtime.start()                          # on uvicorn's loop → connections bound correctly
-        log.info("[studio] agent %s up: %s", runtime.agent_id, runtime.status)
-        from nmem.agent_core.viz import init_viz       # live deltas → nmem-viz /ingest (if configured)
-        viz["bridge"] = init_viz(runtime)
-        yield
-        if viz["bridge"] is not None:
-            await viz["bridge"].close()
-        if actors["close"] is not None:
-            await actors["close"]()                    # tear down live MCP/A2A sessions
-        await runtime.stop()
+            ctx.state["reg"], ctx.state["close"] = await assemble_registry(actors_cfg)
+            ctx.state["gate"] = _build_gate(config.get("autonomy"))
 
-    def _health_extras():
-        return {"agent_id": runtime.agent_id,
+    def _build_executor(ctx, bridge):
+        reg = ctx.state.get("reg")
+        if reg is None or len(reg) == 0:
+            return None                                # nothing to act with → stays a pure thinker
+        from nmem.agent_core.actors import build_executor as _mk
+        return _mk(reg, backend=ctx.runtime.backend, mem=ctx.runtime.mem, agent_id=ctx.runtime.agent_id,
+                   bridge=bridge, gate=ctx.state.get("gate"))
+
+    async def _on_shutdown(ctx):
+        close = ctx.state.get("close")
+        if close is not None:
+            await close()                              # tear down live MCP/A2A sessions
+
+    def _health_extras(ctx):
+        return {"agent_id": persona.agent_id,
                 "viz": bool(os.environ.get("NMEM_VIZ_INGEST_URL")),
                 "viz_url": os.environ.get("NMEM_VIZ_PUBLIC_URL", "")}
 
-    app = FastAPI(title=f"nmem agent · {runtime.agent_id}", lifespan=lifespan)
+    def _studio_routes(app, ctx):
+        dashboard = agent_dashboard_html()
+
+        @app.get("/", response_class=HTMLResponse)
+        async def home():
+            return dashboard
+
+        @app.get("/tools")
+        async def tools():
+            """The actor tools this agent has, with capability class + autonomy level."""
+            reg = ctx.state.get("reg")
+            items = []
+            if reg is not None:
+                for name in reg.names():
+                    a = reg.get(name)
+                    items.append({"name": name, "capability": a.capability_class.value,
+                                  "description": a.description})
+            return {"ok": True, "tools": items,
+                    "autonomy": (config.get("autonomy") or {}).get("level", "read_only"),
+                    "has_executor": ctx.runtime is not None and ctx.runtime._runner is not None}
+
+        @app.post("/act")
+        async def act(req: dict):
+            """Give the agent a goal and let it use its tools (one gated, outcome-recorded
+            ToolCallingExecutor run). Body: {goal}."""
+            goal = (req or {}).get("goal", "").strip()
+            if not goal:
+                return {"ok": False, "error": "goal required"}
+            if ctx.runtime is None or ctx.runtime._runner is None:
+                return {"ok": False, "error": "this agent has no tools configured (pure thinker)"}
+            from nmem.agent_core.actors import run as _run
+            try:
+                outcome = await _run(ctx.runtime._runner, goal)
+                obs = outcome.observations or {}
+                return {"ok": True, "status": getattr(outcome.status, "value", str(outcome.status)),
+                        "steps": obs.get("steps", []), "summary": getattr(outcome, "outcome", "")}
+            except Exception as e:  # noqa: BLE001
+                log.warning("[studio] act failed: %s", e, exc_info=True)
+                return {"ok": False, "error": str(e)}
+
+    # The generic host owns lifespan/bootstrap/ops + the default /chat (runtime.converse — exactly
+    # studio's old /chat). Studio injects only its selector executor + UI routes + auth.
+    app, ctx = create_agent_app(
+        config, persona,
+        build_executor=_build_executor, pre_start=_pre_start, on_shutdown=_on_shutdown,
+        extra_health=_health_extras, extra_routes=_studio_routes,
+        title=f"nmem agent · {persona.agent_id}")
+
     from nmem.agent_core.auth import SessionAuth, install_session_auth, make_auth_router
     auth = SessionAuth()
     app.include_router(make_auth_router(auth))
-    # /health carries the agent id (dashboard title) + whether/where the viz hub is reachable
-    app.include_router(make_ops_router(lambda: runtime, extra_health=_health_extras))
-
-    dashboard = agent_dashboard_html()
-
-    @app.get("/", response_class=HTMLResponse)
-    async def home():
-        return dashboard
-
-    @app.get("/tools")
-    async def tools():
-        """The actor tools this agent has, with capability class + autonomy level — what the
-        dashboard's Act panel shows and what the gate governs."""
-        reg = actors["reg"]
-        gate = actors["gate"]
-        items = []
-        if reg is not None:
-            for name in reg.names():
-                a = reg.get(name)
-                items.append({"name": name, "capability": a.capability_class.value,
-                              "description": a.description})
-        return {"ok": True, "tools": items,
-                "autonomy": (config.get("autonomy") or {}).get("level", "read_only"),
-                "has_executor": runtime._runner is not None}
-
-    @app.post("/act")
-    async def act(req: dict):
-        """Give the agent a goal and let it use its tools to accomplish it (one gated,
-        outcome-recorded ToolCallingExecutor run). Body: {goal}. Returns the composite status +
-        the per-tool step trace."""
-        goal = (req or {}).get("goal", "").strip()
-        if not goal:
-            return {"ok": False, "error": "goal required"}
-        if runtime._runner is None:
-            return {"ok": False, "error": "this agent has no tools configured (pure thinker)"}
-        from nmem.agent_core.actors import run as _run
-        try:
-            outcome = await _run(runtime._runner, goal)
-            obs = outcome.observations or {}
-            return {"ok": True, "status": getattr(outcome.status, "value", str(outcome.status)),
-                    "steps": obs.get("steps", []), "summary": getattr(outcome, "outcome", "")}
-        except Exception as e:  # noqa: BLE001
-            log.warning("[studio] act failed: %s", e, exc_info=True)
-            return {"ok": False, "error": str(e)}
-
-    @app.post("/chat")
-    async def chat(req: dict):
-        """Hold one grounded conversation turn (agent_core.chat.converse). Body: {message,
-        history?:[{role,content}]}. The chat page keeps history; the agent's memory grounds
-        every turn regardless."""
-        msg = (req or {}).get("message", "").strip()
-        if not msg:
-            return {"ok": False, "error": "message required"}
-        try:
-            reply = await runtime.converse(msg, history=(req or {}).get("history") or [])
-            return {"ok": True, "reply": reply}
-        except Exception as e:  # noqa: BLE001
-            log.warning("[studio] chat failed: %s", e, exc_info=True)
-            return {"ok": False, "error": str(e)}
-
     install_session_auth(app, auth)          # gate /admin//act//chat//tools AFTER all routes are added
-    return app, runtime
+    return app, ctx
 
 
 def main() -> None:

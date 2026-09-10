@@ -60,6 +60,8 @@ _LAZY = {
     "PeerExchangeSink": ("nmem.agent_core.peer", "PeerExchangeSink"),
     "build_experiential_sink": ("nmem.agent_core.actuation", "build_experiential_sink"),
     "make_ops_router": ("nmem.agent_core.ops", "make_ops_router"),
+    "create_agent_app": ("nmem.agent_core.host", "create_agent_app"),
+    "HostContext": ("nmem.agent_core.host", "HostContext"),
     "make_studio_router": ("nmem.agent_core.studio", "make_studio_router"),
     "create_studio_app": ("nmem.agent_core.studio", "create_studio_app"),
     "SymbolGoalStore": ("nmem.agent_core.goal_store", "SymbolGoalStore"),
