@@ -131,10 +131,10 @@ runtime's mem/backend/identity + sandbox config + reflection/skill hooks:
   (`chat.system_prompt`), NOT `voice.yaml`/prose (`chat.py:45-60`). michelle's `/chat` + peer replies depend on her
   `build_system_prompt` (`agent_core.voice`). So "persona/voice canonical" holds for the *components* but the host
   doesn't yet *wire* voice into converse — it must accept an agent's system-prompt builder.
-- **G7 — generalize `build_backend`'s env overrides.** `agent_core.backend.build_backend` hard-codes `MICHELLE_LLM_*`
-  override vars (`backend.py:264-286`) — it contradicts the "no new `MICHELLE_*` names" goal and blocks DJ/general
-  deployment overrides. Generalize to agent-neutral names BEFORE deleting the host backend config. (Ironic: the
-  already-"graduated" backend still carries michelle's env names.)
+- **G7 — generalize `build_backend`'s env overrides. ✅ DONE (Step 0b, 2026-09-11).** `build_backend` now reads
+  agent-neutral `NMEM_LLM_*` via `_llm_env()`, with a transitional `MICHELLE_LLM_*` fallback (drop once michelle.env
+  migrates). Unblocks DJ/general deployment overrides. Remaining: migrate michelle.env `MICHELLE_LLM_*`→`NMEM_LLM_*`
+  (done as part of Step 3's fresh env) then delete the fallback.
 
 ## Canonical config + env (what makes the shims RETIRE, not move)
 

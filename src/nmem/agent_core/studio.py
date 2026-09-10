@@ -41,8 +41,8 @@ _AGENT_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 
 def _build_test_backend(spec: dict):
     """Construct a backend DIRECTLY from a posted spec (not via build_backend, which layers
-    michelle's MICHELLE_* env over config). ``spec`` = {provider, base_url, model, api_key,
-    family, timeout?}. Raises ValueError on a bad/missing field (surfaced as ok:false)."""
+    ``NMEM_LLM_*`` env — with a legacy ``MICHELLE_LLM_*`` fallback — over config). ``spec`` =
+    {provider, base_url, model, api_key, family, timeout?}. Raises ValueError on a bad field."""
     from nmem.agent_core.backend import AnthropicBackend, OpenAICompatibleBackend
 
     provider = (spec.get("provider") or "openai").strip().lower()

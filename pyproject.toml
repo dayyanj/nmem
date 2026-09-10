@@ -69,8 +69,15 @@ api = [
     "python-multipart>=0.0.9",
     "httpx>=0.27,<1",
 ]
+# The agent host/appliance (agent_core.studio_server + create_agent_app): the REST/api layer +
+# the computer-use actor + PyYAML (studio_server/persona/config_writer read yaml — do NOT rely on
+# it arriving transitively via uvicorn[standard]). A headless agent-runtime install needs none of this.
+host = [
+    "nmem[api,computer-use]",
+    "pyyaml>=6",
+]
 all = [
-    "nmem[st,openai,anthropic,langchain,crewai,cli,mcp-server,api,computer-use]",
+    "nmem[st,openai,anthropic,langchain,crewai,cli,mcp-server,api,computer-use,host]",
 ]
 dev = [
     "nmem[all]",

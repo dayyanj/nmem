@@ -153,9 +153,10 @@ def build_agent_files(spec: dict) -> dict:
 
     spec keys: agent_id, enabled (flag set/list), persona (a Persona or dict), llm
     ({provider,base_url,model,api_key,api_key_env}), embedding, symbol_graph, pursuit,
-    outward_actions, db_url. Returns {capabilities.env, agent.yaml, persona.yaml, secrets}.
-    The three strings are written to the agent's config dir; `secrets` (env-var->value) goes
-    to the secret store, never into a committed/shared file."""
+    outward_actions, db_url, and optionally belief / policy / db_env_key (an agent that trusts
+    its own observations highly + restricts policy writers, per michelle's _shim_config values).
+    Returns {capabilities.env, agent.yaml, persona.yaml, secrets}. The three strings are written to
+    the agent's config dir; `secrets` (env-var->value) goes to the secret store, never committed."""
     import yaml
     from nmem.agent_core.persona import Persona
 
@@ -196,7 +197,9 @@ def build_agent_files(spec: dict) -> dict:
         "agent.yaml": render_agent_yaml(
             agent_id=agent_id, llm=llm, embedding=emb,
             symbol_graph=spec.get("symbol_graph"), pursuit=spec.get("pursuit"),
-            db_url=spec.get("db_url"), actors=spec.get("actors"), autonomy=spec.get("autonomy"),
+            db_env_key=spec.get("db_env_key"), db_url=spec.get("db_url"),
+            belief=spec.get("belief"), policy=spec.get("policy"),
+            actors=spec.get("actors"), autonomy=spec.get("autonomy"),
             hive=hive, goal_lifecycle=goal_lifecycle),
         "persona.yaml": yaml.safe_dump(persona.to_dict(), sort_keys=False) if persona else "",
         "secrets": split_secrets(agent_id=agent_id, llm_key=key, llm_key_env=key_env,
