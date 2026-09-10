@@ -107,8 +107,20 @@ class OpenAICompatibleBackend:
                 "temperature": temperature, "max_tokens": max_tokens}
         self._apply_family(body, extra)
         j = await self._post(body)
-        content = j["choices"][0]["message"].get("content") or ""
-        return _THINK_RE.sub("", content).strip()
+        choice = j["choices"][0]
+        content = _THINK_RE.sub("", choice["message"].get("content") or "").strip()
+        # Qwen thinking can consume the ENTIRE completion budget (the token floor reduces
+        # but does not eliminate this) → empty content + finish_reason='length'. The floor
+        # is not a real guard; recover with a bounded SINGLE retry with thinking OFF so the
+        # turn still answers (codex Track-R P2). Scoped to exactly that failure.
+        if (not content and choice.get("finish_reason") == "length"
+                and self.family == "qwen"
+                and body.get("chat_template_kwargs", {}).get("enable_thinking")):
+            log.info("[backend] qwen thinking truncated to empty content — retrying without thinking")
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+            j = await self._post(body)
+            content = _THINK_RE.sub("", j["choices"][0]["message"].get("content") or "").strip()
+        return content
 
     async def chat_with_tools(self, messages: list[dict], tools: list[dict], *,
                               tool_choice: str = "auto", temperature: float = 0.3,

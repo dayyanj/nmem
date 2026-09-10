@@ -69,3 +69,41 @@ def test_gemma_family_is_noop():
     assert "chat_template_kwargs" not in b
     assert "reasoning_effort" not in b
     assert b["max_tokens"] == 700
+
+
+# ── thinking-truncated-to-empty → bounded non-thinking retry (codex P2) ──
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_qwen_empty_thinking_truncation_retries_without_thinking(monkeypatch):
+    b = _qwen()
+    calls = []
+
+    async def fake_post(body):
+        calls.append(dict(body.get("chat_template_kwargs") or {}))
+        if body.get("chat_template_kwargs", {}).get("enable_thinking"):
+            # first call: thinking on, truncated to empty
+            return {"choices": [{"message": {"content": ""}, "finish_reason": "length"}]}
+        # retry: thinking off, real answer
+        return {"choices": [{"message": {"content": "the answer"}, "finish_reason": "stop"}]}
+
+    monkeypatch.setattr(b, "_post", fake_post)
+    reply = await b.chat([{"role": "user", "content": "hard"}], reasoning_effort="high")
+    assert reply == "the answer"
+    assert calls == [{"enable_thinking": True}, {"enable_thinking": False}]   # exactly one retry
+
+
+@pytest.mark.asyncio
+async def test_qwen_normal_reply_no_retry(monkeypatch):
+    b = _qwen()
+    n = {"count": 0}
+
+    async def fake_post(body):
+        n["count"] += 1
+        return {"choices": [{"message": {"content": "fine"}, "finish_reason": "stop"}]}
+
+    monkeypatch.setattr(b, "_post", fake_post)
+    reply = await b.chat([{"role": "user", "content": "hi"}], reasoning_effort="high")
+    assert reply == "fine" and n["count"] == 1        # no retry on a clean reply
