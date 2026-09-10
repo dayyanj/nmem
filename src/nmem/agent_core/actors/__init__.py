@@ -70,8 +70,62 @@ def build_executor(registry, *, backend, mem=None, agent_id: str = "agent", brid
             from nmem_act import make_reflective_sink
             sink = make_reflective_sink(sink, reflect=reflect, record_skill=record_skill,
                                         agent_id=agent_id, enabled=True)
-    return ToolCallingExecutor(registry, selector, gate=gate, approval=approval,
-                               outcome_sink=sink, max_steps=max_steps)
+    # The composite Outcome a ToolCallingExecutor emits carries only ``observations={"steps":…}``
+    # — but a queue-driven pursuit (GoalPursuit) and the experiential sink both read the pursuit
+    # observation contract (``verified``/``infra``/``goal_id``/``objective``/``status``/
+    # ``procedure_ids``). Without translation, every pursued goal would resolve ``failed`` and the
+    # drive would never discharge even on a successful run. ToolCallingExecutor stays generic (it
+    # must not know pursuit semantics); the translation lives here in the integration layer via a
+    # thin wrapper that enriches the outcome BEFORE the sink fires — correct with or without a sink.
+    inner = ToolCallingExecutor(registry, selector, gate=gate, approval=approval,
+                                outcome_sink=None, max_steps=max_steps)
+    return _PursuitContractExecutor(inner, sink)
+
+
+def _apply_pursuit_contract(proposal, outcome) -> None:
+    """Enrich a ToolCallingExecutor composite ``Outcome`` IN PLACE with the pursuit observation
+    contract that ``GoalPursuit`` + ``build_experiential_sink`` read. Derives ``verified`` from the
+    composite status (the selector's authoritative SUCCESS verdict → verified) and carries
+    ``goal_id``/``objective``/``procedure_ids`` from the proposal so the goal queue resolves
+    correctly and the sink can attribute + discharge. ``infra`` is False: a tool loop always ran
+    (a gate-blocked run is a real non-achievement, not missing infrastructure). ``setdefault`` so a
+    handler that already spoke the contract is never clobbered."""
+    from nmem_act import OutcomeStatus
+    obs = outcome.observations if isinstance(outcome.observations, dict) else {}
+    params = proposal.params or {}
+    obs.setdefault("verified", outcome.status == OutcomeStatus.SUCCESS)
+    obs.setdefault("infra", False)
+    obs.setdefault("status", outcome.status.value)
+    if params.get("goal_id") is not None:
+        obs.setdefault("goal_id", params.get("goal_id"))
+    obs.setdefault("objective", params.get("objective") or proposal.rationale or "")
+    if params.get("procedure_ids"):
+        obs.setdefault("procedure_ids", params.get("procedure_ids"))
+    outcome.observations = obs
+
+
+class _PursuitContractExecutor:
+    """Wrap a ``ToolCallingExecutor`` so its composite outcome speaks the pursuit contract.
+
+    Runs the inner (sink-less) tool loop, enriches the composite ``Outcome`` into the pursuit
+    observation contract, then fires the outcome sink — so the experiential loop and the pursuit
+    queue both see ``verified``/``infra``/``goal_id``/``objective``/``procedure_ids``. Implements
+    the nmem-act ``ActionExecutor`` protocol (``execute(proposal) -> Outcome``), so it drops into
+    ``AgentRuntime(build_executor=…)`` / ``GoalPursuit`` unchanged."""
+
+    def __init__(self, inner, sink=None):
+        self._inner = inner
+        self._sink = sink
+
+    async def execute(self, proposal):
+        outcome = await self._inner.execute(proposal)   # inner runs sink-less
+        _apply_pursuit_contract(proposal, outcome)
+        if self._sink is not None:
+            try:
+                await self._sink(proposal, outcome)
+            except Exception:  # noqa: BLE001
+                log.warning("[actors] outcome sink failed", exc_info=True)
+        return outcome
 
 
 async def run(executor, goal: str, *, capability_class=None):

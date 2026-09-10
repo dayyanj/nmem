@@ -384,3 +384,132 @@ def test_assemble_registry_from_webhooks():
         assert weather.parameters["properties"]["city"]["type"] == "string"
         await aclose()   # no live sessions → no-op, but must not raise
     asyncio.run(go())
+
+
+def test_pursuit_contract_enrichment_maps_status_and_carries_proposal_fields():
+    # A ToolCallingExecutor composite carries only observations={"steps":…}. The integration
+    # wrapper must translate it into the pursuit contract (verified/infra/goal_id/objective/
+    # procedure_ids) so GoalPursuit resolves correctly and the experiential sink can attribute.
+    from nmem_act import ActionProposal, Outcome, OutcomeStatus
+    from nmem.agent_core.actors import _apply_pursuit_contract
+
+    proposal = ActionProposal(action_type="llm_tool_call", rationale="find X",
+                              params={"goal_id": 42, "objective": "understand X",
+                                      "procedure_ids": [7, 9]})
+    ok = Outcome(proposal_id="p1", status=OutcomeStatus.SUCCESS, observations={"steps": [1]})
+    _apply_pursuit_contract(proposal, ok)
+    assert ok.observations["verified"] is True          # SUCCESS → verified
+    assert ok.observations["infra"] is False            # a tool loop always ran
+    assert ok.observations["status"] == "success"
+    assert ok.observations["goal_id"] == 42             # carried from proposal.params
+    assert ok.observations["objective"] == "understand X"
+    assert ok.observations["procedure_ids"] == [7, 9]
+    assert ok.observations["steps"] == [1]              # existing composite field preserved
+
+    bad = Outcome(proposal_id="p2", status=OutcomeStatus.FAILURE, observations={"steps": []})
+    _apply_pursuit_contract(ActionProposal(action_type="llm_tool_call", rationale="g"), bad)
+    assert bad.observations["verified"] is False        # FAILURE → not verified
+    assert bad.observations["objective"] == "g"         # falls back to rationale when no params
+
+
+def test_pursuit_contract_setdefault_does_not_clobber():
+    # If a run already spoke the contract, enrichment must not overwrite it.
+    from nmem_act import ActionProposal, Outcome, OutcomeStatus
+    from nmem.agent_core.actors import _apply_pursuit_contract
+    o = Outcome(proposal_id="p", status=OutcomeStatus.SUCCESS,
+                observations={"steps": [], "verified": False, "infra": True})
+    _apply_pursuit_contract(ActionProposal(action_type="x"), o)
+    assert o.observations["verified"] is False and o.observations["infra"] is True
+
+
+def test_pursuit_contract_executor_enriches_then_fires_sink():
+    # The wrapper must (1) enrich the outcome and (2) hand the ENRICHED outcome to the sink —
+    # and still enrich when no sink is wired (the returned Outcome the pursuit loop reads).
+    from nmem_act import ActionProposal, Outcome, OutcomeStatus
+    from nmem.agent_core.actors import _PursuitContractExecutor
+
+    class _StubInner:
+        async def execute(self, proposal):
+            return Outcome(proposal_id=proposal.id or "x", status=OutcomeStatus.SUCCESS,
+                           observations={"steps": ["a", "b"]})
+
+    seen = {}
+
+    async def _sink(proposal, outcome):
+        seen["verified"] = outcome.observations.get("verified")
+        seen["goal_id"] = outcome.observations.get("goal_id")
+
+    async def go():
+        prop = ActionProposal(action_type="llm_tool_call", rationale="do", params={"goal_id": 5})
+        exe = _PursuitContractExecutor(_StubInner(), _sink)
+        out = await exe.execute(prop)
+        assert out.observations["verified"] is True and out.observations["goal_id"] == 5
+        assert seen == {"verified": True, "goal_id": 5}     # sink saw the ENRICHED outcome
+        out2 = await _PursuitContractExecutor(_StubInner(), None).execute(prop)
+        assert out2.observations["verified"] is True and out2.observations["infra"] is False
+    asyncio.run(go())
+
+
+def test_build_executor_returns_pursuit_contract_wrapper():
+    # build_executor must return the wrapper (not a bare ToolCallingExecutor) so the composite
+    # outcome speaks the pursuit contract. Constructed with a stub backend (no LLM call at build).
+    from nmem_act import ActionRegistry
+    from nmem.agent_core.actors import build_executor, _PursuitContractExecutor
+
+    class _StubBackend:
+        async def chat(self, *a, **k):
+            return ""
+        async def chat_with_tools(self, *a, **k):
+            raise AssertionError("not called at build time")
+
+    exe = build_executor(ActionRegistry(), backend=_StubBackend())
+    assert isinstance(exe, _PursuitContractExecutor)
+    assert hasattr(exe, "execute")                      # ActionExecutor protocol
+
+
+def test_pursuit_contract_blocked_and_error_outcomes_enriched_and_sunk():
+    # Non-SUCCESS composites (gate-blocked / tool error) must still be enriched (verified=False,
+    # infra=False so the queue resolves them failed rather than retrying forever) and still reach
+    # the sink exactly once — matching the old inline-sink path that fired on every outcome.
+    from nmem_act import ActionProposal, Outcome, OutcomeStatus
+    from nmem.agent_core.actors import _PursuitContractExecutor
+
+    sunk = []
+
+    async def _sink(proposal, outcome):
+        sunk.append(outcome.status)
+
+    async def go():
+        for st in (OutcomeStatus.BLOCKED, OutcomeStatus.ERROR):
+            inner = type("I", (), {"execute": staticmethod(
+                lambda p, _st=st: _mk(_st))})()
+            out = await _PursuitContractExecutor(inner, _sink).execute(
+                ActionProposal(action_type="llm_tool_call", rationale="g", params={"goal_id": 1}))
+            assert out.observations["verified"] is False   # only SUCCESS verifies
+            assert out.observations["infra"] is False       # blocked/error ran; not an infra miss
+            assert out.observations["goal_id"] == 1
+        assert sunk == [OutcomeStatus.BLOCKED, OutcomeStatus.ERROR]   # sink fired on both
+
+    async def _mk(status):
+        return Outcome(proposal_id="p", status=status, observations={"steps": []})
+    asyncio.run(go())
+
+
+def test_pursuit_contract_sink_exception_is_swallowed():
+    # A sink that raises must not break execute() — the enriched Outcome is still returned
+    # (the wrapper guards the sink call, like ToolCallingExecutor._finish did).
+    from nmem_act import ActionProposal, Outcome, OutcomeStatus
+    from nmem.agent_core.actors import _PursuitContractExecutor
+
+    class _Inner:
+        async def execute(self, proposal):
+            return Outcome(proposal_id="p", status=OutcomeStatus.SUCCESS, observations={"steps": []})
+
+    async def _boom(proposal, outcome):
+        raise RuntimeError("sink blew up")
+
+    async def go():
+        out = await _PursuitContractExecutor(_Inner(), _boom).execute(
+            ActionProposal(action_type="llm_tool_call", rationale="g"))
+        assert out.observations["verified"] is True     # returned despite sink failure
+    asyncio.run(go())
