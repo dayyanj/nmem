@@ -68,9 +68,11 @@ class FakeBackend:
     def __init__(self, reply="the reply"):
         self.reply = reply
         self.last_messages = None
+        self.last_extra = None
 
-    async def chat(self, messages, *, temperature=0.4, max_tokens=700):
+    async def chat(self, messages, *, temperature=0.4, max_tokens=700, **extra):
         self.last_messages = messages
+        self.last_extra = extra
         return self.reply
 
 
@@ -292,3 +294,61 @@ async def test_converse_survives_broken_continuity():
 async def rt_converse(runtime, message, **kw):
     """converse() takes the runtime positionally; thin wrapper for readability."""
     return await chat.converse(runtime, message, **kw)
+
+
+# ── converse: metacognitive reasoning_effort actuator (Level 4) ─────────────────
+
+
+class _MetacogMem(FakeMem):
+    """FakeMem + a control_recommendations seam returning a configurable rec dict (or
+    raising, to prove fail-open)."""
+
+    def __init__(self, *, recs=None, raises=False, **kw):
+        super().__init__(**kw)
+        self._recs = recs
+        self._raises = raises
+        self.control_calls = []
+
+    async def control_recommendations(self, context: dict) -> dict:
+        self.control_calls.append(context)
+        if self._raises:
+            raise RuntimeError("seam exploded")
+        return dict(self._recs or {})
+
+
+@pytest.mark.asyncio
+async def test_converse_applies_reasoning_effort_rec():
+    mem = _MetacogMem(recs={"reasoning_effort": "high"})
+    backend = FakeBackend(reply="ok")
+    await rt_converse(FakeRuntime(mem, backend), "hard question", continuity=False)
+    # the rec was requested for this turn's task and applied as a chat kwarg
+    assert mem.control_calls[0]["task"] == "hard question"
+    assert "reasoning_effort" in mem.control_calls[0]["actuators"]
+    assert backend.last_extra == {"reasoning_effort": "high"}
+
+
+@pytest.mark.asyncio
+async def test_converse_no_rec_leaves_call_unchanged():
+    # off/canary → control_recommendations returns {} → no extra on the brain call
+    mem = _MetacogMem(recs={})
+    backend = FakeBackend()
+    await rt_converse(FakeRuntime(mem, backend), "hi", continuity=False)
+    assert backend.last_extra == {}
+
+
+@pytest.mark.asyncio
+async def test_converse_metacog_failopen():
+    # seam raises → converse still answers, no extra applied
+    mem = _MetacogMem(raises=True)
+    backend = FakeBackend(reply="still answered")
+    reply = await rt_converse(FakeRuntime(mem, backend), "hi", continuity=False)
+    assert reply == "still answered"
+    assert backend.last_extra == {}
+
+
+@pytest.mark.asyncio
+async def test_converse_no_seam_no_extra():
+    # a mem without control_recommendations (plain FakeMem) → no extra, no error
+    backend = FakeBackend()
+    await rt_converse(FakeRuntime(FakeMem(), backend), "hi", continuity=False)
+    assert backend.last_extra == {}

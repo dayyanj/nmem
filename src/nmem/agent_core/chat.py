@@ -102,7 +102,38 @@ async def converse(runtime, message: str, *, history: list[dict] | None = None,
     messages = [{"role": "system", "content": system}]
     messages += list(history or [])
     messages.append({"role": "user", "content": message})
-    reply = await runtime.backend.chat(messages, temperature=temperature, max_tokens=max_tokens)
+    # Metacognitive control (Level 4): fetch this turn's host-actuator recommendations
+    # and apply them to the brain call. The stack (recommend_mode) decides whether anything
+    # comes back ({} in off/canary); converse is a dumb applier and the backend's
+    # _apply_family maps the abstract level to the model family's dialect. Fail-open.
+    extra = await _metacog_extra(runtime, message)
+    reply = await runtime.backend.chat(messages, temperature=temperature,
+                                       max_tokens=max_tokens, **extra)
     if continuity:
         await record_turn_checkpoint(runtime.mem, runtime.agent_id, message, reply)
     return reply
+
+
+async def _metacog_extra(runtime, message: str) -> dict:
+    """This turn's metacognitive lever recommendations mapped to backend.chat kwargs.
+
+    Asks the stack's control seam (``mem.control_recommendations``) for the levers converse
+    honours — currently ``reasoning_effort`` — with a ControlContext scoped to this turn's
+    task. Returns {} (an unchanged call) when there is no seam, the stack returns nothing
+    (off/canary), or anything errors. The abstract level is passed straight through as
+    ``reasoning_effort``; the backend's ``_apply_family`` collapses it to the model family's
+    real lever (Qwen: enable_thinking + token budget; gemma/generic: no-op)."""
+    fn = getattr(getattr(runtime, "mem", None), "control_recommendations", None)
+    if fn is None:
+        return {}
+    try:
+        recs = await fn({
+            "agent_id": runtime.agent_id,
+            "task": message,
+            "actuators": ["reasoning_effort"],
+        })
+    except Exception as e:  # noqa: BLE001
+        log.debug("[chat] metacog recommendations failed (fail-open): %s", e)
+        return {}
+    eff = (recs or {}).get("reasoning_effort")
+    return {"reasoning_effort": eff} if eff else {}

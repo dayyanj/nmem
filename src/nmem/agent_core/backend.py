@@ -29,6 +29,11 @@ log = logging.getLogger(__name__)
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
+# Qwen thinking needs token headroom: an unclosed <think> block otherwise consumes the
+# whole budget and content comes back empty (verified on Qwen3-30B-A3B-AWQ @ stock vLLM).
+# When a metacog actuator turns thinking ON, floor max_tokens to at least this.
+_QWEN_THINK_MIN_TOKENS = 1024
+
 
 @dataclass
 class ToolCall:
@@ -64,10 +69,30 @@ class OpenAICompatibleBackend:
         return h
 
     def _apply_family(self, body: dict, extra: dict):
-        """Inject the param dialect for this model family (only where it applies)."""
+        """Inject the param dialect for this model family (only where it applies).
+
+        Qwen (this endpoint = stock vLLM) has a BINARY reasoning lever:
+        ``chat_template_kwargs.enable_thinking`` on/off. An abstract ``reasoning_effort``
+        (from the metacog actuator, low|medium|high) is COLLAPSED to that binary —
+        low/None → off, medium/high/xhigh → on — and forwarded as ``reasoning_effort``
+        too (the radiance fork honours it as graded; stock vLLM ignores it). Thinking
+        needs token headroom (see ``_QWEN_THINK_MIN_TOKENS``), so max_tokens is floored
+        when it is on. INVARIANT: with no ``reasoning_effort``/``enable_thinking`` in
+        ``extra`` (the default path, e.g. michelle's normal turns), thinking stays OFF
+        and max_tokens is untouched — byte-identical to before the actuator existed."""
         if self.family == "qwen":
-            body["reasoning_effort"] = extra.get("reasoning_effort", "medium")
-            body["chat_template_kwargs"] = {"enable_thinking": extra.get("enable_thinking", False)}
+            eff = extra.get("reasoning_effort")            # None when not requested
+            if "enable_thinking" in extra:                 # explicit wins
+                think = bool(extra["enable_thinking"])
+            elif eff is not None:                          # binary collapse of the level
+                think = str(eff) in ("medium", "high", "xhigh")
+            else:
+                think = False                              # default: no thinking (unchanged)
+            body["chat_template_kwargs"] = {"enable_thinking": think}
+            if eff is not None:
+                body["reasoning_effort"] = eff             # forward only when requested
+            if think and body.get("max_tokens", 0) < _QWEN_THINK_MIN_TOKENS:
+                body["max_tokens"] = _QWEN_THINK_MIN_TOKENS
         # gemma / generic: nothing — the server-side parser (e.g. gemma4) handles it.
 
     async def _post(self, body: dict) -> dict:
