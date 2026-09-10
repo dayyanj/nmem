@@ -25,6 +25,10 @@ def _goal_objective(g: Any) -> str:
     return (getattr(g, "objective", None) if not isinstance(g, dict) else g.get("objective")) or ""
 
 
+def _goal_source_type(g: Any):
+    return getattr(g, "source_type", None) if not isinstance(g, dict) else g.get("source_type")
+
+
 class SymbolGoalStore:
     """nmem-act ``GoalStore`` over ``symbol_goals``, filtered to one ``source_type`` and —
     in a hive (Path B / B-i) — to one ``owner_agent``.
@@ -61,7 +65,8 @@ class SymbolGoalStore:
         for r in rows:
             gid, obj = _goal_id(r), _goal_objective(r)
             if gid is not None and obj:
-                out.append(PursuitGoal(id=gid, objective=obj))
+                out.append(PursuitGoal(id=gid, objective=obj,
+                                       source_type=_goal_source_type(r)))
         return out
 
     async def claim(self, goal_id: Any) -> bool:
