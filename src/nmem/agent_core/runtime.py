@@ -122,9 +122,11 @@ class AgentRuntime:
         self._prediction = None
         self._runner = None
         self._pursuit = None
+        self._planned_pursuit = None          # §30.4: optional 2nd pursuit over planned goals
         self._consol_task = None
         self._drive_task = None
         self._pursue_task = None
+        self._planned_pursue_task = None
         self._lifecycle_task = None
         self._keeper_watch_task = None
         self._keeper_dsn = self._keeper_key = None
@@ -253,14 +255,16 @@ class AgentRuntime:
                 log.warning("[runtime] keeper release: %s", e)
             self._keeper_lock = None
             self.is_keeper = False
-        for t in (self._pursue_task, self._drive_task, self._lifecycle_task):
+        for t in (self._pursue_task, self._planned_pursue_task, self._drive_task,
+                  self._lifecycle_task):
             if t is not None:
                 t.cancel()
                 try:
                     await t
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
-        self._drive_task = self._pursue_task = self._lifecycle_task = self._pursuit = None
+        self._drive_task = self._pursue_task = self._planned_pursue_task = None
+        self._lifecycle_task = self._pursuit = self._planned_pursuit = None
         try:
             if self.mem is not None and hasattr(self.mem, "stop_consolidation"):
                 self.mem.stop_consolidation()
@@ -463,8 +467,23 @@ class AgentRuntime:
             self._runner, self._build_proposal)
         interval = float(pcfg.get("interval_seconds", 300))
         cap = max(1, int(pcfg.get("max_per_cycle", 1)))
-        self._pursue_task = asyncio.create_task(self._pursue_loop(interval, cap))
+        self._pursue_task = asyncio.create_task(self._pursue_loop(self._pursuit, interval, cap))
         log.info("[runtime] pursuit loop started (cap %d/cycle, every %ss)", cap, interval)
+        # §30.4: a SECOND pursuit over PLANNED goals (any source_type), sharing the same executor +
+        # proposal builder, so validated-but-unexecuted plans (e.g. michelle's "Establish: X"
+        # decomposition goals) actually get pursued. Gated by pursuit.planned.enabled (default off).
+        plcfg = (pcfg.get("planned", {}) or {})
+        if plcfg.get("enabled", False):
+            self._planned_pursuit = GoalPursuit(
+                SymbolGoalStore(self.graph.pool, source_type=None,
+                                owner_agent=self.hive.agent_id, dispatch="planned"),
+                self._runner, self._build_proposal)
+            p_interval = float(plcfg.get("interval_seconds", interval))
+            p_cap = max(1, int(plcfg.get("max_per_cycle", cap)))
+            self._planned_pursue_task = asyncio.create_task(
+                self._pursue_loop(self._planned_pursuit, p_interval, p_cap))
+            log.info("[runtime] PLANNED pursuit loop started (cap %d/cycle, every %ss)",
+                     p_cap, p_interval)
         return True
 
     # ── loops ─────────────────────────────────────────────────────
@@ -480,13 +499,13 @@ class AgentRuntime:
                 log.warning("[runtime] drive tick failed", exc_info=True)
             await asyncio.sleep(tick)
 
-    async def _pursue_loop(self, interval: float, cap: int) -> None:
-        if self._pursuit is not None:
-            await self._pursuit.recover()   # un-strand goals from a prior hard stop
+    async def _pursue_loop(self, pursuit, interval: float, cap: int) -> None:
+        if pursuit is not None:
+            await pursuit.recover()   # un-strand goals from a prior hard stop (selector-aware, §30.6)
         while True:
             try:
-                if self._pursuit is not None:
-                    await self._pursuit.run_once(cap)
+                if pursuit is not None:
+                    await pursuit.run_once(cap)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
