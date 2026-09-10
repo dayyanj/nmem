@@ -70,9 +70,15 @@ class FakeBackend:
         self.last_messages = None
         self.last_extra = None
 
-    async def chat(self, messages, *, temperature=0.4, max_tokens=700, **extra):
+    async def chat(self, messages, *, temperature=0.4, max_tokens=700,
+                   usage_sink=None, **extra):
         self.last_messages = messages
         self.last_extra = extra
+        self.usage_sink_seen = usage_sink            # None in production, a list under eval
+        if usage_sink is not None:                   # mimic a real backend's cost record
+            usage_sink.append({"attempt": 1, "usage": {"completion_tokens": 42},
+                               "max_tokens": max_tokens,
+                               "enable_thinking": extra.get("reasoning_effort") in ("medium", "high")})
         return self.reply
 
 
@@ -352,3 +358,99 @@ async def test_converse_no_seam_no_extra():
     backend = FakeBackend()
     await rt_converse(FakeRuntime(FakeMem(), backend), "hi", continuity=False)
     assert backend.last_extra == {}
+
+
+# ── EVAL-ONLY per-request arm control + audit (design §16.7) ──
+
+def _arm_sentinel(recs, audit):
+    return {"__metacog_arm__": True, "recs": recs, "audit": audit}
+
+
+@pytest.mark.asyncio
+async def test_converse_production_passes_no_usage_sink():
+    # metacog_audit=None (production) → backend called with NO usage_sink kwarg at all,
+    # so a custom backend lacking that param is unaffected (byte-identical claim).
+    mem = _MetacogMem(recs={})
+    backend = FakeBackend()
+    await rt_converse(FakeRuntime(mem, backend), "hi", continuity=False)
+    assert backend.usage_sink_seen is None
+    # and no arm key leaked into the seam context on an ordinary turn (codex P2-8)
+    assert "arm" not in mem.control_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_converse_arm_applies_recs_and_fills_audit():
+    audit = {"arm": "on", "status": "applied",
+             "baseline_signals": {"uncertainty_pressure": 1.0}, "directive": {"deliberation": 0.5}}
+    mem = _MetacogMem(recs=_arm_sentinel({"reasoning_effort": "medium"}, audit))
+    backend = FakeBackend(reply="thought about it")
+    sink = {}
+    reply = await rt_converse(FakeRuntime(mem, backend), "hard", continuity=False,
+                              metacog_arm="on", metacog_audit=sink)
+    assert reply == "thought about it"
+    assert backend.last_extra == {"reasoning_effort": "medium"}          # arm rec applied
+    assert mem.control_calls[0]["arm"] == "on"                           # arm threaded to seam
+    # audit filled: arm telemetry + applied levers + realized backend cost
+    assert sink["arm"] == "on" and sink["status"] == "applied"
+    assert sink["baseline_signals"]["uncertainty_pressure"] == 1.0
+    assert sink["applied_extra"] == {"reasoning_effort": "medium"}
+    assert sink["backend_calls"][0]["usage"]["completion_tokens"] == 42
+
+
+@pytest.mark.asyncio
+async def test_converse_arm_competence_override_threaded():
+    mem = _MetacogMem(recs=_arm_sentinel({}, {"arm": "competence_shuffled", "status": "applied"}))
+    backend = FakeBackend()
+    ov = {"stance": "strong", "known": True, "success_rate": 0.9, "evidence": 1.0}
+    await rt_converse(FakeRuntime(mem, backend), "q", continuity=False,
+                      metacog_arm="competence_shuffled", metacog_competence_override=ov,
+                      metacog_audit={})
+    assert mem.control_calls[0]["competence_override"] == ov
+
+
+@pytest.mark.asyncio
+async def test_converse_arm_off_status_records_but_applies_nothing():
+    audit = {"arm": "off", "status": "off", "baseline_signals": {"uncertainty_pressure": 0.2}}
+    mem = _MetacogMem(recs=_arm_sentinel({}, audit))
+    backend = FakeBackend()
+    sink = {}
+    await rt_converse(FakeRuntime(mem, backend), "q", continuity=False,
+                      metacog_arm="off", metacog_audit=sink)
+    assert backend.last_extra == {}                    # deliberate null arm → no lever
+    assert sink["status"] == "off"                     # but the trial is recorded (not fail-open)
+    assert sink["backend_calls"] is not None           # cost still captured for equal-cost checks
+
+
+@pytest.mark.asyncio
+async def test_converse_arm_failopen_still_answers():
+    mem = _MetacogMem(raises=True)
+    backend = FakeBackend(reply="answered anyway")
+    sink = {}
+    reply = await rt_converse(FakeRuntime(mem, backend), "q", continuity=False,
+                              metacog_arm="on", metacog_audit=sink)
+    assert reply == "answered anyway"
+    assert backend.last_extra == {}                    # no lever applied on seam failure
+
+
+class _RaisingBackend:
+    """Backend that records a first attempt's cost into usage_sink, then raises — mimics a
+    Qwen retry timeout after the first attempt already burned its budget (codex P2)."""
+
+    async def chat(self, messages, *, temperature=0.4, max_tokens=700, usage_sink=None, **extra):
+        if usage_sink is not None:
+            usage_sink.append({"attempt": 1, "usage": {"completion_tokens": 1024}})
+        raise TimeoutError("retry timed out")
+
+
+@pytest.mark.asyncio
+async def test_converse_arm_preserves_audit_and_usage_on_backend_failure():
+    mem = _MetacogMem(recs=_arm_sentinel({"reasoning_effort": "high"},
+                                         {"arm": "on", "status": "applied"}))
+    sink = {}
+    with pytest.raises(TimeoutError):
+        await rt_converse(FakeRuntime(mem, _RaisingBackend()), "q", continuity=False,
+                          metacog_arm="on", metacog_audit=sink)
+    # even though the turn failed, the arm metadata + the first attempt's cost survive
+    assert sink["arm"] == "on"
+    assert sink["applied_extra"] == {"reasoning_effort": "high"}
+    assert sink["backend_calls"][0]["usage"]["completion_tokens"] == 1024

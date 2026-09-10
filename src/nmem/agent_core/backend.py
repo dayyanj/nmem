@@ -101,14 +101,31 @@ class OpenAICompatibleBackend:
             r.raise_for_status()
             return r.json()
 
+    @staticmethod
+    def _record_usage(usage_sink, attempt: int, body: dict, choice: dict, j: dict):
+        """EVAL-ONLY (RCT cost accounting, codex P1-2/P1-3): append this backend call's
+        realized cost + applied settings. ``usage_sink is None`` in production → no-op,
+        byte-identical. Records EVERY attempt (incl. the thinking-truncation retry) so
+        'equal compute' can be MEASURED, not assumed from the thinking-ON rate."""
+        if usage_sink is None:
+            return
+        usage_sink.append({
+            "attempt": attempt,
+            "usage": j.get("usage"),
+            "finish_reason": choice.get("finish_reason"),
+            "max_tokens": body.get("max_tokens"),
+            "enable_thinking": (body.get("chat_template_kwargs") or {}).get("enable_thinking"),
+        })
+
     async def chat(self, messages: list[dict], *, temperature: float = 0.3,
-                   max_tokens: int = 1024, **extra) -> str:
+                   max_tokens: int = 1024, usage_sink: list | None = None, **extra) -> str:
         body = {"model": self.model, "messages": messages,
                 "temperature": temperature, "max_tokens": max_tokens}
         self._apply_family(body, extra)
         j = await self._post(body)
         choice = j["choices"][0]
         content = _THINK_RE.sub("", choice["message"].get("content") or "").strip()
+        self._record_usage(usage_sink, 1, body, choice, j)
         # Qwen thinking can consume the ENTIRE completion budget (the token floor reduces
         # but does not eliminate this) → empty content + finish_reason='length'. The floor
         # is not a real guard; recover with a bounded SINGLE retry with thinking OFF so the
@@ -119,7 +136,9 @@ class OpenAICompatibleBackend:
             log.info("[backend] qwen thinking truncated to empty content — retrying without thinking")
             body["chat_template_kwargs"] = {"enable_thinking": False}
             j = await self._post(body)
-            content = _THINK_RE.sub("", j["choices"][0]["message"].get("content") or "").strip()
+            choice = j["choices"][0]
+            content = _THINK_RE.sub("", choice["message"].get("content") or "").strip()
+            self._record_usage(usage_sink, 2, body, choice, j)
         return content
 
     async def chat_with_tools(self, messages: list[dict], tools: list[dict], *,
@@ -206,13 +225,17 @@ class AnthropicBackend:
             return r.json()
 
     async def chat(self, messages: list[dict], *, temperature: float = 0.3,
-                   max_tokens: int = 1024, **extra) -> str:
+                   max_tokens: int = 1024, usage_sink: list | None = None, **extra) -> str:
         system, msgs = self._split_system(messages)
         body = {"model": self.model, "max_tokens": max_tokens, "temperature": temperature, "messages": msgs}
         if system:
             body["system"] = system
         self._apply_thinking(body, extra)
         j = await self._post(body)
+        if usage_sink is not None:   # eval-only cost accounting; no-op in production
+            usage_sink.append({"attempt": 1, "usage": j.get("usage"),
+                               "finish_reason": j.get("stop_reason"), "max_tokens": body["max_tokens"],
+                               "thinking": bool(body.get("thinking"))})
         return "".join(b.get("text", "") for b in j.get("content", []) if b.get("type") == "text").strip()
 
     async def chat_with_tools(self, messages: list[dict], tools: list[dict], *,

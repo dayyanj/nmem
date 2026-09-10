@@ -107,3 +107,43 @@ async def test_qwen_normal_reply_no_retry(monkeypatch):
     monkeypatch.setattr(b, "_post", fake_post)
     reply = await b.chat([{"role": "user", "content": "hi"}], reasoning_effort="high")
     assert reply == "fine" and n["count"] == 1        # no retry on a clean reply
+
+
+# ── usage_sink: eval-only realized-cost accounting (codex P1-2/P1-3) ──
+
+@pytest.mark.asyncio
+async def test_usage_sink_records_both_attempts_on_truncation_retry(monkeypatch):
+    b = _qwen()
+
+    async def fake_post(body):
+        if body.get("chat_template_kwargs", {}).get("enable_thinking"):
+            return {"choices": [{"message": {"content": ""}, "finish_reason": "length"}],
+                    "usage": {"completion_tokens": 1024}}
+        return {"choices": [{"message": {"content": "answer"}, "finish_reason": "stop"}],
+                "usage": {"completion_tokens": 30}}
+
+    monkeypatch.setattr(b, "_post", fake_post)
+    sink = []
+    reply = await b.chat([{"role": "user", "content": "hard"}],
+                         reasoning_effort="high", max_tokens=700, usage_sink=sink)
+    assert reply == "answer"
+    # BOTH backend calls recorded — so 'equal compute' can be MEASURED, not assumed.
+    assert [c["attempt"] for c in sink] == [1, 2]
+    assert sink[0]["enable_thinking"] is True and sink[0]["max_tokens"] == _QWEN_THINK_MIN_TOKENS
+    assert sink[1]["enable_thinking"] is False
+    assert sink[0]["usage"]["completion_tokens"] == 1024
+    assert sink[1]["usage"]["completion_tokens"] == 30
+
+
+@pytest.mark.asyncio
+async def test_usage_sink_none_is_untouched(monkeypatch):
+    b = _qwen()
+
+    async def fake_post(body):
+        return {"choices": [{"message": {"content": "fine"}, "finish_reason": "stop"}],
+                "usage": {"completion_tokens": 10}}
+
+    monkeypatch.setattr(b, "_post", fake_post)
+    # production path: no usage_sink → no error, plain reply (byte-identical)
+    reply = await b.chat([{"role": "user", "content": "hi"}], reasoning_effort="high")
+    assert reply == "fine"

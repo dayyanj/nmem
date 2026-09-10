@@ -76,7 +76,10 @@ async def build_context(mem, agent_id: str, query: str, *, session_id: str | Non
 async def converse(runtime, message: str, *, history: list[dict] | None = None,
                    session_id: str | None = None, temperature: float = 0.4,
                    max_tokens: int = 700, continuity: bool = True,
-                   continuity_tokens: int = 1200) -> str:
+                   continuity_tokens: int = 1200,
+                   metacog_arm: str | None = None,
+                   metacog_competence_override: dict | None = None,
+                   metacog_audit: dict | None = None) -> str:
     """Hold one grounded turn: system prompt (persona) + the living continuity snapshot +
     retrieved memory for `message` + prior `history` ([{role,content},...]) + the user turn →
     the agent's backend → reply. After replying, advance the continuity checkpoint so the next
@@ -87,7 +90,15 @@ async def converse(runtime, message: str, *, history: list[dict] | None = None,
     cognition has consolidated — independent of the transient chat history.
 
     `continuity` (default on) gates both the wake-snapshot read and the checkpoint write; set
-    it False for a pure query-grounded turn with no reorientation overhead."""
+    it False for a pure query-grounded turn with no reorientation overhead.
+
+    `metacog_arm` / `metacog_competence_override` / `metacog_audit` are EVAL-ONLY (the RCT
+    rig, design §16.7) and default to None → this function is byte-identical to production.
+    When `metacog_arm` is set the stack (iff it has eval enabled) applies that arm's lever
+    recommendations for this turn; when `metacog_audit` (a mutable dict) is supplied it is
+    filled with the request-linked audit — assigned arm, untransformed baseline signals,
+    the applied directive/levers, and per-call backend usage — for the analysis, and kept
+    OUT of the prompt and the reply."""
     persona = runtime._persona
     ctx = await build_context(runtime.mem, runtime.agent_id, message, session_id=session_id)
     cont = (await continuity_block(runtime.mem, runtime.agent_id, query=message,
@@ -106,34 +117,68 @@ async def converse(runtime, message: str, *, history: list[dict] | None = None,
     # and apply them to the brain call. The stack (recommend_mode) decides whether anything
     # comes back ({} in off/canary); converse is a dumb applier and the backend's
     # _apply_family maps the abstract level to the model family's dialect. Fail-open.
-    extra = await _metacog_extra(runtime, message)
-    reply = await runtime.backend.chat(messages, temperature=temperature,
-                                       max_tokens=max_tokens, **extra)
+    extra, audit = await _metacog_extra(runtime, message, arm=metacog_arm,
+                                        competence_override=metacog_competence_override)
+    # Production (metacog_audit is None): call the backend EXACTLY as before — no
+    # usage_sink kwarg is passed at all, so a custom backend without that parameter is
+    # unaffected and this stays byte-identical. Eval only: capture per-call usage.
+    kw = {"temperature": temperature, "max_tokens": max_tokens, **extra}
+    usage_sink = [] if metacog_audit is not None else None
+    if metacog_audit is not None:
+        kw["usage_sink"] = usage_sink
+        # Populate the audit BEFORE the backend call. `usage_sink` is attached by
+        # REFERENCE (the backend appends each attempt in place), so if the brain call
+        # raises mid-turn — e.g. a Qwen retry timeout after the first attempt already
+        # burned its token budget — the caller still keeps the arm metadata + whatever
+        # cost was recorded. Populating only after the await would lose it (codex P2).
+        if audit:
+            metacog_audit.update(audit)
+        metacog_audit["applied_extra"] = extra           # the levers actually applied
+        metacog_audit["backend_calls"] = usage_sink      # realized cost, all attempts
+    reply = await runtime.backend.chat(messages, **kw)
     if continuity:
         await record_turn_checkpoint(runtime.mem, runtime.agent_id, message, reply)
     return reply
 
 
-async def _metacog_extra(runtime, message: str) -> dict:
-    """This turn's metacognitive lever recommendations mapped to backend.chat kwargs.
+async def _metacog_extra(runtime, message: str, *, arm: str | None = None,
+                         competence_override: dict | None = None) -> tuple[dict, dict | None]:
+    """This turn's metacognitive lever recommendations mapped to backend.chat kwargs,
+    plus an optional eval audit record. Returns ``(extra, audit)``.
 
     Asks the stack's control seam (``mem.control_recommendations``) for the levers converse
     honours — currently ``reasoning_effort`` — with a ControlContext scoped to this turn's
-    task. Returns {} (an unchanged call) when there is no seam, the stack returns nothing
-    (off/canary), or anything errors. The abstract level is passed straight through as
-    ``reasoning_effort``; the backend's ``_apply_family`` collapses it to the model family's
-    real lever (Qwen: enable_thinking + token budget; gemma/generic: no-op)."""
+    task. ``extra`` is {} (an unchanged call) when there is no seam, the stack returns
+    nothing (off/canary), or anything errors. The abstract level is passed straight through
+    as ``reasoning_effort``; the backend's ``_apply_family`` collapses it to the model
+    family's real lever (Qwen: enable_thinking + token budget; gemma/generic: no-op).
+
+    ``arm`` is EVAL-ONLY (design §16.7). When set, it is added to the seam context and, iff
+    the stack has eval enabled, the seam returns a sentinel-tagged ``{recs, audit}`` which we
+    unpack — otherwise it is ignored and the ordinary env-gated recs come back. Optional keys
+    (``arm``/``competence_override``) are omitted when None so an ordinary turn's context
+    payload is unchanged (codex P2-8)."""
     fn = getattr(getattr(runtime, "mem", None), "control_recommendations", None)
     if fn is None:
-        return {}
+        return {}, None
+    context = {
+        "agent_id": runtime.agent_id,
+        "task": message,
+        "actuators": ["reasoning_effort"],
+    }
+    if arm is not None:
+        context["arm"] = arm
+        if competence_override is not None:
+            context["competence_override"] = competence_override
     try:
-        recs = await fn({
-            "agent_id": runtime.agent_id,
-            "task": message,
-            "actuators": ["reasoning_effort"],
-        })
+        result = await fn(context)
     except Exception as e:  # noqa: BLE001
         log.debug("[chat] metacog recommendations failed (fail-open): %s", e)
-        return {}
-    eff = (recs or {}).get("reasoning_effort")
-    return {"reasoning_effort": eff} if eff else {}
+        return {}, None
+    result = result or {}
+    if result.get("__metacog_arm__"):        # eval arm path: unpack recs + audit
+        recs, audit = (result.get("recs") or {}), result.get("audit")
+    else:                                    # ordinary env-gated recs (production shape)
+        recs, audit = result, None
+    eff = recs.get("reasoning_effort")
+    return ({"reasoning_effort": eff} if eff else {}), audit
