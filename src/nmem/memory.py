@@ -230,6 +230,13 @@ class MemorySystem:
         autonomy layer is disabled."""
         return await self._autonomy.surface_now(query, agent_id, reason=reason)
 
+    async def request_surface_receipt(self, query: str, agent_id: str,
+                                      reason: str = "request"):
+        """As request_surface but returns the typed RetrievalReceipt (design §10 / P0)
+        so the recall-drive contract can distinguish no_match from unavailable and key
+        backoff/settlement on the outcome. Additive; legacy callers keep request_surface."""
+        return await self._autonomy.surface_now_receipt(query, agent_id, reason=reason)
+
     # ── Cognitive backend (subconscious, e.g. nmem-sym) ─────────────────────
 
     def register_cognitive_backend(self, backend) -> None:

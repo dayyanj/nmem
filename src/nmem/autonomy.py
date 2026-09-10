@@ -29,8 +29,37 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class RetrievalReceipt:
+    """Typed outcome of a proactive surface, so a caller (e.g. the recall-drive
+    contract, docs/drive-homeostasis-intake-design.md §10 / P0) can distinguish a
+    genuine *no_match* (searched, nothing relevant — the only outcome that should
+    accrue backoff) from *unavailable* (couldn't search: autonomy disabled or the
+    search raised — an admission delay, never futility) and from *suppressed* (a
+    gated cooldown/novelty skip). Legacy `bool` callers coerce via ``offered``.
+
+    ``result_ids`` are ``(tier, id)`` for surfaced memory + ``("skill", id)`` for
+    skills; ``completeness`` is result_count / top_k (1.0 = the top-k cap was hit,
+    so more may exist). ``query_fingerprint`` / ``corpus_revision`` are reserved
+    for later slice steps (R2/R3/R4) and stay None in P0."""
+    outcome: str  # "surfaced" | "no_match" | "unavailable" | "suppressed"
+    result_ids: tuple = ()
+    result_count: int = 0
+    skill_count: int = 0
+    completeness: float = 0.0
+    query_fingerprint: str | None = None
+    corpus_revision: int | None = None
+
+    @property
+    def offered(self) -> bool:
+        """Byte-identical replacement for the old bool return: True iff something
+        was actually offered."""
+        return self.outcome == "surfaced"
 
 # Entry types produced by nmem's own machinery — never re-process these, or a
 # proactive search that auto-journals an entity access would loop.
@@ -160,18 +189,27 @@ class AutonomyManager:
         reverse channel). Bypasses the cooldown/novelty gates a journal trigger
         uses, but still emits at most one `memory.surfaced`. Returns True iff
         something was offered — the caller (e.g. a drive) uses this for
-        deferred-relief so pressure isn't discharged for a no-op."""
+        deferred-relief so pressure isn't discharged for a no-op.
+
+        Byte-identical bool wrapper over surface_now_receipt (P0)."""
+        return (await self.surface_now_receipt(query, agent_id, reason=reason)).offered
+
+    async def surface_now_receipt(self, query: str, agent_id: str, *,
+                                  reason: str = "request") -> RetrievalReceipt:
+        """As surface_now but returns the typed RetrievalReceipt — the recall-drive
+        contract (design §10) uses the outcome to distinguish no_match from
+        unavailable and to key backoff/settlement."""
         if not self._enabled:
-            return False
+            return RetrievalReceipt("unavailable")
         return await self._maybe_surface(agent_id, query, gated=False, reason=reason)
 
     async def _maybe_surface(self, agent_id: str, query: str, *,
                              project_scope=..., exclude_journal_id: int | None = None,
-                             gated: bool = True, reason: str = "journal") -> bool:
+                             gated: bool = True, reason: str = "journal") -> RetrievalReceipt:
         cfg = self._cfg
         now = time.monotonic()
         if gated and self._cooldown_until.get(agent_id, 0.0) > now:
-            return False
+            return RetrievalReceipt("suppressed")
 
         # Novelty: skip if this trigger is ~identical to the last one we searched
         # for this agent (avoids re-offering the same context repeatedly).
@@ -181,7 +219,7 @@ class AutonomyManager:
             if last is not None:
                 from nmem.search import cosine_similarity
                 if cosine_similarity(emb, last) >= getattr(cfg, "novelty_threshold", 0.6):
-                    return False
+                    return RetrievalReceipt("suppressed")
 
         # Commit to a proactive search THIS tick → arm the cooldown + record the
         # trigger now, before searching. Cooldown must bound search *frequency*,
@@ -202,7 +240,7 @@ class AutonomyManager:
                 project_scope=project_scope, source="autonomy")
         except Exception as e:
             logger.debug("Autonomy proactive search failed: %s", e)
-            return False
+            return RetrievalReceipt("unavailable")
 
         surfaced = []
         for r in results:
@@ -227,13 +265,22 @@ class AutonomyManager:
             logger.debug("Autonomy skill find failed: %s", e)
 
         if not surfaced and not skills:
-            return False
+            return RetrievalReceipt("no_match")
 
         await self._mem._emit("memory.surfaced", {
             "agent_id": agent_id, "trigger": query[:300], "source": "autonomy",
             "reason": reason, "results": surfaced, "skills": skills,
         })
-        return True
+        result_ids = tuple((s["tier"], s["id"]) for s in surfaced) + tuple(
+            ("skill", s["id"]) for s in skills)
+        return RetrievalReceipt(
+            "surfaced",
+            result_ids=result_ids,
+            result_count=len(surfaced),
+            skill_count=len(skills),
+            # raw hits / top_k; ~1.0 ⇒ the top-k cap was likely hit, so more may exist.
+            completeness=round(len(results) / max(top_k, 1), 3),
+        )
 
     # ── helpers ───────────────────────────────────────────────
 

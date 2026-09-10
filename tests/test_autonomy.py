@@ -184,3 +184,50 @@ async def test_request_surface_returns_true_when_offered(au):
 @pytest.mark.asyncio
 async def test_request_surface_noop_when_disabled(mem):
     assert await mem.request_surface("anything", "a1") is False
+
+
+# ── typed RetrievalReceipt (design §10 / P0) ───────────────────
+
+@pytest.mark.asyncio
+async def test_receipt_no_match_distinct_from_unavailable(au):
+    """A searched-but-empty query is no_match (accrues backoff); a disabled layer is
+    unavailable (admission delay only). Both coerce to offered=False, preserving the
+    legacy bool while giving the recall contract the distinction it needs."""
+    r = await au.request_surface_receipt("totally unseen query wibble", "a1")
+    assert r.outcome == "no_match"
+    assert r.offered is False
+    assert r.result_count == 0 and r.result_ids == ()
+
+
+@pytest.mark.asyncio
+async def test_receipt_unavailable_when_disabled(mem):
+    r = await mem.request_surface_receipt("anything", "a1")
+    assert r.outcome == "unavailable"
+    assert r.offered is False
+
+
+@pytest.mark.asyncio
+async def test_receipt_surfaced_carries_result_ids(au):
+    await au.ltm.save(agent_id="a1", category="fact", key="k",
+                      record_type="fact", grounding="confirmed",
+                      content="deploy canary weighting gradually then promote",
+                      importance=7)
+    r = await au.request_surface_receipt(
+        "deploy canary weighting gradually then promote", "a1")
+    assert r.outcome == "surfaced"
+    assert r.offered is True
+    assert r.result_count >= 1
+    assert len(r.result_ids) == r.result_count + r.skill_count
+    assert 0.0 <= r.completeness <= 1.0
+
+
+@pytest.mark.asyncio
+async def test_receipt_bool_wrapper_matches_legacy(au):
+    """surface_now (bool) must equal surface_now_receipt().offered — byte-identical."""
+    await au.ltm.save(agent_id="a1", category="fact", key="k2",
+                      record_type="fact", grounding="confirmed",
+                      content="rollback strategy on failed migration", importance=7)
+    b = await au.autonomy.surface_now("rollback strategy on failed migration", "a1")
+    # a fresh, distinct query so novelty gating (off in tests) / cooldown (0) don't interfere
+    r = await au.autonomy.surface_now_receipt("rollback strategy on failed migration", "a1")
+    assert b is True and r.offered is True
