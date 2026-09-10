@@ -929,6 +929,37 @@ class MemorySystem:
         """
         self._continuity_provider = provider
 
+    def register_control_provider(
+        self, provider: Callable[[dict], Awaitable[dict]]
+    ) -> None:
+        """Register the nmem-sym metacognitive-control seam (Level 4).
+
+        ``provider`` is an async callable ``(context: dict) -> dict`` — the nmem-sym
+        bridge plugs its ``control_recommendations()`` here so a host can fetch concrete
+        lever recommendations for a decision point without nmem depending on nmem-sym.
+        Optional: with no provider, ``control_recommendations`` returns {} (no gating).
+        """
+        self._control_provider = provider
+
+    async def control_recommendations(self, context: dict) -> dict:
+        """Fetch metacognitive lever recommendations for a decision point.
+
+        Delegates to the registered control provider (the nmem-sym bridge) and returns a
+        plain dict of lever→value recommendations (e.g. ``{'reasoning_effort': 'high'}``).
+        Fail-open: returns {} when no provider is registered or the provider errors, so a
+        host can call this unconditionally and a failure never gates cognition. The
+        provider (and the master switch it honours) decides whether anything is emitted.
+        """
+        provider = getattr(self, "_control_provider", None)
+        if provider is None:
+            return {}
+        try:
+            rec = await provider(dict(context or {}))
+            return rec if isinstance(rec, dict) else {}
+        except Exception as e:  # never let the seam break the host's turn
+            logger.warning("Control provider failed: %s", e, exc_info=True)
+            return {}
+
     async def wake(
         self,
         agent_id: str = "default",

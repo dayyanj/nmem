@@ -65,6 +65,28 @@ def install_continuity_provider(mem, bridge) -> bool:
         return False
 
 
+def install_control_provider(mem, bridge) -> bool:
+    """Wire a SymbolBridge's ``control_recommendations()`` into ``mem`` as the
+    metacognitive-control provider (Level 4), so a host can fetch lever recommendations
+    for a decision point via ``mem.control_recommendations(context)``.
+
+    Generic runtime glue (every AgentRuntime-based agent gets it), kept standalone so it
+    is unit-testable without a full runtime. Guarded and fail-open: returns False (no-op)
+    when either side predates the control seam, and never raises into startup. Note the
+    seam is INERT until ``NMEM_SYM_METACOG_ENABLED`` — wiring it is always safe."""
+    reg = getattr(mem, "register_control_provider", None)
+    if reg is None or not hasattr(bridge, "control_recommendations"):
+        return False
+    try:
+        async def _control_provider(context):
+            return await bridge.control_recommendations(context)
+
+        reg(_control_provider)
+        return True
+    except Exception:  # noqa: BLE001 — wiring must never break startup
+        return False
+
+
 class AgentRuntime:
     def __init__(
         self,
@@ -299,6 +321,8 @@ class AgentRuntime:
         self.bridge.connect(mem)
         if install_continuity_provider(mem, self.bridge):
             log.info("[runtime] continuity provider wired (wake <- bridge)")
+        if install_control_provider(mem, self.bridge):
+            log.info("[runtime] control provider wired (metacog <- bridge)")
 
         self._wire_goal_enrichment()
         if self._build_executor is not None:

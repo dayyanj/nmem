@@ -354,6 +354,71 @@ def test_install_continuity_provider_noop_without_support():
     assert install_continuity_provider(MemWithReg(), object()) is False
 
 
+# ── Runtime wiring: install_control_provider (metacog Level-4 seam) ───────────
+
+
+@pytest.mark.asyncio
+async def test_install_control_provider_wires_and_wraps():
+    from nmem.agent_core.runtime import install_control_provider
+
+    class FakeMem:
+        def __init__(self):
+            self.provider = None
+
+        def register_control_provider(self, p):
+            self.provider = p
+
+    class FakeBridge:
+        async def control_recommendations(self, context):
+            return {"reasoning_effort": "high", "seen_ctx": context}
+
+    mem = FakeMem()
+    assert install_control_provider(mem, FakeBridge()) is True
+    assert mem.provider is not None
+    rec = await mem.provider({"actuators": ["reasoning_effort"], "stakes": 0.9})
+    assert rec["reasoning_effort"] == "high"
+    assert rec["seen_ctx"]["stakes"] == 0.9
+
+
+def test_install_control_provider_noop_without_support():
+    from nmem.agent_core.runtime import install_control_provider
+
+    # neither side supports the seam → no-op, False (never raises into startup)
+    assert install_control_provider(object(), object()) is False
+
+
+@pytest.mark.asyncio
+async def test_control_recommendations_failopen():
+    """MemorySystem.control_recommendations is fail-open: {} with no provider, on a
+    provider error, or a non-dict return; passthrough on a dict. No DB needed — call the
+    unbound method against a minimal fake self."""
+    from nmem.memory import MemorySystem
+
+    class FakeSelf:
+        pass
+
+    fs = FakeSelf()
+    assert await MemorySystem.control_recommendations(fs, {"x": 1}) == {}   # no provider
+
+    async def boom(ctx):
+        raise RuntimeError("provider blew up")
+
+    fs._control_provider = boom
+    assert await MemorySystem.control_recommendations(fs, {}) == {}         # error → {}
+
+    async def bad(ctx):
+        return "not a dict"
+
+    fs._control_provider = bad
+    assert await MemorySystem.control_recommendations(fs, {}) == {}         # non-dict → {}
+
+    async def good(ctx):
+        return {"reasoning_effort": "medium"}
+
+    fs._control_provider = good
+    assert await MemorySystem.control_recommendations(fs, {}) == {"reasoning_effort": "medium"}
+
+
 # ── Integration: through MemorySystem.wake() (needs Postgres) ─────────────────
 
 
