@@ -82,11 +82,13 @@ async def build_memory(config: dict):
     return mem
 
 
-async def build_symbol_graph(config: dict):
+async def build_symbol_graph(config: dict, embedder=None):
     """Construct + connect an agent's nmem-sym SymbolGraph from ``config['symbol_graph']``.
 
     Returns None when disabled. MUST be called AFTER build_memory (a sym migration
-    alters an nmem table)."""
+    alters an nmem table). Pass ``embedder`` (the MemorySystem's shared
+    EmbeddingProvider) so the graph reuses one model instance per process instead
+    of loading its own — see docs/proposals/nmem-sym-embedding-seam-unification.md."""
     sg = config.get("symbol_graph", {}) or {}
     if not sg.get("enabled", False):
         log.info("[sym] symbol graph disabled")
@@ -104,6 +106,7 @@ async def build_symbol_graph(config: dict):
         vllm_backends=sg.get("vllm_backends"),
         vllm_model=sg.get("vllm_model"),
         embed_model=sg.get("embed_model", "sentence-transformers/all-MiniLM-L6-v2"),
+        embedder=embedder,
     )
     await graph.connect()   # bootstraps symbol_* tables (migrations)
     log.info("[sym] symbol graph connected (domain=%s)", sg.get("domain"))

@@ -212,6 +212,14 @@ class MemorySystem:
         return self._skills
 
     @property
+    def embedding(self) -> EmbeddingProvider:
+        """The shared text-embedding provider. Exposed so a cognitive backend
+        (nmem-sym) can be injected the SAME model instance instead of loading its
+        own — one model per process, one cache. See
+        docs/proposals/nmem-sym-embedding-seam-unification.md."""
+        return self._embedding
+
+    @property
     def autonomy(self):
         """Autonomous memorize/retrieve layer. Inert until config.autonomy.enabled."""
         return self._autonomy

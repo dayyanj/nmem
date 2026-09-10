@@ -80,10 +80,17 @@ def build_experiential_sink(bridge, mem, agent_id: str):
                 log.warning("[experiential-sink] discharge_drive failed", exc_info=True)
 
         # 3. merit-based finding memory (importance emerges from record_type/grounding + use).
+        # §32.7 P2-1: journal the CLASSIFIED verification_status (honest), not the raw actuator
+        # status — else a verifier-rejected finding reads "Outcome (achieved):" to recall/audit
+        # consumers. Falls back to the raw status when no verifier ran (byte-identical).
+        vstatus = obs.get("verification_status") or status
+        vreason = obs.get("verification_reason")
         try:
             await mem.journal.add(
                 agent_id=agent_id, entry_type="pursuit",
-                title=f"pursued goal #{gid}", content=f"{obj}\n\nOutcome ({status}): {note}",
+                title=f"pursued goal #{gid}",
+                content=(f"{obj}\n\nOutcome ({vstatus}): {note}"
+                         + (f"\n[verify: {vreason}]" if vreason else "")),
                 importance=None, record_type="fact" if verified else "observation",
                 grounding="confirmed" if verified else "inferred")
         except Exception:  # noqa: BLE001

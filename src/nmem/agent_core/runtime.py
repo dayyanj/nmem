@@ -193,7 +193,10 @@ class AgentRuntime:
         if self.mem is None:
             self.mem = await build_memory(self._config)
         if self.graph is None:
-            self.graph = await build_symbol_graph(self._config)
+            # Inject the MemorySystem's shared embedding provider so the graph
+            # reuses one model instance per process (no duplicate MiniLM load).
+            self.graph = await build_symbol_graph(
+                self._config, embedder=getattr(self.mem, "embedding", None))
         if self.backend is None:
             from nmem.agent_core.backend import build_backend
             self.backend = build_backend(self._config)
