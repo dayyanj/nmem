@@ -59,6 +59,10 @@ langchain = ["langchain-core>=0.3,<1"]
 crewai = ["crewai>=0.50,<1"]
 cli = ["typer>=0.12,<1", "rich>=13.0", "tqdm>=4.60"]
 mcp-server = ["mcp>=1.0,<2"]
+# The computer-use actor (agent_core.actors.computer_use) talks HTTP to a computer-use
+# sandbox service. httpx is imported lazily, only when the client performs an HTTP
+# operation — a vanilla `nmem` install that never uses the actor pulls in nothing extra.
+computer-use = ["httpx>=0.27,<1"]
 api = [
     "fastapi>=0.110,<1",
     "uvicorn[standard]>=0.30,<1",
@@ -66,7 +70,7 @@ api = [
     "httpx>=0.27,<1",
 ]
 all = [
-    "nmem[st,openai,anthropic,langchain,crewai,cli,mcp-server,api]",
+    "nmem[st,openai,anthropic,langchain,crewai,cli,mcp-server,api,computer-use]",
 ]
 dev = [
     "nmem[all]",
