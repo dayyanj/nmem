@@ -2,6 +2,10 @@
 
 **Status:** design-only. **Owner:** follow-up session(s). **Written:** 2026-09-07.
 **Companion:** [config-alignment-plan.md](./config-alignment-plan.md) (the settings convention this builds on).
+**Companion:** [host-shell-convergence-plan.md](./host-shell-convergence-plan.md) (2026-09-11 — the NEXT
+reduction after the runtime lift-and-shift: `server.py`/`db.py`/`config.py`/`model_backend.py`/bootstrap
+duplicate `agent_core.studio_server.build_agent_app`; converge agents ONTO the appliance. Revises §1's
+"keep (bootstrap/adapter)" disposition — the host shell is a generic third tier, not per-agent floor).
 
 ## The principle
 
