@@ -78,6 +78,15 @@ class Persona:
             world_entities=d.get("world_entities", ""),
         )
 
+    @classmethod
+    def from_yaml(cls, path: str) -> "Persona":
+        """Load a Persona from a persona.yaml on disk — the dockerized-appliance pattern: a host
+        ships config/persona.yaml + prompt files and writes no seed/loader code. Thin wrapper over
+        from_dict (yaml lazy-imported, as elsewhere in agent_core)."""
+        import yaml
+        with open(path) as f:
+            return cls.from_dict(yaml.safe_load(f) or {})
+
     def to_dict(self) -> dict:
         """Serialise to plain data (for a studio-written persona.yaml). Round-trips with from_dict."""
         return {
