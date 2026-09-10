@@ -58,3 +58,29 @@ async def recall_lessons(mem, graph, task_hint: str, *, tool_tag: str,
         return "", procedure_ids
     return ("What you have learned about operating this tool — APPLY it before "
             "anything else:\n" + "\n".join(lines)), procedure_ids
+
+
+def default_skill_chronic(mem, agent_id: str):
+    """The default nmem ``skill.chronic`` handler: a known lesson keeps recurring → escalate by
+    writing ONE high-merit strategy-lesson journal entry (not another duplicate skill), framing it
+    as an approach/actuator problem to change rather than notes to accumulate. Agent-agnostic —
+    pass to ``AgentRuntime(skill_chronic=default_skill_chronic(mem, agent_id))``. Fail-open: a
+    handler hiccup never surfaces into the drive/skill loop. Graduated from michelle."""
+
+    async def handler(data: dict) -> None:
+        try:
+            name = data.get("name") or data.get("canonical_key") or "a known lesson"
+            n = data.get("trial_count")
+            log.warning("[skill-chronic] '%s' recurred %sx — needs a strategy change, not another note",
+                        name, n)
+            await mem.journal.add(
+                agent_id=agent_id, entry_type="chronic_skill",
+                title=f"chronic failure mode: {name}",
+                content=(f"Hit '{name}' {n} times so far ({(data.get('what') or '')[:200]}). It recurs "
+                         f"despite being known — the approach/actuator must change, not accumulate more "
+                         f"notes. Try a different tactic next time this comes up."),
+                importance=8, record_type="lesson", grounding="confirmed")
+        except Exception:  # noqa: BLE001
+            log.warning("[skill-chronic] handler failed", exc_info=True)
+
+    return handler

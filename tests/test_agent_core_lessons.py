@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from nmem.agent_core import recall_lessons
+from nmem.agent_core import default_skill_chronic, recall_lessons
 
 
 def _mem(hits):
@@ -62,3 +62,25 @@ async def test_fail_open_on_skills_error():
     mem = SimpleNamespace(skills=SimpleNamespace(find=AsyncMock(side_effect=RuntimeError("boom"))))
     text, proc_ids = await recall_lessons(mem, None, "x", tool_tag="t", agent_id="m")
     assert text == "" and proc_ids == []          # swallowed, never raises
+
+
+# ── default_skill_chronic ───────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_skill_chronic_writes_one_strategy_lesson():
+    mem = SimpleNamespace(journal=SimpleNamespace(add=AsyncMock()))
+    handler = default_skill_chronic(mem, agent_id="michelle")
+    await handler({"name": "avoid-redundant-actions", "trial_count": 160, "what": "kept re-clicking"})
+    mem.journal.add.assert_awaited_once()
+    kw = mem.journal.add.await_args.kwargs
+    assert kw["agent_id"] == "michelle" and kw["entry_type"] == "chronic_skill"
+    assert kw["record_type"] == "lesson" and kw["grounding"] == "confirmed" and kw["importance"] == 8
+    assert "avoid-redundant-actions" in kw["title"]
+    assert "approach/actuator must change" in kw["content"]
+
+
+@pytest.mark.asyncio
+async def test_skill_chronic_fail_open():
+    mem = SimpleNamespace(journal=SimpleNamespace(add=AsyncMock(side_effect=RuntimeError("db down"))))
+    handler = default_skill_chronic(mem, agent_id="m")
+    await handler({"name": "x", "trial_count": 5})   # must not raise
