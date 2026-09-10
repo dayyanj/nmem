@@ -31,6 +31,7 @@ capability-context prefix stay hers).
 """
 from __future__ import annotations
 
+import hashlib as _hashlib
 import logging
 
 # The continuity read/write helpers are shared across all turn-taking seams (chat, peer,
@@ -135,6 +136,14 @@ async def converse(runtime, message: str, *, history: list[dict] | None = None,
             metacog_audit.update(audit)
         metacog_audit["applied_extra"] = extra           # the levers actually applied
         metacog_audit["backend_calls"] = usage_sink      # realized cost, all attempts
+        # Grounding fingerprint (eval-only): the rig compares this ACROSS arms of the same
+        # task to check whether retrieval gave every arm byte-identical context. Retrieval
+        # is query-driven (arm-independent) but rebuilt live per trial and LTM/journal reads
+        # mutate access metadata (codex §17.6 P1-2), so 'same grounding' must be MEASURED,
+        # not assumed — if these hashes diverge across arms, the rig must freeze/replay.
+        _sys = next((m["content"] for m in messages if m.get("role") == "system"), "")
+        metacog_audit["grounding_sha"] = _hashlib.sha256(_sys.encode()).hexdigest()[:16]
+        metacog_audit["grounding_len"] = len(_sys)
     reply = await runtime.backend.chat(messages, **kw)
     if continuity:
         await record_turn_checkpoint(runtime.mem, runtime.agent_id, message, reply)

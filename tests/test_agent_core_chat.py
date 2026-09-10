@@ -454,3 +454,24 @@ async def test_converse_arm_preserves_audit_and_usage_on_backend_failure():
     assert sink["arm"] == "on"
     assert sink["applied_extra"] == {"reasoning_effort": "high"}
     assert sink["backend_calls"][0]["usage"]["completion_tokens"] == 1024
+
+
+@pytest.mark.asyncio
+async def test_converse_arm_audit_records_grounding_fingerprint():
+    # the rig uses grounding_sha to check that arms of the same task saw identical context
+    mem = _MetacogMem(recs=_arm_sentinel({"reasoning_effort": "medium"},
+                                         {"arm": "on", "status": "applied"}))
+    sink = {}
+    await rt_converse(FakeRuntime(mem, FakeBackend(reply="ok")), "grounded question",
+                      continuity=False, metacog_arm="on", metacog_audit=sink)
+    assert isinstance(sink["grounding_sha"], str) and len(sink["grounding_sha"]) == 16
+    assert sink["grounding_len"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_converse_production_records_no_grounding_fingerprint():
+    # metacog_audit=None → no fingerprinting work, byte-identical production path
+    mem = _MetacogMem(recs={})
+    backend = FakeBackend()
+    await rt_converse(FakeRuntime(mem, backend), "hi", continuity=False)
+    assert backend.usage_sink_seen is None
