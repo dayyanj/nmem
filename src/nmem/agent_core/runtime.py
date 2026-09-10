@@ -452,6 +452,51 @@ class AgentRuntime:
             log.warning("[runtime] PredictionPlugin init failed (non-fatal): %s", e)
             return False
 
+    def _wrap_build_proposal(self, build):
+        """Wrap the host proposal-builder so symbol surfacing + the participation ledger
+        live in agent_core (generic to every agent), not in each host.
+
+        When the nmem-sym surfacing ledger is off — or no symbol graph is wired — this is
+        a passthrough (byte-identical to the raw host builder). When on: mint a per-pursuit
+        ``turn_id``, surface graph hypotheses for the goal (which writes the ledger row keyed
+        to that turn_id), merge the surfaced context into the proposal's ``lessons`` so the
+        executor actually uses it, and stamp ``turn_id`` into ``params`` so the outcome sink
+        can credit the exact surfaced set. Fully fail-open: any error returns the host
+        proposal unchanged — surfacing must never break a pursuit."""
+        import inspect
+        from uuid import uuid4
+
+        async def wrapped(goal):
+            # Build the host proposal first so it is always returned even if surfacing fails.
+            built = build(goal)
+            proposal = await built if inspect.isawaitable(built) else built
+            try:
+                if self.bridge is None:
+                    return proposal
+                from nmem_sym import config as sym_config
+                if not sym_config.settings.surfacing_ledger_enabled:
+                    return proposal
+                turn_id = uuid4().hex
+                # Use runtime.agent_id (the populated scope, e.g. "michelle") — NOT
+                # hive.agent_id, which stays "" for an isolated (non-shared-world) agent.
+                agent_id = getattr(self, "agent_id", None) or getattr(self.hive, "agent_id", None)
+                surfaced = await self.bridge.augment_search(
+                    getattr(goal, "objective", "") or "",
+                    turn_id=turn_id, agent_id=agent_id)
+                params = getattr(proposal, "params", None)
+                if proposal is not None and params is not None:
+                    params["turn_id"] = turn_id
+                    if surfaced and surfaced.strip():
+                        prior = params.get("lessons", "") or ""
+                        block = ("Graph hypotheses (speculative — weigh, don't assume):\n"
+                                 + surfaced.strip())
+                        params["lessons"] = (block + "\n\n" + prior) if prior else block
+            except Exception:  # noqa: BLE001 — surfacing is additive, never a blocker
+                log.warning("[runtime] surfacing wrapper failed (non-fatal)", exc_info=True)
+            return proposal
+
+        return wrapped
+
     def _start_pursuit(self) -> bool:
         """Start the goal-pursuit loop if the agent actuates. Gated by
         config['pursuit']['enabled'] (default True when an executor is present)."""
@@ -460,11 +505,15 @@ class AgentRuntime:
             return False
         from nmem_act import GoalPursuit
         from nmem.agent_core.goal_store import SymbolGoalStore
+        # Phase 1: surfacing + ledger are injected here (agent_core), so the host builder
+        # stays lean and every agent inherits the self-improvement loop. Both pursuits
+        # share the one wrapped builder.
+        build_proposal = self._wrap_build_proposal(self._build_proposal)
         self._pursuit = GoalPursuit(
             SymbolGoalStore(self.graph.pool,
                             source_type=pcfg.get("source_type", "drive_intent"),
                             owner_agent=self.hive.agent_id),   # B-i: pursue only our own goals (None=isolated)
-            self._runner, self._build_proposal)
+            self._runner, build_proposal)
         interval = float(pcfg.get("interval_seconds", 300))
         cap = max(1, int(pcfg.get("max_per_cycle", 1)))
         self._pursue_task = asyncio.create_task(self._pursue_loop(self._pursuit, interval, cap))
@@ -477,7 +526,7 @@ class AgentRuntime:
             self._planned_pursuit = GoalPursuit(
                 SymbolGoalStore(self.graph.pool, source_type=None,
                                 owner_agent=self.hive.agent_id, dispatch="planned"),
-                self._runner, self._build_proposal)
+                self._runner, build_proposal)
             p_interval = float(plcfg.get("interval_seconds", interval))
             p_cap = max(1, int(plcfg.get("max_per_cycle", cap)))
             self._planned_pursue_task = asyncio.create_task(

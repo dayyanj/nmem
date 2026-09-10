@@ -52,6 +52,21 @@ def build_experiential_sink(bridge, mem, agent_id: str):
         except Exception:  # noqa: BLE001
             log.warning("[experiential-sink] record_action_outcome failed", exc_info=True)
 
+        # 1b. Phase 1 credit assignment: stamp this graded outcome onto the surfacing-ledger
+        # row(s) for the turn — keyed by the turn_id the agent_core surfacing wrapper stamped
+        # into proposal.params — so the offline dreamstate credit step reinforces/depresses the
+        # exact edges that were surfaced. Generic: every acting agent using this sink inherits
+        # it. No-op unless NMEM_SYM_SURFACING_LEDGER_ENABLED. Best-effort.
+        try:
+            turn_id = (getattr(proposal, "params", None) or {}).get("turn_id")
+            if turn_id and hasattr(bridge, "record_surfacing_outcome"):
+                await bridge.record_surfacing_outcome(
+                    turn_id=turn_id, goal_id=gid,
+                    outcome=1.0 if verified else -1.0, source="goal",
+                    produced_answer=note[:4000])
+        except Exception:  # noqa: BLE001
+            log.warning("[experiential-sink] record_surfacing_outcome failed", exc_info=True)
+
         # 2. honest discharge -> nmem-sym: this action IS the real outward work the drive
         # pressed for, so report it via discharge_drive (record_action_outcome only
         # appraises surprise). With the drive in NMEM_SYM_DRIVES_OUTWARD_ACTIONS the

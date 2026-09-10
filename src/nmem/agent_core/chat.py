@@ -111,6 +111,25 @@ async def converse(runtime, message: str, *, history: list[dict] | None = None,
         system += "\n\n# Continuity — where you are right now\n" + cont
     if ctx.strip():
         system += "\n\n# Memory\n" + ctx
+    # Phase 1 — symbol surfacing on the chat turn (a soft surface, credited later by
+    # affect/feedback). Writes a participation-ledger row keyed to a per-turn id so
+    # representational self-improvement can learn from chat too. Byte-identical when the
+    # nmem-sym surfacing ledger is off; fail-open — surfacing never blocks a reply.
+    _surf_turn_id = None
+    try:
+        _bridge = getattr(runtime, "bridge", None)
+        if _bridge is not None:
+            from nmem_sym import config as sym_config
+            if sym_config.settings.surfacing_ledger_enabled:
+                from uuid import uuid4
+                _surf_turn_id = uuid4().hex
+                _surf = await _bridge.augment_search(
+                    message, turn_id=_surf_turn_id, agent_id=runtime.agent_id)
+                if _surf and _surf.strip():
+                    system += ("\n\n# Graph hypotheses (speculative — weigh, don't assume)\n"
+                               + _surf.strip())
+    except Exception:  # noqa: BLE001 — surfacing is additive, never a blocker
+        log.warning("[chat] symbol surfacing failed (non-fatal)", exc_info=True)
     messages = [{"role": "system", "content": system}]
     messages += list(history or [])
     messages.append({"role": "user", "content": message})
@@ -147,6 +166,13 @@ async def converse(runtime, message: str, *, history: list[dict] | None = None,
     reply = await runtime.backend.chat(messages, **kw)
     if continuity:
         await record_turn_checkpoint(runtime.mem, runtime.agent_id, message, reply)
+    # Phase 1 — attach the produced answer to this turn's surfacing-ledger row so the
+    # offline echo-back pass can attribute which surfaced items the answer relied on.
+    if _surf_turn_id:
+        try:
+            await runtime.bridge.record_surfacing_answer(_surf_turn_id, reply or "")
+        except Exception:  # noqa: BLE001
+            log.warning("[chat] record_surfacing_answer failed (non-fatal)", exc_info=True)
     return reply
 
 
