@@ -29,6 +29,29 @@ def _goal_source_type(g: Any):
     return getattr(g, "source_type", None) if not isinstance(g, dict) else g.get("source_type")
 
 
+def _goal_source_ref(g: Any):
+    return getattr(g, "source_ref", None) if not isinstance(g, dict) else g.get("source_ref")
+
+
+def proposal_source(goal: Any) -> str:
+    """Derive an ActionProposal ``source`` from a goal, so a verified pursuit discharges the
+    RIGHT drive. Agent-agnostic — graduated out of individual agents (michelle used to hardcode
+    ``drive:novelty`` for every drive_intent goal because the drive wasn't threaded this far, so
+    ALL drive successes wrongly discharged novelty).
+
+    A ``drive_intent`` goal carries its originating drive in ``source_ref`` → ``drive:<name>``;
+    the experiential sink discharges only on a ``drive:`` source (§30.7). Any other origin (a
+    planned decomposition / objective goal), or a drive_intent goal with no recorded drive, uses
+    ``goal:<type>`` so a success does NOT mis-credit a drive."""
+    st = _goal_source_type(goal)
+    if st == "drive_intent":
+        ref = _goal_source_ref(goal)
+        drive = ref.get("drive") if isinstance(ref, dict) else None
+        if drive:
+            return f"drive:{drive}"
+    return f"goal:{st or 'objective'}"
+
+
 class SymbolGoalStore:
     """nmem-act ``GoalStore`` over ``symbol_goals``, filtered to one ``source_type`` and —
     in a hive (Path B / B-i) — to one ``owner_agent``.
@@ -66,7 +89,8 @@ class SymbolGoalStore:
             gid, obj = _goal_id(r), _goal_objective(r)
             if gid is not None and obj:
                 out.append(PursuitGoal(id=gid, objective=obj,
-                                       source_type=_goal_source_type(r)))
+                                       source_type=_goal_source_type(r),
+                                       source_ref=_goal_source_ref(r)))
         return out
 
     async def claim(self, goal_id: Any) -> bool:

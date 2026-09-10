@@ -63,6 +63,7 @@ _LAZY = {
     "make_studio_router": ("nmem.agent_core.studio", "make_studio_router"),
     "create_studio_app": ("nmem.agent_core.studio", "create_studio_app"),
     "SymbolGoalStore": ("nmem.agent_core.goal_store", "SymbolGoalStore"),
+    "proposal_source": ("nmem.agent_core.goal_store", "proposal_source"),
     "CAPABILITIES": ("nmem.agent_core.capabilities", "CAPABILITIES"),
     "Capability": ("nmem.agent_core.capabilities", "Capability"),
     "validate_capabilities": ("nmem.agent_core.capabilities", "validate"),
