@@ -15,8 +15,11 @@ Agent-specific seams (all optional except config+persona):
   * ``build_executor`` — ``(bridge) -> ActionExecutor``: build the agent's hands once the
                          bridge exists (the executor's outcome sink usually needs it).
                          Without it, the pursuit loop is simply not started (a pure thinker).
-  * ``build_proposal`` — turns a :class:`~nmem_act.PursuitGoal` into an ActionProposal;
-                         paired with the executor (it shapes the params the executor wants).
+  * ``build_proposal`` — turns a :class:`~nmem_act.PursuitGoal` into an ActionProposal; paired with
+                         the executor. OPTIONAL: if omitted while an executor is present, the runtime
+                         defaults it to ``agent_core.default_proposal`` (context-injecting, configured
+                         via ``pursuit.{action_type,tool_tag,lessons_query}``) — a thin host gets pursuit
+                         for free. Pass one only to customize beyond those knobs.
   * ``comms_sink``     — a :class:`~nmem.agent_core.comms.ChannelSink` for the communication
                          drive. Without it, comms is not wired even if the drive flag is on.
   * ``skill_chronic``  — handler for nmem's ``skill.chronic`` event (a recurring lesson).
@@ -500,18 +503,37 @@ class AgentRuntime:
 
         return wrapped
 
+    def _default_proposal(self, pcfg: dict):
+        """Build the graduated default proposal builder from this runtime's own mem/graph/bridge/id +
+        the pursuit config knobs. Used when a thin host supplies an executor but no build_proposal."""
+        from nmem.agent_core.proposal import default_proposal
+        cc, capability_class = pcfg.get("capability_class"), None
+        if cc:
+            try:
+                from nmem_act import CapabilityClass
+                capability_class = CapabilityClass(str(cc).lower())
+            except Exception:  # noqa: BLE001 — unknown value falls back to the builder's READ_ONLY default
+                capability_class = None
+        return default_proposal(
+            self.mem, self.graph, self.bridge, agent_id=self.agent_id,
+            action_type=pcfg.get("action_type", "llm_tool_call"), capability_class=capability_class,
+            tool_tag=pcfg.get("tool_tag"), lessons_query=pcfg.get("lessons_query"))
+
     def _start_pursuit(self) -> bool:
         """Start the goal-pursuit loop if the agent actuates. Gated by
         config['pursuit']['enabled'] (default True when an executor is present)."""
         pcfg = (self._config.get("pursuit", {}) or {})
-        if self._runner is None or self._build_proposal is None or not pcfg.get("enabled", True):
+        if self._runner is None or not pcfg.get("enabled", True):
             return False
         from nmem_act import GoalPursuit
         from nmem.agent_core.goal_store import SymbolGoalStore
-        # Phase 1: surfacing + ledger are injected here (agent_core), so the host builder
-        # stays lean and every agent inherits the self-improvement loop. Both pursuits
-        # share the one wrapped builder.
-        build_proposal = self._wrap_build_proposal(self._build_proposal)
+        # Thin host: an executor but no host proposal builder → default it, so every actuating agent
+        # inherits the standard context-injecting builder (lessons/prior/recall/continuity), configured
+        # via pursuit.{action_type,tool_tag,lessons_query,capability_class}. A host may still pass its own.
+        build = self._build_proposal or self._default_proposal(pcfg)
+        # Phase 1: surfacing + ledger are injected here (agent_core), so the builder stays lean and
+        # every agent inherits the self-improvement loop. Both pursuits share the one wrapped builder.
+        build_proposal = self._wrap_build_proposal(build)
         self._pursuit = GoalPursuit(
             SymbolGoalStore(self.graph.pool,
                             source_type=pcfg.get("source_type", "drive_intent"),

@@ -64,6 +64,7 @@ _LAZY = {
     "create_studio_app": ("nmem.agent_core.studio", "create_studio_app"),
     "SymbolGoalStore": ("nmem.agent_core.goal_store", "SymbolGoalStore"),
     "proposal_source": ("nmem.agent_core.goal_store", "proposal_source"),
+    "default_proposal": ("nmem.agent_core.proposal", "default_proposal"),
     "recall_lessons": ("nmem.agent_core.lessons", "recall_lessons"),
     "default_skill_chronic": ("nmem.agent_core.lessons", "default_skill_chronic"),
     "CAPABILITIES": ("nmem.agent_core.capabilities", "CAPABILITIES"),
