@@ -22,7 +22,9 @@ Agent-specific seams (all optional except config+persona):
                          for free. Pass one only to customize beyond those knobs.
   * ``comms_sink``     — a :class:`~nmem.agent_core.comms.ChannelSink` for the communication
                          drive. Without it, comms is not wired even if the drive flag is on.
-  * ``skill_chronic``  — handler for nmem's ``skill.chronic`` event (a recurring lesson).
+  * ``skill_chronic``  — handler for nmem's ``skill.chronic`` event (a recurring lesson). OPTIONAL:
+                         defaults to ``agent_core.default_skill_chronic`` when omitted, so every agent
+                         turns recurring lessons into stored memory for free. Pass one only to override.
 """
 from __future__ import annotations
 
@@ -295,13 +297,27 @@ class AgentRuntime:
         log.info("[runtime] stopped")
 
     # ── cognition wiring (graduated from michelle init_cognition) ──
-    async def _wire_cognition(self) -> None:
-        mem, graph = self.mem, self.graph
-        if self._skill_chronic is not None:
+    def _wire_skill_chronic(self, mem) -> None:
+        """Subscribe the skill.chronic → lesson handler. Thin host: default it to
+        ``agent_core.default_skill_chronic`` when none was passed, so every agent turns recurring
+        lessons into stored memory for free; a host may still pass its own to override. Harmless if
+        the event never fires."""
+        sc = self._skill_chronic
+        if sc is None:
             try:
-                mem.on("skill.chronic")(self._skill_chronic)
+                from nmem.agent_core.lessons import default_skill_chronic
+                sc = default_skill_chronic(mem, self.agent_id)
+            except Exception:  # noqa: BLE001
+                sc = None
+        if sc is not None:
+            try:
+                mem.on("skill.chronic")(sc)
             except Exception:  # noqa: BLE001
                 log.warning("[runtime] could not subscribe skill.chronic", exc_info=True)
+
+    async def _wire_cognition(self) -> None:
+        mem, graph = self.mem, self.graph
+        self._wire_skill_chronic(mem)
         if graph is None:
             log.info("[runtime] symbol graph disabled — no cognitive loops")
             self.status = {"enabled": False}
