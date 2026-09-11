@@ -1,6 +1,6 @@
 """nmem-viz event bridge — stream an agent's live cognition to a nmem-viz hub.
 
-Graduated from DJ-AI's ``service/viz_bridge.py``, but pointed at nmem-viz's ``POST /ingest``
+Graduated from the reference agent's ``service/viz_bridge.py``, but pointed at nmem-viz's ``POST /ingest``
 instead of hosting a WebSocket server: the agent becomes a plain HTTP client, so a bundled
 appliance needs no extra port, no daemon thread, and no relay wiring on the viz side. The viz
 server still serves the full graph SNAPSHOT from the shared database; this bridge adds the LIVE

@@ -5,7 +5,7 @@ inbound challenges run through the agent's OWN cognition (in character) and ever
 exchange is logged into its own nmem. Isolation is preserved: the bus carries only the
 sealed envelope; each agent's memory of the conversation is entirely its own.
 
-This is the reusable glue graduated from michelle-ai's ``service/peer.py``. The generic
+This is the reusable glue graduated from the reference agent's ``service/peer.py``. The generic
 parts live here — the exchange lifecycle, ephemeral-channel handling, inbound routing
 (log → correlate a comms reply → answer a challenge → reply threaded → log), and the
 :class:`PeerExchangeSink` that lets the communication drive speak over the bus. The two

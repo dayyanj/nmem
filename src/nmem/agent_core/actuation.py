@@ -6,7 +6,7 @@ procedure reward + surprise appraisal, (2) honestly DISCHARGES the drive that pr
 for the action (verified outcomes only), and (3) writes a MERIT-based finding memory
 whose importance emerges from grounding + use (never a hardcoded number). Only the
 *executor* that produces the observations is agent-specific — so this sink graduates
-verbatim from michelle-ai's ``actuation._make_sink`` and any acting agent reuses it.
+verbatim from the reference agent's ``actuation._make_sink`` and any acting agent reuses it.
 
 Reads the pursuit observation contract (same one nmem-act's ``GoalPursuit`` reads):
 ``infra`` (actuator never ran -> nothing to learn), ``verified`` (stand-behind result),
@@ -14,7 +14,7 @@ plus ``goal_id`` / ``objective`` / ``status`` / ``procedure_ids`` the executor s
 
 Compose with nmem-act's ``make_reflective_sink`` (reflect on the step trace -> skills)
 for the full learning sink; that wrap stays with the agent since its reflect-LLM +
-skill-writer are injected. See michelle-ai ``service/actuation.build_runner``.
+skill-writer are injected. See the reference agent's ``service/actuation.build_runner``.
 """
 from __future__ import annotations
 

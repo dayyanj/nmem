@@ -256,7 +256,7 @@ class DatabaseManager:
 
         if version < 4:
             # Widen journal entry_type from VARCHAR(30). Callers that compose entry_type
-            # — e.g. DJ-AI's "{cycle}_{type}" ("deep_cycle_llm_tool_call_result" = 31) —
+            # — e.g. a "{cycle}_{type}" ("deep_cycle_llm_tool_call_result" = 31) —
             # overflowed the old limit and silently failed the journal write. VARCHAR(100)
             # covers any compound with headroom. Non-destructive + backward-compatible:
             # widening only relaxes the constraint, and existing String(30)-model callers

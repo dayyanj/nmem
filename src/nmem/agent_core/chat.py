@@ -1,15 +1,15 @@
 """Grounded conversation for any nmem agent — the reusable core behind a chat UI.
 
-The **G graduation** from michelle-ai: turning "talk to the agent" into three small,
+The **G graduation** from the reference agent: turning "talk to the agent" into three small,
 agent-agnostic pieces so a new agent (and the studio's chat page) gets a memory-grounded
 conversation for free:
 
   * ``system_prompt(persona)``   — the agent's identity + standing objectives, from Persona
-                                    DATA (not michelle's markdown files).
+                                    DATA (not an agent's markdown files).
   * ``build_context(mem, id, q)``— the tiered memory block for a query. This is now a
                                     one-liner over ``mem.prompt.build(...).full_injection``
                                     (nmem already assembles policy/shared/LTM/skills/journal/
-                                    recipes with headers), so michelle's hand-rolled version
+                                    recipes with headers), so an agent's hand-rolled version
                                     collapses into the library it always wrapped.
   * ``continuity_block(mem, id)``— the *living* wake snapshot ("where am I right now"):
                                     commitments, open loops, goals, narrative, and the
@@ -25,9 +25,9 @@ This is where the continuity layer is actually *consumed*: the runtime-wired pro
 ``mem.wake()``, ``converse`` injects that snapshot every turn (the living read) and writes a
 per-turn checkpoint (the living write). Both are fail-open and flag-gated (``continuity=``).
 
-michelle's converse (service/identity.build_memory_context + build_system_prompt) is the
-reference; this keeps only what is agent-generic (her core_profile/persona files and the
-capability-context prefix stay hers).
+The reference agent's converse (service/identity.build_memory_context + build_system_prompt) is
+the reference; this keeps only what is agent-generic (its core_profile/persona files and the
+capability-context prefix stay with the host).
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ log = logging.getLogger(__name__)
 def system_prompt(persona) -> str:
     """The agent's base system prompt, derived from its Persona (identity + objectives +
     the entities it reasons about). Deliberately plain: an agent's *voice* is a host concern
-    (michelle layers hers on top); this is the honest, grounded floor every agent shares."""
+    (a host layers its own on top); this is the honest, grounded floor every agent shares."""
     lines = [f"You are {persona.agent_id}, an autonomous agent with a persistent memory."]
     if persona.capabilities:
         lines.append(persona.capabilities.strip())

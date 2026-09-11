@@ -787,7 +787,7 @@ class NmemConfig(BaseSettings):
             )
 
         Available profiles: ``"neutral"`` (generic, no domain assumptions)
-        and ``"refinery"`` (tuned for the Spwig multi-agent system).
+        and ``"refinery"`` (tuned for a multi-agent system).
         Use :func:`nmem.profiles.register_profile` to add custom profiles.
         """
         from nmem.profiles import get_profile_overrides

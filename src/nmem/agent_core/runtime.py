@@ -4,8 +4,8 @@ Owns the whole boot -> run -> shutdown lifecycle of an agent's MIND: memory + sy
 graph, the reasoning backend, persona seeding, the nmem-sym bridge and its plugins,
 and the always-on loops (consolidation, drives, and — if the agent actuates — goal
 pursuit). It is deliberately **I/O-agnostic**: it owns no web server, no CLI, no voice
-pipeline. A host wraps it with whatever interface it wants (michelle: FastAPI; a future
-twin: voice) and reaches into ``runtime.mem`` / ``.graph`` / ``.bridge`` / ``.backend``.
+pipeline. A host wraps it with whatever interface it wants (e.g. FastAPI; a future
+voice host) and reaches into ``runtime.mem`` / ``.graph`` / ``.bridge`` / ``.backend``.
 
 The thesis in one object: a new agent is ``AgentRuntime(config, persona, executor=...)``
 plus that host I/O. Everything cognitive is here and toggled by the ``capabilities.env``
@@ -296,7 +296,7 @@ class AgentRuntime:
         self.graph = self.mem = self.bridge = None
         log.info("[runtime] stopped")
 
-    # ── cognition wiring (graduated from michelle init_cognition) ──
+    # ── cognition wiring (graduated from the reference agent's init_cognition) ──
     def _wire_skill_chronic(self, mem) -> None:
         """Subscribe the skill.chronic → lesson handler. Thin host: default it to
         ``agent_core.default_skill_chronic`` when none was passed, so every agent turns recurring
@@ -387,7 +387,7 @@ class AgentRuntime:
         # =today). This REPLACES the dreamstate-embedded lifecycle, which nmem-sym removes in the same
         # co-land round; running BOTH double-ticks impasse_cycles (hive doc §23). So it is DEFAULT-OFF
         # (goal_lifecycle.loop_enabled) until that removal + this loop are deployed together — flipping
-        # the flag is the atomic cutover, protecting live isolated agents (michelle) from a double-tick.
+        # the flag is the atomic cutover, protecting live isolated agents from a double-tick.
         lcfg = (self._config.get("goal_lifecycle", {}) or {})
         lifecycle_on = False
         if s.goals_enabled and lcfg.get("loop_enabled", False):
@@ -499,7 +499,7 @@ class AgentRuntime:
                 if not sym_config.settings.surfacing_ledger_enabled:
                     return proposal
                 turn_id = uuid4().hex
-                # Use runtime.agent_id (the populated scope, e.g. "michelle") — NOT
+                # Use runtime.agent_id (the populated scope, e.g. "agent-1") — NOT
                 # hive.agent_id, which stays "" for an isolated (non-shared-world) agent.
                 agent_id = getattr(self, "agent_id", None) or getattr(self.hive, "agent_id", None)
                 surfaced = await self.bridge.augment_search(
@@ -560,7 +560,7 @@ class AgentRuntime:
         self._pursue_task = asyncio.create_task(self._pursue_loop(self._pursuit, interval, cap))
         log.info("[runtime] pursuit loop started (cap %d/cycle, every %ss)", cap, interval)
         # §30.4: a SECOND pursuit over PLANNED goals (any source_type), sharing the same executor +
-        # proposal builder, so validated-but-unexecuted plans (e.g. michelle's "Establish: X"
+        # proposal builder, so validated-but-unexecuted plans (e.g. an agent's "Establish: X"
         # decomposition goals) actually get pursued. Gated by pursuit.planned.enabled (default off).
         plcfg = (pcfg.get("planned", {}) or {})
         if plcfg.get("enabled", False):

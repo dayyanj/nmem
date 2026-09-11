@@ -6,7 +6,7 @@ Composes nmem skills (``mem.skills.find``, salience-ranked) + nmem-sym compiled 
 procedure ids it surfaced (=used) so the pursuit's real outcome can reward them (A2
 utility-plasticity, threaded to ``record_action_outcome``).
 
-Agent-agnostic — graduated from michelle's ``service/tool_learning.py``. The agent supplies its
+Agent-agnostic — graduated from the reference agent's ``service/tool_learning.py``. The agent supplies its
 own ``tool_tag`` (its actuator's skill namespace, shared with the reflective-capture sink so
 capture and recall hit the SAME namespace) and ``agent_id``. Fail-open throughout: a learning
 hiccup never breaks a cognitive cycle.
@@ -65,7 +65,7 @@ def default_skill_chronic(mem, agent_id: str):
     writing ONE high-merit strategy-lesson journal entry (not another duplicate skill), framing it
     as an approach/actuator problem to change rather than notes to accumulate. Agent-agnostic —
     pass to ``AgentRuntime(skill_chronic=default_skill_chronic(mem, agent_id))``. Fail-open: a
-    handler hiccup never surfaces into the drive/skill loop. Graduated from michelle."""
+    handler hiccup never surfaces into the drive/skill loop. Graduated from the reference agent."""
 
     async def handler(data: dict) -> None:
         try:

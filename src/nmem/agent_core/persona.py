@@ -3,7 +3,7 @@
 An agent's *identity* is data, not code: its standing objectives, its initial
 knowledge-seeking mandate, and the durable baseline facts it should start life
 knowing. `Persona` holds that data; `seed_persona` plants it (idempotently) into the
-agent's nmem shared tier + nmem-sym goal queue. Both graduated from michelle-ai's
+agent's nmem shared tier + nmem-sym goal queue. Both graduated from the reference agent's
 `service/identity.py` (the seed_goals / seed_world_goals / seed_baseline_kb logic) so
 a new agent supplies a `Persona` value + its prompt files, and writes no seed code.
 """

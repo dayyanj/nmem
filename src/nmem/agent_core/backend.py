@@ -3,8 +3,8 @@
 Destined for `nmem-agent-core`: a public user can point their agent at a local
 OpenAI-compatible endpoint (vLLM / LM Studio), a hosted OpenAI-compatible API
 (OpenAI / OpenRouter / Together / Groq / DeepSeek / Fireworks), or Anthropic
-(Claude) — by config alone. michelle herself always runs local Gemma; the
-abstraction exists for the framework's future users, not for her.
+(Claude) — by config alone. The reference agent itself always runs local Gemma; the
+abstraction exists for the framework's future users, not for it.
 
 Two orthogonal axes:
   provider — the API SHAPE:  "openai" (any /v1/chat/completions) | "anthropic"
@@ -78,7 +78,7 @@ class OpenAICompatibleBackend:
         too (the radiance fork honours it as graded; stock vLLM ignores it). Thinking
         needs token headroom (see ``_QWEN_THINK_MIN_TOKENS``), so max_tokens is floored
         when it is on. INVARIANT: with no ``reasoning_effort``/``enable_thinking`` in
-        ``extra`` (the default path, e.g. michelle's normal turns), thinking stays OFF
+        ``extra`` (the default path, e.g. an agent's normal turns), thinking stays OFF
         and max_tokens is untouched — byte-identical to before the actuator existed."""
         if self.family == "qwen":
             eff = extra.get("reasoning_effort")            # None when not requested
@@ -268,7 +268,7 @@ def _llm_env(field: str) -> str | None:
 
     Transitional: falls back to the legacy `MICHELLE_LLM_<FIELD>` name so a not-yet-migrated env
     keeps working. Drop the fallback once every fleet env file uses NMEM_LLM_* (config-alignment:
-    canonical-single-name). Agent-neutral names unblock DJ/general deployment overrides (G7)."""
+    canonical-single-name). Agent-neutral names unblock general deployment overrides (G7)."""
     return os.environ.get(f"NMEM_LLM_{field}") or os.environ.get(f"MICHELLE_LLM_{field}")
 
 

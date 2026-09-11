@@ -59,11 +59,11 @@ SCENARIOS: tuple[Scenario, ...] = (
         metric="resumption",
         expectation="help",
         plant={"checkpoint": {
-            "last_interaction_summary": "Was auditing the Spwig OpenAPI spec — catalogued 40 of ~120 endpoints.",
-            "interrupted_work": "cataloguing the remaining ~80 Spwig OpenAPI endpoints",
+            "last_interaction_summary": "Was auditing the product's OpenAPI spec — catalogued 40 of ~120 endpoints.",
+            "interrupted_work": "cataloguing the remaining ~80 OpenAPI endpoints",
         }},
         stimulus="Morning. What should we pick up where we left off?",
-        rubric=("The reply should say the agent was AUDITING / CATALOGUING the Spwig OpenAPI "
+        rubric=("The reply should say the agent was AUDITING / CATALOGUING the product's OpenAPI "
                 "endpoints and had ~40 of ~120 done (~80 left). Full credit (1.0) only if it "
                 "names that specific task AND the progress. 0.0 if it is generic, says it does "
                 "not know, or invents a different task."),
@@ -548,8 +548,8 @@ async def _amain(args) -> None:
     # load from NMEM_* env. The dedicated project_scope ISOLATES the eval: wake() reads
     # curiosity/commitments by scope, so planting + reads + cleanup all stay in this scope and
     # never see (or touch) a real agent's signals. For an agent whose embedder/DSN live in a
-    # host shim (e.g. michelle), construct a scoped mem via that host's bootstrap instead and
-    # call run() directly (see michelle-ai/scripts/continuity_ab_run.py).
+    # host shim (e.g. an example agent), construct a scoped mem via that host's bootstrap instead
+    # and call run() directly (see the host's own continuity eval runner script).
     mem = MemorySystem(database_url=args.dsn, project_scope=args.scope)
     await mem.initialize()
     backend = _build_openai_backend(args.llm_url, args.model, args.key)

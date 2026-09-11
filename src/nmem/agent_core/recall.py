@@ -14,7 +14,7 @@ query for injection into the agent's next task/context.
 Fail-open throughout: a recall hiccup must never break a cognitive cycle. The buffer
 is process-local (one agent per process), so nothing leaks across agents.
 
-Graduated from michelle-ai (``service/recall.py``) after it ran live (upstream plan
+Graduated from the reference agent (``service/recall.py``) after it ran live (upstream plan
 Phase 3).
 """
 from __future__ import annotations

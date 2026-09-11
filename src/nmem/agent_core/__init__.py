@@ -9,7 +9,7 @@ The thesis (see nmem/docs/nmem-agent-core-plan.md):
 
 `agent_core` is where the *reusable glue* between those libraries lives — the
 adapters and bootstrap that every agent would otherwise hand-roll. It is proven by
-extraction: each piece here graduated from michelle-ai (the live proving ground)
+extraction: each piece here graduated from the reference agent (the live proving ground)
 only after it ran in production, so this package carries no speculative API.
 
 **Import discipline / no circular import.** `agent_core` imports `nmem_sym` and
@@ -39,7 +39,7 @@ them. Agents without `nmem_sym`/`nmem_act` installed can still `import nmem`.
   {catalog,test-llm,list-models,create}. The nmem-studio setup-wizard backend — stands
   a new agent up from a web UI; the LLM key never leaves the server.
 
-**Roadmap (extract validate-then-thin from michelle, michelle stays live)**
+**Roadmap (extract validate-then-thin from the reference agent, which stays live)**
 - a DB-engine helper (Group 1E) + prompt-assembly helpers (Group 3G) — opportunistic.
 """
 from __future__ import annotations

@@ -1,7 +1,7 @@
 """Memory bootstrap — construct an agent's nmem MemorySystem + nmem-sym SymbolGraph.
 
 The order-sensitive, DSN-fiddly boot recipe every agent needs, once, as config.
-Graduated from michelle-ai's ``service/memory.py``.
+Graduated from the reference agent's ``service/memory.py``.
 
 Bootstrap facts (do not reorder):
   - ``MemorySystem(cfg)`` builds engines only; ``await mem.initialize()`` creates tables.

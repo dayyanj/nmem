@@ -2,7 +2,7 @@
 
 The communication drive fires a `communicate` intent; this module turns that into an actual
 utterance over WHATEVER channel the host provides, assesses how it landed, and LEARNS what
-communication works — so michelle gets better at what/how/when she communicates over time.
+communication works — so the agent gets better at what/how/when it communicates over time.
 
 Layering (see nmem/docs/agent-comms-channel-agnostic.md):
   - nmem-sym owns WHEN (the drive→intent), WHAT candidates (symbol_pending_utterances, from the
@@ -33,7 +33,7 @@ _ENGAGEMENT_SCORE = {"ignored": 0.0, "acknowledged": 0.4, "answered": 0.8, "acte
 
 @dataclass
 class Utterance:
-    """One thing michelle is saying, over some channel. Channel-neutral."""
+    """One thing the agent is saying, over some channel. Channel-neutral."""
     id: int
     text: str
     source: str                     # e.g. "drive:novelty" — provenance for honest discharge

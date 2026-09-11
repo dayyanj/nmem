@@ -6,7 +6,7 @@ The reusable seam between the goal queue (nmem-sym) and the goal-pursuit lifecyc
 importing nmem-sym. Pure adapter — no app logic — so any agent that produces
 ``drive_intent`` goals in nmem-sym and actuates them through nmem-act reuses it.
 
-Graduated from michelle-ai (``service/pursuit_store.py``) after it ran live (upstream
+Graduated from the reference agent (``service/pursuit_store.py``) after it ran live (upstream
 plan Phase 3).
 """
 from __future__ import annotations
@@ -35,7 +35,7 @@ def _goal_source_ref(g: Any):
 
 def proposal_source(goal: Any) -> str:
     """Derive an ActionProposal ``source`` from a goal, so a verified pursuit discharges the
-    RIGHT drive. Agent-agnostic — graduated out of individual agents (michelle used to hardcode
+    RIGHT drive. Agent-agnostic — graduated out of individual agents (an agent used to hardcode
     ``drive:novelty`` for every drive_intent goal because the drive wasn't threaded this far, so
     ALL drive successes wrongly discharged novelty).
 
@@ -65,7 +65,7 @@ class SymbolGoalStore:
     #   'dispatchable' = the legacy drive pursuit (plan_state none/executing, source-filtered) —
     #                    default, behavior-identical.
     #   'planned'      = the PLANNED pursuit (plan_state planned/executing, any source_type) that
-    #                    drains validated-but-unexecuted plans (e.g. michelle's "Establish: X" goals).
+    #                    drains validated-but-unexecuted plans (e.g. an agent's "Establish: X" goals).
     # `_inflight` = the plan_state a CLAIMED goal of this store sits in (so recover is selector-aware
     # and can't reset the OTHER store's live claim, §30.6 P1-7).
     _DISPATCH = {

@@ -4,7 +4,7 @@ A ready-made FastAPI router an HTTP agent can mount to get, for free, the exact
 endpoints that make an nmem agent observable and validatable: a `/health`, and the
 `/admin/*` hooks to force a consolidation, run a nightly synthesis or a dreamstate
 cycle on demand, probe self-engineering recipes, and drive a recall end-to-end. These
-are the same endpoints the michelle capability sweep leaned on — so any new agent is
+are the same endpoints the reference agent's capability sweep leaned on — so any new agent is
 inspectable and sweepable day one, and a fleet exposes one consistent ops surface.
 
 **Optional + framework-free by design.** FastAPI is imported lazily INSIDE

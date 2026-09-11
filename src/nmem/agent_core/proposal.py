@@ -1,4 +1,4 @@
-"""The default pursuit-proposal builder — the app-agnostic assembly graduated out of michelle's
+"""The default pursuit-proposal builder — the app-agnostic assembly graduated out of the reference agent's
 ``_build_pursuit_proposal`` (upstream plan §2.5). Turns a goal into an :class:`~nmem_act.ActionProposal`,
 injecting the context every actuating agent wants:
 
@@ -32,7 +32,7 @@ def default_proposal(mem, graph, bridge=None, *, agent_id: str,
     """Build an async ``build(goal) -> ActionProposal`` closure over an agent's memory + graph + bridge.
 
     ``action_type`` is what the executor dispatches on / the autonomy gate names (a ToolCallingExecutor
-    ignores it and runs from ``rationale``; a params-runner like michelle's sandbox keys its handler on
+    ignores it and runs from ``rationale``; a params-runner like an agent's sandbox keys its handler on
     it — e.g. ``"pursue_knowledge"``). ``lessons_query`` defaults to the goal objective; ``tool_tag``
     scopes lesson recall to the agent's actuator skill namespace."""
     from nmem_act import ActionProposal, CapabilityClass

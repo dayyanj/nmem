@@ -12,7 +12,7 @@ Usage::
     # Neutral (default) — generic, no domain assumptions
     config = NmemConfig.from_profile("neutral", database_url="...")
 
-    # Refinery — tuned for the Spwig multi-agent system
+    # Refinery — tuned for a multi-agent system
     config = NmemConfig.from_profile("refinery", database_url="...")
 
     # Custom — use any profile as a starting point, then override
@@ -28,7 +28,7 @@ from typing import Any
 
 
 def _refinery_overrides() -> dict[str, Any]:
-    """Overrides tuned for the Spwig refinery multi-agent system.
+    """Overrides tuned for the refinery multi-agent system profile.
 
     These settings were extracted from ~6 months of production usage
     with 6-8 agents (orchestrator, researcher, writer, critic, coder,

@@ -154,7 +154,7 @@ def build_agent_files(spec: dict) -> dict:
     spec keys: agent_id, enabled (flag set/list), persona (a Persona or dict), llm
     ({provider,base_url,model,api_key,api_key_env}), embedding, symbol_graph, pursuit,
     outward_actions, db_url, and optionally belief / policy / db_env_key (an agent that trusts
-    its own observations highly + restricts policy writers, per michelle's _shim_config values).
+    its own observations highly + restricts policy writers, per the reference agent's _shim_config values).
     Returns {capabilities.env, agent.yaml, persona.yaml, secrets}. The three strings are written to
     the agent's config dir; `secrets` (env-var->value) goes to the secret store, never committed."""
     import yaml

@@ -3,7 +3,7 @@
 Extracted from `studio_server.build_agent_app` (host-shell-convergence-plan.md Step 1): the generic
 FastAPI host that boots an agent on `AgentRuntime` from an already-loaded `(config, persona)`. The
 studio APPLIANCE (wizard/provision/restart, SessionAuth, dashboard, `/tools`, `/act`) is ONE caller
-that layers its features on top; a bespoke agent (michelle, DJ) is another caller that injects its
+that layers its features on top; a bespoke agent is another caller that injects its
 own executor/comms/routes. Config DISCOVERY (AGENT_CONFIG vs the studio data-dir scan vs DJAI_CONFIG)
 stays in the caller — this host is source-agnostic.
 
@@ -74,8 +74,8 @@ def create_agent_app(
     """Build the agent-mode FastAPI app. Returns `(app, ctx)`; the caller may mount more onto `app`
     (studio adds auth/dashboard/`/tools`/`/act`) and reads `ctx.runtime` after startup.
 
-    Hooks (all optional): `build_executor(ctx, bridge)->executor` (the runtime's actuator — michelle's
-    direct ReferenceRunner, studio's selector); `comms_factory(ctx)->comms_sink` (built with live mem);
+    Hooks (all optional): `build_executor(ctx, bridge)->executor` (the runtime's actuator — a bespoke
+    agent's direct ReferenceRunner, studio's selector); `comms_factory(ctx)->comms_sink` (built with live mem);
     `build_proposal`/`skill_chronic` (passed through to AgentRuntime); the async lifecycle
     `on_resources_ready`→`pre_start`→`on_started` (startup) and `on_shutdown`→`on_stopped` (teardown,
     the latter running AFTER `runtime.stop()` for cleanup that must outlive the loops); `chat_handler(
