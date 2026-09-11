@@ -84,13 +84,16 @@ def render_agent_yaml(
     db_env_key: str | None = None, db_url=None,
     belief: dict | None = None, policy: dict | None = None,
     actors: dict | None = None, autonomy: dict | None = None, hive: dict | None = None,
-    goal_lifecycle: dict | None = None,
+    goal_lifecycle: dict | None = None, computer_use: dict | None = None,
 ) -> str:
     """Render the NON-SECRET ``agent.yaml`` (structural config for agent_core.build_memory /
     build_symbol_graph / AgentRuntime). API keys are NOT written here — they are secrets
     (see ``split_secrets``). ``llm`` = {provider, base_url, model}; a key is stripped if present.
-    ``actors`` = the declarative tool config (webhooks/openapi/mcp/a2a/plugins_dir) the actor seam
-    reads; ``autonomy`` = {level, allow, deny} governing what the actor executor may run."""
+    ``actors`` = the declarative tool config (webhooks/openapi/mcp/a2a/plugins_dir) the SELECTOR
+    seam reads; ``autonomy`` = {level, allow, deny} governing what the executor may run.
+    ``computer_use`` = {enabled, url, max_steps, wall_clock_s} — a top-level block that makes the
+    appliance a RESEARCH agent (the direct verifier-enforced sandbox runner, §33.3); it is
+    mutually exclusive with ``actors`` (a computer_use agent suppresses the selector)."""
     import yaml
 
     env_key = db_env_key or f"{agent_id.upper()}_DB_DSN_ASYNC"
@@ -125,6 +128,11 @@ def render_agent_yaml(
     }
     if pursuit is not None:
         doc["pursuit"] = pursuit
+    if computer_use is not None:
+        # Presence, not truthiness: build_agent_app treats an explicit computer_use block — even
+        # `{}` (disabled) — as a research-agent declaration that suppresses the selector and
+        # supersedes stale sandbox capabilities. Dropping an empty block would mis-select the mode.
+        doc["computer_use"] = computer_use
     if actors:
         doc["actors"] = actors
     if autonomy:
@@ -154,7 +162,8 @@ def build_agent_files(spec: dict) -> dict:
     spec keys: agent_id, enabled (flag set/list), persona (a Persona or dict), llm
     ({provider,base_url,model,api_key,api_key_env}), embedding, symbol_graph, pursuit,
     outward_actions, db_url, and optionally belief / policy / db_env_key (an agent that trusts
-    its own observations highly + restricts policy writers, per the reference agent's _shim_config values).
+    its own observations highly + restricts policy writers, per the reference agent's _shim_config
+    values), actors / autonomy (selector tools), and computer_use (a research agent's sandbox block).
     Returns {capabilities.env, agent.yaml, persona.yaml, secrets}. The three strings are written to
     the agent's config dir; `secrets` (env-var->value) goes to the secret store, never committed."""
     import yaml
@@ -200,7 +209,7 @@ def build_agent_files(spec: dict) -> dict:
             db_env_key=spec.get("db_env_key"), db_url=spec.get("db_url"),
             belief=spec.get("belief"), policy=spec.get("policy"),
             actors=spec.get("actors"), autonomy=spec.get("autonomy"),
-            hive=hive, goal_lifecycle=goal_lifecycle),
+            hive=hive, goal_lifecycle=goal_lifecycle, computer_use=spec.get("computer_use")),
         "persona.yaml": yaml.safe_dump(persona.to_dict(), sort_keys=False) if persona else "",
         "secrets": split_secrets(agent_id=agent_id, llm_key=key, llm_key_env=key_env,
                                  embed_key=emb_key),

@@ -95,6 +95,40 @@ def test_agent_yaml_actors_and_autonomy():
     assert "actors" not in plain and "autonomy" not in plain
 
 
+def test_agent_yaml_computer_use_block():
+    import yaml
+    doc = yaml.safe_load(render_agent_yaml(
+        agent_id="scout",
+        llm={"provider": "openai", "base_url": "http://x/v1", "model": "m"},
+        pursuit={"enabled": True, "action_type": "pursue_knowledge"},
+        computer_use={"enabled": True, "url": "http://sandbox:8080", "max_steps": 40}))
+    assert doc["computer_use"]["url"] == "http://sandbox:8080"
+    assert doc["computer_use"]["enabled"] is True
+    # omitted when not provided (selector/thinker agent, no research sandbox)
+    plain = yaml.safe_load(render_agent_yaml(agent_id="x", llm={"provider": "openai", "model": "m"}))
+    assert "computer_use" not in plain
+    # but an EXPLICIT empty block is preserved — the appliance reads presence (§33.3), so an empty
+    # (disabled) research declaration must not silently degrade into a selector agent.
+    empty = yaml.safe_load(render_agent_yaml(
+        agent_id="x", llm={"provider": "openai", "model": "m"}, computer_use={}))
+    assert "computer_use" in empty and empty["computer_use"] == {}
+
+
+def test_build_agent_files_emits_research_computer_use_block():
+    import yaml
+    files = build_agent_files({
+        "agent_id": "scout",
+        "enabled": {"NMEM_SYM_GOALS_ENABLED"},
+        "llm": {"provider": "openai", "base_url": "http://x/v1", "model": "m"},
+        "pursuit": {"enabled": True, "action_type": "pursue_knowledge",
+                    "tool_tag": "web research"},
+        "computer_use": {"enabled": True, "url": "http://sandbox:8080"},
+    })
+    doc = yaml.safe_load(files["agent.yaml"])
+    assert doc["computer_use"]["url"] == "http://sandbox:8080"
+    assert doc["pursuit"]["action_type"] == "pursue_knowledge"
+
+
 def test_persona_round_trip():
     p = Persona(agent_id="scout", objectives=[("learn", "Learn the domain.")],
                 goal_priorities={"learn": 0.9},
