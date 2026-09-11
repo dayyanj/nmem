@@ -62,6 +62,23 @@ def make_ops_router(get_runtime: Callable, *, extra_health: Callable[[], dict] |
                 log.warning("[ops] extra_health failed", exc_info=True)
         return base
 
+    @router.get("/admin/drive_state")
+    async def drive_state():
+        """Read-only snapshot of the live homeostatic drive pressures (novelty/recall/coherence/…).
+        These live in the running process (in-memory), so this is the only external window onto them
+        — for the viz, debugging, and eval probes (e.g. novelty-vs-graph-maturity). ``{}`` when
+        drives are disabled."""
+        rt = _rt()
+        if rt is None or getattr(rt, "bridge", None) is None:
+            return {"ok": False, "error": "runtime not started"}
+        try:
+            dom = rt.bridge.dominant_drive()
+            return {"ok": True, "drives": rt.bridge.drive_state(),
+                    "dominant": {"drive": dom[0], "pressure": dom[1]} if dom else None}
+        except Exception as e:  # noqa: BLE001
+            log.warning("[ops] drive_state failed: %s", e, exc_info=True)
+            return {"ok": False, "error": str(e)}
+
     @router.post("/admin/consolidate")
     async def consolidate():
         """Force a full consolidation cycle (promote journal→LTM + graph-extraction hooks)."""
