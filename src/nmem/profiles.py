@@ -12,11 +12,11 @@ Usage::
     # Neutral (default) — generic, no domain assumptions
     config = NmemConfig.from_profile("neutral", database_url="...")
 
-    # Refinery — tuned for a multi-agent system
-    config = NmemConfig.from_profile("refinery", database_url="...")
+    # Multi-agent — tuned for a fleet of specialized agents
+    config = NmemConfig.from_profile("multi_agent", database_url="...")
 
     # Custom — use any profile as a starting point, then override
-    config = NmemConfig.from_profile("refinery",
+    config = NmemConfig.from_profile("multi_agent",
         database_url="...",
         consolidation={"nightly_synthesis_hour_utc": 4},
     )
@@ -27,12 +27,12 @@ from __future__ import annotations
 from typing import Any
 
 
-def _refinery_overrides() -> dict[str, Any]:
-    """Overrides tuned for the refinery multi-agent system profile.
+def _multi_agent_overrides() -> dict[str, Any]:
+    """Overrides tuned for a multi-agent deployment.
 
-    These settings were extracted from ~6 months of production usage
-    with 6-8 agents (orchestrator, researcher, writer, critic, coder,
-    sales head) running against vLLM / llama.cpp backends.
+    Extracted from extended production usage with a fleet of specialized agents
+    (orchestrator / researcher / writer / critic / coder / planner) running against
+    OpenAI-compatible (vLLM) and llama.cpp backends.
     """
     return {
         "consolidation": {
@@ -53,7 +53,7 @@ def _refinery_overrides() -> dict[str, Any]:
                 "writer": 0.6,
                 "critic": 0.7,
                 "coder": 0.7,
-                "sales_head": 0.6,
+                "planner": 0.6,
             },
         },
         "retrospective": {
@@ -66,8 +66,8 @@ def _refinery_overrides() -> dict[str, Any]:
 # ── Profile registry ────────────────────────────────────────────────────────
 
 _PROFILES: dict[str, dict[str, Any]] = {
-    "neutral": {},       # bare defaults — generic, no domain assumptions
-    "refinery": _refinery_overrides(),
+    "neutral": {},         # bare defaults — generic, no domain assumptions
+    "multi_agent": _multi_agent_overrides(),
 }
 
 

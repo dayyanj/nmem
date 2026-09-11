@@ -695,7 +695,7 @@ class NmemConfig(BaseSettings):
 
     Or via named profiles::
 
-        config = NmemConfig.from_profile("refinery", database_url="...")
+        config = NmemConfig.from_profile("multi_agent", database_url="...")
     """
 
     database_url: str = "postgresql+asyncpg://localhost/nmem"
@@ -781,13 +781,13 @@ class NmemConfig(BaseSettings):
         so explicit values always win::
 
             config = NmemConfig.from_profile(
-                "refinery",
+                "multi_agent",
                 database_url="postgresql+asyncpg://...",
                 consolidation={"nightly_synthesis_hour_utc": 4},
             )
 
         Available profiles: ``"neutral"`` (generic, no domain assumptions)
-        and ``"refinery"`` (tuned for a multi-agent system).
+        and ``"multi_agent"`` (tuned for a fleet of specialized agents).
         Use :func:`nmem.profiles.register_profile` to add custom profiles.
         """
         from nmem.profiles import get_profile_overrides

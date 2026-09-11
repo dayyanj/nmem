@@ -85,7 +85,7 @@ AGENTS_MD_CONTENT = '''# AI Agent Instructions
 
 ## Memory System
 
-This project uses [nmem](https://github.com/spwig/nmem) for persistent cognitive memory.
+This project uses [nmem](https://github.com/dayyanj/nmem) for persistent cognitive memory.
 nmem is available as an MCP server — check your tool list for `memory_*` tools.
 
 ### Available memory tools

@@ -9,7 +9,7 @@ Usage::
     from nmem import MemorySystem, NmemConfig
     from nmem.adapters.crewai import NmemCrewAIMemory
 
-    mem = MemorySystem(NmemConfig.from_profile("refinery", database_url="..."))
+    mem = MemorySystem(NmemConfig.from_profile("multi_agent", database_url="..."))
     await mem.initialize()
 
     memory = NmemCrewAIMemory(mem_system=mem, agent_id="researcher")

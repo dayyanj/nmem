@@ -50,18 +50,18 @@ def test_from_profile_neutral_matches_bare_defaults() -> None:
     assert profiled.retrospective.lookback_days == bare.retrospective.lookback_days
 
 
-def test_from_profile_refinery_seeds_agent_trust() -> None:
-    """Refinery profile pre-seeds agent trust for known roles."""
-    config = NmemConfig.from_profile("refinery")
+def test_from_profile_multi_agent_seeds_agent_trust() -> None:
+    """Multi-agent profile pre-seeds agent trust for known roles."""
+    config = NmemConfig.from_profile("multi_agent")
     trust = config.belief.agent_trust
     assert "orchestrator" in trust
     assert "critic" in trust
     assert trust["orchestrator"] > trust["writer"]  # orchestrator trusted more
 
 
-def test_from_profile_refinery_nightly_min_entries() -> None:
-    """Refinery profile raises nightly_synthesis_min_entries."""
-    config = NmemConfig.from_profile("refinery")
+def test_from_profile_multi_agent_nightly_min_entries() -> None:
+    """Multi-agent profile raises nightly_synthesis_min_entries."""
+    config = NmemConfig.from_profile("multi_agent")
     assert config.consolidation.nightly_synthesis_min_entries == 10
 
 
@@ -106,8 +106,8 @@ def test_register_custom_profile() -> None:
 
 
 def test_list_profiles_includes_builtins() -> None:
-    """list_profiles returns at least neutral and refinery."""
+    """list_profiles returns at least neutral and multi_agent."""
     from nmem import list_profiles
     profiles = list_profiles()
     assert "neutral" in profiles
-    assert "refinery" in profiles
+    assert "multi_agent" in profiles
