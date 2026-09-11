@@ -66,13 +66,13 @@ def test_report_winner_and_lift():
 async def test_continuity_beats_static_baseline(mem):
     await mem.commitments.impose("founder", "ship the continuity eval harness",
                                  importance=0.9)
-    await mem.cognitive.emit_curiosity("michelle", "contradiction",
+    await mem.cognitive.emit_curiosity("agent-a", "contradiction",
                                        "why did the drift metric spike",
                                        novelty_score=0.8, uncertainty_score=0.8)
-    await mem.journal.add(agent_id="michelle", entry_type="session_summary",
+    await mem.journal.add(agent_id="agent-a", entry_type="session_summary",
                           title="Built the wake assembler", content="x", importance=6)
 
-    report = await run_eval(mem, "michelle")
+    report = await run_eval(mem, "agent-a")
 
     # The static preamble contains none of the agent's actual state.
     assert report.scores["baseline"].coverage == 0.0
@@ -90,7 +90,7 @@ async def test_continuity_beats_static_baseline(mem):
 @pytest.mark.asyncio
 async def test_shared_budget_caps_both_contexts(mem):
     await mem.commitments.impose("founder", "some open obligation", importance=0.8)
-    report = await run_eval(mem, "michelle", budget_tokens=120)
+    report = await run_eval(mem, "agent-a", budget_tokens=120)
     assert report.detail["budget_tokens"] == 120
     assert report.scores["baseline"].token_estimate <= 120
     assert report.scores["continuity"].token_estimate <= 120
@@ -107,7 +107,7 @@ async def test_eval_degrades_on_missing_narrative_table(mem):
     orig = cs.latest_narrative
     try:
         cs.latest_narrative = boom  # run_eval imports this at call time
-        report = await run_eval(mem, "michelle")
+        report = await run_eval(mem, "agent-a")
     finally:
         cs.latest_narrative = orig
     assert report.provenance_integrity is None
@@ -120,7 +120,7 @@ async def test_incomplete_source_is_reported(mem):
         raise RuntimeError("commitments table unavailable")
     mem._commitments.list = boom  # simulate a failed ground-truth source
 
-    report = await run_eval(mem, "michelle")
+    report = await run_eval(mem, "agent-a")
     assert "commitments" in report.incomplete_sources
     assert not report.complete
 
@@ -137,7 +137,7 @@ class _EchoAnswerer:
 async def test_probe_mode_scores_the_answer(mem):
     await mem.commitments.impose("founder", "finish the probe-mode eval",
                                  importance=0.9)
-    report = await run_eval(mem, "michelle", answerer=_EchoAnswerer())
+    report = await run_eval(mem, "agent-a", answerer=_EchoAnswerer())
     assert report.detail["mode"] == "probe"
     assert report.scores["continuity"].coverage > report.scores["baseline"].coverage
     assert "continuity" in report.detail["answers"]
@@ -145,18 +145,18 @@ async def test_probe_mode_scores_the_answer(mem):
 
 @pytest.mark.asyncio
 async def test_provenance_integrity_flags_drift(mem):
-    await mem.journal.add(agent_id="michelle", entry_type="note",
+    await mem.journal.add(agent_id="agent-a", entry_type="note",
                           title="real episode", content="x", importance=5)
     from sqlalchemy import text
     async with mem._db.session() as s:
         real_id = (await s.execute(text(
-            "SELECT id FROM nmem_journal_entries WHERE agent_id='michelle' LIMIT 1"))).scalar()
+            "SELECT id FROM nmem_journal_entries WHERE agent_id='agent-a' LIMIT 1"))).scalar()
 
     # Narrative that cites one real episode and one vanished one → integrity 0.5.
-    await write_narrative(mem._db, "michelle", None,
+    await write_narrative(mem._db, "agent-a", None,
                           current_period="I did real and imagined things.",
                           longer_trajectory=None, provenance=[real_id, 88888888],
                           token_len=8, full_reconstruction=True)
 
-    report = await run_eval(mem, "michelle")
+    report = await run_eval(mem, "agent-a")
     assert report.provenance_integrity == pytest.approx(0.5)

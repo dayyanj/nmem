@@ -113,7 +113,7 @@ def test_merge_tie_prefers_commitment():
 
 def _assemble(**over):
     base = dict(
-        agent_id="michelle", now=NOW, identity=None, recent=[], commitments=[],
+        agent_id="agent-a", now=NOW, identity=None, recent=[], commitments=[],
         curiosity=[], policies=[], relevant=[], sym=None, max_tokens=1500,
         k_open_loops=7,
     )
@@ -130,7 +130,7 @@ def test_no_gap_suppresses_reorientation_and_delta():
     r = _assemble(
         checkpoint={"last_interaction_summary": "discussed the plan"},
         elapsed_seconds=120,                       # 2 minutes — not a gap
-        delta={"shared_new": [{"key": "x", "by": "djai"}], "journal_new": 3},
+        delta={"shared_new": [{"key": "x", "by": "agent-b"}], "journal_new": 3},
     )
     assert "Returning after a gap" not in r.content
     assert "Since you were last active" not in r.content
@@ -153,10 +153,10 @@ def test_long_gap_renders_delta_of_what_changed():
     r = _assemble(
         checkpoint={"last_interaction_summary": "left off here"},
         elapsed_seconds=2 * 86400,
-        delta={"shared_new": [{"key": "pricing model v2", "by": "djai"}], "journal_new": 7},
+        delta={"shared_new": [{"key": "pricing model v2", "by": "agent-b"}], "journal_new": 7},
     )
     assert "Since you were last active" in r.content
-    assert "djai added to shared knowledge: pricing model v2" in r.content
+    assert "agent-b added to shared knowledge: pricing model v2" in r.content
     assert "7 new entries accrued" in r.content
     assert "delta" in r.sections
 
@@ -192,7 +192,7 @@ def test_delta_without_gap_flag_is_ignored():
     r = _assemble(
         checkpoint={"last_interaction_summary": "x"},
         elapsed_seconds=60,
-        delta={"shared_new": [{"key": "y", "by": "djai"}], "journal_new": 1},
+        delta={"shared_new": [{"key": "y", "by": "agent-b"}], "journal_new": 1},
     )
     assert "Since you were last active" not in r.content
 
@@ -200,14 +200,14 @@ def test_delta_without_gap_flag_is_ignored():
 def test_empty_is_the_morning_case_and_does_not_raise():
     r = _assemble()
     assert isinstance(r, ContinuityResult)
-    assert "michelle" in r.content
+    assert "agent-a" in r.content
     assert r.sections == ()
     assert r.n_open_loops_total == 0
 
 
 def test_sections_appear_in_canonical_order():
     r = _assemble(
-        identity="I am michelle, a peer reasoner.",
+        identity="I am agent-a, a peer reasoner.",
         policies=[SimpleNamespace(key="safety", content="Never delete prod data.")],
         commitments=[_commitment("ship", importance=0.8)],
         sym=SymContinuityInputs(
@@ -244,7 +244,7 @@ def test_populated_snapshot_respects_token_budget():
     # Regression for the 120%-of-budget defect: a fully-populated snapshot must
     # not exceed the requested token budget.
     r = _assemble(
-        identity="I am michelle. " * 20,
+        identity="I am agent-a. " * 20,
         policies=[SimpleNamespace(key="safety", content="Never delete prod data. " * 10)],
         recent=[SimpleNamespace(title=f"did thing {i} " * 5, content="") for i in range(10)],
         commitments=[_commitment(f"ship deliverable {i} " * 5, importance=0.8) for i in range(10)],
@@ -286,11 +286,11 @@ def test_applicable_policies_filters_foreign_scope():
 
     pols = [
         SimpleNamespace(scope="global", key="a"),
-        SimpleNamespace(scope="agent:michelle", key="b"),
+        SimpleNamespace(scope="agent:agent-a", key="b"),
         SimpleNamespace(scope="agent:sales", key="c"),
         SimpleNamespace(scope="entity_type:lead", key="d"),
     ]
-    kept = {p.key for p in applicable_policies(pols, "michelle")}
+    kept = {p.key for p in applicable_policies(pols, "agent-a")}
     assert kept == {"a", "b"}  # global + own agent scope only
 
 
@@ -334,7 +334,7 @@ async def test_install_continuity_provider_wires_and_wraps():
     mem = FakeMem()
     assert install_continuity_provider(mem, FakeBridge()) is True
     assert mem.provider is not None
-    si = await mem.provider("michelle")
+    si = await mem.provider("agent-a")
     assert isinstance(si, SymContinuityInputs)
     assert si.active_goals == ("ship the seam", "close the loop")  # list → tuple
     assert si.self_model_summary == "strong at synthesis"
@@ -427,14 +427,14 @@ async def test_wake_no_query_surfaces_commitments_and_curiosity(mem):
     await mem.commitments.impose("founder", "ship the continuity benchmark",
                                  importance=0.9)
     await mem.cognitive.emit_curiosity(
-        "michelle", "contradiction", "two sources disagree on the release date",
+        "agent-a", "contradiction", "two sources disagree on the release date",
         novelty_score=0.9, uncertainty_score=0.9,
     )
-    await mem.journal.add(agent_id="michelle", entry_type="session_summary",
+    await mem.journal.add(agent_id="agent-a", entry_type="session_summary",
                           title="Explored the wake-snapshot design",
                           content="Sketched the two-speed continuity model.", importance=6)
 
-    r = await mem.wake("michelle")  # no query — the "Morning." case
+    r = await mem.wake("agent-a")  # no query — the "Morning." case
 
     assert "continuity benchmark" in r.content
     assert "two sources disagree" in r.content
@@ -454,7 +454,7 @@ async def test_wake_sym_provider_seam_is_consulted(mem):
         )
 
     mem.register_continuity_provider(provider)
-    r = await mem.wake("michelle")
+    r = await mem.wake("agent-a")
 
     assert "finish the eval harness" in r.content
     assert "curiosity about the regression" in r.content
@@ -468,7 +468,7 @@ async def test_wake_sym_provider_failure_is_fail_open(mem):
 
     mem.register_continuity_provider(broken)
     # Must not raise — reorientation degrades to memory-only.
-    r = await mem.wake("michelle")
+    r = await mem.wake("agent-a")
     assert isinstance(r, ContinuityResult)
     assert not r.has_self_model
 
@@ -486,14 +486,14 @@ async def test_wake_curiosity_is_project_scoped_end_to_end(mem):
     # agent configured for proj-A must see only proj-A's curiosity — and the
     # backlog count must agree (the emit path persists scope, the read filters).
     mem._config.project_scope = "proj-A"
-    await mem.cognitive.emit_curiosity("michelle", "gap", "A-scoped gap",
+    await mem.cognitive.emit_curiosity("agent-a", "gap", "A-scoped gap",
                                        novelty_score=0.8, uncertainty_score=0.8)
     mem._config.project_scope = "proj-B"
     await mem.cognitive.emit_curiosity("other", "gap", "B-scoped gap",
                                        novelty_score=0.9, uncertainty_score=0.9)
 
     mem._config.project_scope = "proj-A"
-    r = await mem.wake("michelle")
+    r = await mem.wake("agent-a")
 
     assert "A-scoped gap" in r.content
     assert "B-scoped gap" not in r.content

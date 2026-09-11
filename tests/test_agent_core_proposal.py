@@ -45,7 +45,7 @@ def test_default_proposal_defaults_action_type_and_is_fail_open():
 
 
 def test_runtime_auto_defaults_the_builder_from_pursuit_config():
-    # the thin-host seam michelle now relies on: with no host build_proposal, the runtime builds the
+    # the thin-host seam agent-a now relies on: with no host build_proposal, the runtime builds the
     # default from pursuit.{action_type,tool_tag,...} + its own mem/graph/bridge/agent_id.
     import types
 
@@ -55,7 +55,7 @@ def test_runtime_auto_defaults_the_builder_from_pursuit_config():
     rt.mem = _Mem()
     rt.graph = object()
     rt.bridge = None
-    rt._persona = types.SimpleNamespace(agent_id="michelle")   # rt.agent_id reads this
+    rt._persona = types.SimpleNamespace(agent_id="agent-a")   # rt.agent_id reads this
     build = rt._default_proposal({"action_type": "pursue_knowledge", "tool_tag": "web",
                                   "lessons_query": "seek and verify", "capability_class": "read_only"})
     p = asyncio.run(build(_Goal()))

@@ -3,7 +3,7 @@
 The lock is the safety-critical piece (docs/path-b-hive-scoping-design.md §11.1/§12.1): it MUST
 elect exactly one keeper across processes, on a dedicated connection that doesn't drop the lock.
 The two-connection assertion needs a real Postgres, so it runs only when NMEM_TEST_PG_DSN is set
-(the live validation on dj-ai exercises it); the pure-config tests always run."""
+(the live validation on agent-b exercises it); the pure-config tests always run."""
 import asyncio
 import os
 
@@ -207,7 +207,7 @@ def test_two_member_shared_world_hive_elects_one_keeper():
     Both mark graph_role=keeper, yet the advisory lock elects EXACTLY ONE; the keeper runs graph-global,
     the contributor does not; both attach with DISTINCT owner identities; stopping both frees the lock
     (failover-ready). Boots the real runtime (build_memory needs the bundled all-MiniLM embedder).
-    Verified live on dj-ai (2026-09-09) against a throwaway pgvector: alpha keeper / beta contributor."""
+    Verified live on agent-b (2026-09-09) against a throwaway pgvector: alpha keeper / beta contributor."""
     from nmem.agent_core import AgentRuntime, Persona
 
     dsn = os.environ["NMEM_TEST_PG_DSN"]

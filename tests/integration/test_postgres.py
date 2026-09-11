@@ -1350,7 +1350,7 @@ class TestPolicyAlignment:
 
     async def _seed_policy(self, mem: MemorySystem, key: str, content: str):
         return await mem.policy.save(
-            "agent:djai", "operational_constraint", key, content, "system",
+            "agent:agent-b", "operational_constraint", key, content, "system",
         )
 
     async def test_disabled_is_noop(self, mem: MemorySystem):
@@ -1503,14 +1503,14 @@ class TestPolicyAwareSynthesis:
         from sqlalchemy import text
 
         await mem.policy.save(
-            "agent:djai", "operational_constraint", "outreach_paused",
+            "agent:agent-b", "operational_constraint", "outreach_paused",
             "OUTBOUND PROSPECTING IS PAUSED pending messaging redesign.",
             "system",
         )
         # Directive-grade entry (importance 10) whose content must appear
         # in the prompt, not just its title.
         await mem.journal.add(
-            "djai", "founder_input_directive", "Founder directive: pause outreach",
+            "agent-b", "founder_input_directive", "Founder directive: pause outreach",
             "We paused outreach deliberately while pivoting to AGPL messaging.",
             importance=10,
         )

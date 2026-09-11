@@ -2,7 +2,7 @@
 the top pending utterance over the host's ChannelSink, and (async) the response is assessed →
 nmem-sym drive discharge + a comms-skill lesson.
 
-Ported from michelle's standalone service/communication.py dev test when that (dead, superseded)
+Ported from agent-a's standalone service/communication.py dev test when that (dead, superseded)
 copy was retired — the logic graduated to agent_core.comms; the coverage graduates with it.
 Pure unit tests (mocked bridge/mem/sink/backend), no DB.
 """
@@ -37,8 +37,8 @@ def _bridge_mem(row):
 
 
 _ROW = {"id": 7, "source": "drive:communication", "action_type": "communicate",
-        "text": "Found: Spwig ships a POS component.", "valence": "positive",
-        "relevance": 0.8, "addressee": "djai"}
+        "text": "Found: Acme ships a POS component.", "valence": "positive",
+        "relevance": 0.8, "addressee": "agent-b"}
 
 
 @pytest.mark.asyncio
@@ -75,9 +75,9 @@ async def test_response_assessed_llm_discharges_and_learns():
     b, m, _ = _bridge_mem(_ROW)
     backend = SimpleNamespace(chat=AsyncMock(return_value=json.dumps(
         {"engagement": "answered", "valence": 0.6, "usefulness": 0.8,
-         "lesson": "terse factual findings to djai get engaged replies"})))
+         "lesson": "terse factual findings to agent-b get engaged replies"})))
     loop = CommsLoop(b, m, backend=backend, sink=SimpleNamespace(deliver=AsyncMock(return_value=True)),
-                     agent_id="michelle")
+                     agent_id="agent-a")
     utt = Utterance(id=7, text=_ROW["text"], source="drive:novelty", action_type="communicate")
     await loop._handle_response(utt, "Interesting — does it support offline mode?", latency_s=5.0)
     # discharge closed with a high-ish score, answered=True

@@ -20,20 +20,20 @@ from nmem.types import ContinuityResult
 @pytest.mark.asyncio
 async def test_narrative_is_append_versioned_with_provenance(mem):
     v1 = await write_narrative(
-        mem._db, "michelle", None,
+        mem._db, "agent-a", None,
         current_period="I have been building the continuity layer.",
         longer_trajectory="I began on memory tiers; now on continuity.",
         provenance=[1, 2, 3], token_len=12, full_reconstruction=True,
     )
     v2 = await write_narrative(
-        mem._db, "michelle", None,
+        mem._db, "agent-a", None,
         current_period="Lately I wired the narrative writer.",
         longer_trajectory=None, provenance=[4, 5], token_len=7,
         full_reconstruction=True,
     )
     assert (v1, v2) == (1, 2)  # append, monotonic
 
-    latest = await latest_narrative(mem._db, "michelle")
+    latest = await latest_narrative(mem._db, "agent-a")
     assert latest["version"] == 2
     assert latest["current_period"].startswith("Lately")
     assert latest["provenance"] == [4, 5]  # drift auditable back to episodes
@@ -52,11 +52,11 @@ async def test_narrative_is_agent_scoped(mem):
 
 @pytest.mark.asyncio
 async def test_checkpoint_upserts_one_row_and_preserves_fields(mem):
-    await save_checkpoint(mem._db, "michelle", None,
+    await save_checkpoint(mem._db, "agent-a", None,
                           interrupted_work="refactoring the assembler")
-    await save_checkpoint(mem._db, "michelle", None,
+    await save_checkpoint(mem._db, "agent-a", None,
                           last_action="ran the test suite")
-    ck = await get_checkpoint(mem._db, "michelle")
+    ck = await get_checkpoint(mem._db, "agent-a")
     # Second upsert updated last_action but preserved interrupted_work (partial).
     assert ck["interrupted_work"] == "refactoring the assembler"
     assert ck["last_action"] == "ran the test suite"
@@ -86,7 +86,7 @@ class _FakeNarrativeLLM:
 async def test_narrative_writer_grounds_in_episodes(mem):
     # Seed episodic memory for one agent.
     for i in range(4):
-        await mem.journal.add(agent_id="michelle", entry_type="session_summary",
+        await mem.journal.add(agent_id="agent-a", entry_type="session_summary",
                               title=f"Worked on wake snapshot part {i}",
                               content="details", importance=6)
     # Swap in a deterministic LLM for the consolidator.
@@ -94,7 +94,7 @@ async def test_narrative_writer_grounds_in_episodes(mem):
 
     await mem._consolidator.run_narrative_synthesis()
 
-    n = await latest_narrative(mem._db, "michelle")
+    n = await latest_narrative(mem._db, "agent-a")
     assert n is not None
     assert "Stage 1" in n["current_period"]
     # Provenance points back to the seeded journal ids (re-grounded from source).
@@ -112,20 +112,20 @@ async def test_narrative_grounds_in_episode_content_not_mutable_ltm(mem):
 
     from nmem.db.models import JournalEntryModel
 
-    await mem.ltm.save(agent_id="michelle", category="procedure", key="shared_title",
+    await mem.ltm.save(agent_id="agent-a", category="procedure", key="shared_title",
                        content="UNRELATED content that LTM was later reassigned to.",
                        importance=8)
-    await mem.journal.add(agent_id="michelle", entry_type="session_summary",
+    await mem.journal.add(agent_id="agent-a", entry_type="session_summary",
                           title="did deep work on the assembler",
                           content="the real account of my assembler work", importance=7)
     async with mem._db.session() as s:
         row = (await s.execute(select(JournalEntryModel).where(
-            JournalEntryModel.agent_id == "michelle"))).scalars().first()
+            JournalEntryModel.agent_id == "agent-a"))).scalars().first()
         row.promoted_to_ltm = True
         row.content = "stub: did deep work on the assembler"
         row.pointers = [{"type": "ltm", "id": 999999, "key": "shared_title"}]
     for i in range(2):
-        await mem.journal.add(agent_id="michelle", entry_type="note",
+        await mem.journal.add(agent_id="agent-a", entry_type="note",
                               title=f"note {i}", content="x", importance=5)
 
     fake = _FakeNarrativeLLM()
@@ -139,14 +139,14 @@ async def test_narrative_grounds_in_episode_content_not_mutable_ltm(mem):
 @pytest.mark.asyncio
 async def test_narrative_writer_skips_on_empty_llm(mem):
     # Default fixture uses the noop LLM → no narrative should be written.
-    await mem.journal.add(agent_id="michelle", entry_type="session_summary",
+    await mem.journal.add(agent_id="agent-a", entry_type="session_summary",
                           title="did a thing", content="x", importance=6)
-    await mem.journal.add(agent_id="michelle", entry_type="session_summary",
+    await mem.journal.add(agent_id="agent-a", entry_type="session_summary",
                           title="did another", content="x", importance=6)
-    await mem.journal.add(agent_id="michelle", entry_type="session_summary",
+    await mem.journal.add(agent_id="agent-a", entry_type="session_summary",
                           title="did a third", content="x", importance=6)
     await mem._consolidator.run_narrative_synthesis()
-    assert await latest_narrative(mem._db, "michelle") is None
+    assert await latest_narrative(mem._db, "agent-a") is None
 
 
 @pytest.mark.asyncio
@@ -186,15 +186,15 @@ def test_stale_narrative_is_marked_historical():
 
 @pytest.mark.asyncio
 async def test_wake_surfaces_narrative_and_checkpoint(mem):
-    await write_narrative(mem._db, "michelle", None,
+    await write_narrative(mem._db, "agent-a", None,
                           current_period="I have been shipping the continuity layer.",
                           longer_trajectory="From design to implementation.",
                           provenance=[1], token_len=10, full_reconstruction=True)
-    await save_checkpoint(mem._db, "michelle", None,
+    await save_checkpoint(mem._db, "agent-a", None,
                           interrupted_work="wiring narrative into wake",
                           expected_next_action="run codex")
 
-    r = await mem.wake("michelle")
+    r = await mem.wake("agent-a")
 
     assert isinstance(r, ContinuityResult)
     assert r.has_narrative and r.has_checkpoint
@@ -208,11 +208,11 @@ async def test_wake_surfaces_narrative_and_checkpoint(mem):
 async def test_end_session_records_checkpoint_from_flushed_content(mem):
     # Session working memory → flushed to journal → checkpoint captures the real
     # work (the slot content), not the bookkeeping flush title.
-    await mem.working.set("sess-1", "michelle", "task",
+    await mem.working.set("sess-1", "agent-a", "task",
                           "finishing the narrative writer and wiring wake")
-    flushed = await mem.end_session("sess-1", "michelle")
+    flushed = await mem.end_session("sess-1", "agent-a")
     assert flushed == 1
-    ck = await mem.get_continuity_checkpoint("michelle")
+    ck = await mem.get_continuity_checkpoint("agent-a")
     assert ck is not None
     assert "narrative writer" in ck["last_interaction_summary"]
     assert "working memory" not in ck["last_interaction_summary"]  # not the title
@@ -221,8 +221,8 @@ async def test_end_session_records_checkpoint_from_flushed_content(mem):
 @pytest.mark.asyncio
 async def test_end_session_no_flush_no_checkpoint_clobber(mem):
     # An explicit summary must survive an end_session that flushes nothing.
-    await mem.save_continuity_checkpoint("michelle",
+    await mem.save_continuity_checkpoint("agent-a",
                                          last_interaction_summary="curated summary")
-    await mem.end_session("sess-empty", "michelle")  # no working-memory slots
-    ck = await mem.get_continuity_checkpoint("michelle")
+    await mem.end_session("sess-empty", "agent-a")  # no working-memory slots
+    ck = await mem.get_continuity_checkpoint("agent-a")
     assert ck["last_interaction_summary"] == "curated summary"

@@ -94,7 +94,7 @@ async def test_dedup_flag(mem: MemorySystem) -> None:
 @pytest.mark.asyncio
 async def test_long_compound_entry_type_persists(mem: MemorySystem) -> None:
     """entry_type is VARCHAR(100) (was 30): composed entry_types longer than 30 chars —
-    e.g. DJ-AI's "{cycle}_{type}" like "deep_cycle_llm_tool_call_result" (31) — must persist
+    e.g. agent-b's "{cycle}_{type}" like "deep_cycle_llm_tool_call_result" (31) — must persist
     rather than overflow the column and fail the write."""
     et = "deep_cycle_llm_tool_call_result"
     assert len(et) > 30

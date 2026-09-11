@@ -41,7 +41,7 @@ class FakeMem:
                                  "last_action": last_action})
 
 
-def _meta(kind="challenge", channel="dm:michelle:djai", sender="djai"):
+def _meta(kind="challenge", channel="dm:agent-a:agent-b", sender="agent-b"):
     return {"from": sender, "channel": channel, "kind": kind, "msg_id": "m1"}
 
 
@@ -70,7 +70,7 @@ async def test_peer_turn_injects_continuity_and_checkpoints():
         return "my considered reply"
 
     mem = FakeMem()
-    px = PeerExchange({}, mem=mem, agent_id="michelle", on_challenge=on_challenge)
+    px = PeerExchange({}, mem=mem, agent_id="agent-a", on_challenge=on_challenge)
     await px._handle(_meta(), b"do you agree that X?")
 
     # read: the wake snapshot reached the handler, keyed on the challenge text
@@ -90,7 +90,7 @@ async def test_peer_two_arg_handler_unchanged_and_still_checkpoints():
         return "legacy reply"
 
     mem = FakeMem()
-    px = PeerExchange({}, mem=mem, agent_id="michelle", on_challenge=on_challenge)
+    px = PeerExchange({}, mem=mem, agent_id="agent-a", on_challenge=on_challenge)
     await px._handle(_meta(), b"a claim")
 
     assert mem.wake_calls == []              # 2-arg handler → continuity not fetched/passed
@@ -104,7 +104,7 @@ async def test_peer_continuity_can_be_disabled():
         return "reply"
 
     mem = FakeMem()
-    px = PeerExchange({}, mem=mem, agent_id="michelle", on_challenge=on_challenge,
+    px = PeerExchange({}, mem=mem, agent_id="agent-a", on_challenge=on_challenge,
                       continuity=False)
     await px._handle(_meta(), b"a claim")
     assert mem.wake_calls == []
@@ -119,7 +119,7 @@ async def test_peer_ephemeral_channel_does_not_checkpoint():
         return "reply"
 
     mem = FakeMem()
-    px = PeerExchange({}, mem=mem, agent_id="michelle", on_challenge=on_challenge)
+    px = PeerExchange({}, mem=mem, agent_id="agent-a", on_challenge=on_challenge)
     await px._handle(_meta(channel="test:scratch"), b"a claim")
     assert mem.checkpoints == []             # ephemeral → no durable write
     assert mem.journal.added == []           # ...and nothing journalled
@@ -141,13 +141,13 @@ async def test_comms_delivery_records_action_checkpoint():
 
     mem = FakeMem()
 
-    loop = CommsLoop(bridge=None, mem=mem, backend=None, sink=_Sink(), agent_id="michelle")
+    loop = CommsLoop(bridge=None, mem=mem, backend=None, sink=_Sink(), agent_id="agent-a")
 
     # stub the pending-utterance selection + delivered-mark (DB-backed) out
     async def _pending():
         return {"id": 7, "source": "drive:novelty", "action_type": "communicate",
                 "text": "I noticed the schema drift you mentioned is now resolved",
-                "valence": 0.2, "relevance": 0.9, "addressee": "djai"}
+                "valence": 0.2, "relevance": 0.9, "addressee": "agent-b"}
 
     async def _mark(_id):
         return None
@@ -162,5 +162,5 @@ async def test_comms_delivery_records_action_checkpoint():
 
     assert len(mem.checkpoints) == 1
     la = mem.checkpoints[0]["last_action"]
-    assert "reached out to djai" in la
+    assert "reached out to agent-b" in la
     assert "schema drift" in la

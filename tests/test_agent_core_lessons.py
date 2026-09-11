@@ -1,5 +1,5 @@
 """agent_core.recall_lessons — surface learned tool skills (+ compiled procedures) for a task,
-graduated from michelle's service/tool_learning.py. Pure unit tests (mocked mem.skills), no DB.
+graduated from agent-a's service/tool_learning.py. Pure unit tests (mocked mem.skills), no DB.
 """
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -18,7 +18,7 @@ async def test_formats_skills_with_do_avoid_and_no_procs_when_graph_none():
     hits = [SimpleNamespace(what="clear the address bar first", worked=True),
             SimpleNamespace(what="don't scroll blindly", worked=False)]
     text, proc_ids = await recall_lessons(_mem(hits), None, "web research",
-                                          tool_tag="sandbox", agent_id="michelle")
+                                          tool_tag="sandbox", agent_id="agent-a")
     assert "APPLY it before" in text
     assert "- [DO] clear the address bar first" in text
     assert "- [AVOID] don't scroll blindly" in text
@@ -28,7 +28,7 @@ async def test_formats_skills_with_do_avoid_and_no_procs_when_graph_none():
 @pytest.mark.asyncio
 async def test_empty_when_nothing_learned():
     text, proc_ids = await recall_lessons(_mem([]), None, "web research",
-                                          tool_tag="sandbox", agent_id="michelle")
+                                          tool_tag="sandbox", agent_id="agent-a")
     assert text == "" and proc_ids == []
 
 
@@ -69,11 +69,11 @@ async def test_fail_open_on_skills_error():
 @pytest.mark.asyncio
 async def test_skill_chronic_writes_one_strategy_lesson():
     mem = SimpleNamespace(journal=SimpleNamespace(add=AsyncMock()))
-    handler = default_skill_chronic(mem, agent_id="michelle")
+    handler = default_skill_chronic(mem, agent_id="agent-a")
     await handler({"name": "avoid-redundant-actions", "trial_count": 160, "what": "kept re-clicking"})
     mem.journal.add.assert_awaited_once()
     kw = mem.journal.add.await_args.kwargs
-    assert kw["agent_id"] == "michelle" and kw["entry_type"] == "chronic_skill"
+    assert kw["agent_id"] == "agent-a" and kw["entry_type"] == "chronic_skill"
     assert kw["record_type"] == "lesson" and kw["grounding"] == "confirmed" and kw["importance"] == 8
     assert "avoid-redundant-actions" in kw["title"]
     assert "approach/actuator must change" in kw["content"]

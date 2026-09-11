@@ -57,21 +57,21 @@ class _Mem:
 @pytest.mark.asyncio
 async def test_verified_pursuit_records_action_checkpoint():
     bridge, mem = _Bridge(), _Mem()
-    sink = build_experiential_sink(bridge, mem, "michelle")
+    sink = build_experiential_sink(bridge, mem, "agent-a")
     await sink(_Proposal(), _Outcome(
-        observations={"verified": True, "goal_id": 5, "objective": "map the Spwig API",
+        observations={"verified": True, "goal_id": 5, "objective": "map the Acme API",
                       "status": "done"},
         actual_outcome="found the OpenAPI spec and catalogued 40 endpoints"))
     assert len(mem.checkpoints) == 1
     la = mem.checkpoints[0]["last_action"]
-    assert la.startswith("pursued: map the Spwig API")
+    assert la.startswith("pursued: map the Acme API")
     assert "OpenAPI" in la
 
 
 @pytest.mark.asyncio
 async def test_unverified_pursuit_records_attempt():
     bridge, mem = _Bridge(), _Mem()
-    sink = build_experiential_sink(bridge, mem, "michelle")
+    sink = build_experiential_sink(bridge, mem, "agent-a")
     await sink(_Proposal(), _Outcome(
         observations={"verified": False, "goal_id": 6, "objective": "find X", "status": "max_steps"},
         actual_outcome=""))
@@ -83,7 +83,7 @@ async def test_infra_outcome_records_nothing():
     """An infra no-op (actuator never ran) must not pollute the checkpoint — the goal is
     retried, nothing was actually done."""
     bridge, mem = _Bridge(), _Mem()
-    sink = build_experiential_sink(bridge, mem, "michelle")
+    sink = build_experiential_sink(bridge, mem, "agent-a")
     await sink(_Proposal(), _Outcome(observations={"infra": True}))
     assert mem.checkpoints == []
     assert mem.journal.added == []

@@ -1,5 +1,5 @@
 """agent_core.proposal_source — the drive->ActionProposal.source derivation, graduated out of
-individual agents (michelle used to hardcode ``drive:novelty`` for every drive_intent goal because
+individual agents (agent-a used to hardcode ``drive:novelty`` for every drive_intent goal because
 the originating drive wasn't threaded through PursuitGoal → every drive success wrongly discharged
 novelty). Pure function; no DB.
 """

@@ -14,7 +14,7 @@ from nmem.agent_core import chat
 
 @dataclass
 class _Persona:
-    agent_id: str = "michelle"
+    agent_id: str = "agent-a"
     capabilities: str = ""
     objectives: tuple = ()
     world_entities: str = ""
@@ -99,21 +99,21 @@ class FakeRuntime:
 @pytest.mark.asyncio
 async def test_continuity_block_renders_wake_content():
     mem = FakeMem(wake_content="### Picking up from\n- Last action: X")
-    block = await chat.continuity_block(mem, "michelle", query="hi", max_tokens=900)
+    block = await chat.continuity_block(mem, "agent-a", query="hi", max_tokens=900)
     assert "Picking up from" in block
-    assert mem.wake_calls == [{"agent_id": "michelle", "query": "hi", "max_tokens": 900}]
+    assert mem.wake_calls == [{"agent_id": "agent-a", "query": "hi", "max_tokens": 900}]
 
 
 @pytest.mark.asyncio
 async def test_continuity_block_fail_open_on_wake_error():
     mem = FakeMem(wake_raises=True)
-    assert await chat.continuity_block(mem, "michelle") == ""
+    assert await chat.continuity_block(mem, "agent-a") == ""
 
 
 @pytest.mark.asyncio
 async def test_continuity_block_noop_without_wake():
-    assert await chat.continuity_block(object(), "michelle") == ""
-    assert await chat.continuity_block(None, "michelle") == ""
+    assert await chat.continuity_block(object(), "agent-a") == ""
+    assert await chat.continuity_block(None, "agent-a") == ""
 
 
 # ── record_turn_checkpoint ──────────────────────────────────────────────────────
@@ -122,10 +122,10 @@ async def test_continuity_block_noop_without_wake():
 @pytest.mark.asyncio
 async def test_record_turn_checkpoint_writes_summary():
     mem = FakeMem()
-    await chat.record_turn_checkpoint(mem, "michelle", "what's the plan?", "ship it")
+    await chat.record_turn_checkpoint(mem, "agent-a", "what's the plan?", "ship it")
     assert len(mem.checkpoints) == 1
     ck = mem.checkpoints[0]
-    assert ck["agent_id"] == "michelle"
+    assert ck["agent_id"] == "agent-a"
     assert "what's the plan?" in ck["last_interaction_summary"]
     assert "ship it" in ck["last_interaction_summary"]
     # No filler last_action — it would compete for the render lane ahead of the summary.
@@ -150,7 +150,7 @@ def test_turn_checkpoint_summary_survives_wake_render_at_default_budget():
     checkpoint = {"last_interaction_summary": summary, "last_action": "x" * 300}
 
     result = assemble_continuity(
-        agent_id="michelle", now=datetime.now(timezone.utc), identity=None,
+        agent_id="agent-a", now=datetime.now(timezone.utc), identity=None,
         recent=[], commitments=[], curiosity=[], policies=[], relevant=[], sym=None,
         max_tokens=1200, k_open_loops=7, checkpoint=checkpoint,   # the converse() default budget
     )
@@ -174,7 +174,7 @@ def test_short_field_does_not_truncate_a_long_summary_that_fits():
     checkpoint = {"last_interaction_summary": summary, "last_action": "ran a sandbox probe"}
 
     result = assemble_continuity(
-        agent_id="michelle", now=datetime.now(timezone.utc), identity=None,
+        agent_id="agent-a", now=datetime.now(timezone.utc), identity=None,
         recent=[], commitments=[], curiosity=[], policies=[], relevant=[], sym=None,
         max_tokens=1200, k_open_loops=7, checkpoint=checkpoint,
     )
@@ -193,7 +193,7 @@ def test_tiny_budget_still_renders_priority_checkpoint_field():
 
     checkpoint = {"last_interaction_summary": "A" * 300, "last_action": "B" * 300}
     result = assemble_continuity(
-        agent_id="michelle", now=datetime.now(timezone.utc), identity=None,
+        agent_id="agent-a", now=datetime.now(timezone.utc), identity=None,
         recent=[], commitments=[], curiosity=[], policies=[], relevant=[], sym=None,
         max_tokens=140, k_open_loops=7, checkpoint=checkpoint,   # a deliberately tight budget
     )
@@ -213,7 +213,7 @@ def test_tight_budget_keeps_higher_priority_field_over_stale_lower_one():
     # interrupted_work ranks above last_action in the "Picking up from" order.
     checkpoint = {"interrupted_work": "review the continuity changes", "last_action": "B" * 300}
     result = assemble_continuity(
-        agent_id="michelle", now=datetime.now(timezone.utc), identity=None,
+        agent_id="agent-a", now=datetime.now(timezone.utc), identity=None,
         recent=[], commitments=[], curiosity=[], policies=[], relevant=[], sym=None,
         max_tokens=153, k_open_loops=7, checkpoint=checkpoint,   # codex's reported tight budget
     )
@@ -233,22 +233,22 @@ def test_fresh_action_not_hidden_by_long_stale_summary():
 
     checkpoint = {
         "last_interaction_summary": "Asked: " + "q" * 300,          # long, possibly stale
-        "last_action": "reached out to djai: the schema drift is resolved",   # fresher
+        "last_action": "reached out to agent-b: the schema drift is resolved",   # fresher
     }
     result = assemble_continuity(
-        agent_id="michelle", now=datetime.now(timezone.utc), identity=None,
+        agent_id="agent-a", now=datetime.now(timezone.utc), identity=None,
         recent=[], commitments=[], curiosity=[], policies=[], relevant=[], sym=None,
         max_tokens=700, k_open_loops=7, checkpoint=checkpoint,   # codex's reported budget
     )
     # BOTH fields render — the fresh action is not swallowed by the long summary.
     assert "Last interaction:" in result.content
-    assert "Last action: reached out to djai" in result.content
+    assert "Last action: reached out to agent-b" in result.content
 
 
 @pytest.mark.asyncio
 async def test_record_turn_checkpoint_fail_open_without_support():
     # no save_continuity_checkpoint method → silent no-op, never raises
-    await chat.record_turn_checkpoint(object(), "michelle", "q", "a")
+    await chat.record_turn_checkpoint(object(), "agent-a", "q", "a")
 
 
 # ── converse: reads continuity in, writes checkpoint out ────────────────────────
