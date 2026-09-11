@@ -82,6 +82,15 @@ class JournalConfig(BaseModel):
     auto_promote_access_count: int = 5
     """Minimum access count for auto-promotion to LTM."""
 
+    score_at_write: bool = True
+    """Score auto-importance deterministically AT WRITE TIME (the record_type/grounding
+    heuristic, no I/O) instead of a flat-5 placeholder rescored only at the ~6h consolidation.
+    A confirmed fact lands at its real importance immediately, so the high-importance ->
+    consolidator.signal() -> micro-cycle -> promote -> ltm.saved -> extract chain fires as
+    knowledge is learned rather than waiting for the batch — the platform default (the flat-5
+    placeholder was a 'for now' stopgap). Retained as a lever during stabilization; the
+    placeholder path can be retired once settled. See docs/proposals/nmem-adaptive-consolidation.md."""
+
     max_chars_in_prompt: int = 1500
     """Maximum characters for journal prompt section."""
 

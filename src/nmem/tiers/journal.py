@@ -104,6 +104,20 @@ class JournalTier:
         auto_importance = importance is None
         if auto_importance:
             importance = 5
+            # score_at_write: compute the deterministic heuristic NOW (no I/O — access/age
+            # terms are 0 at write) instead of the flat-5 placeholder, so a confirmed fact
+            # lands at its real importance and the high-importance -> consolidator.signal()
+            # impulse below can fire immediately. Consolidation still rescores later (adding
+            # the access-velocity/staleness terms). Fail-safe to the placeholder. The row
+            # stays auto_importance=True so it remains rescoreable.
+            if self._config.journal.score_at_write:
+                try:
+                    from nmem.consolidation import _score_heuristic
+                    importance = _score_heuristic(
+                        record_type=record_type, grounding=grounding,
+                        access_count=0, age_days=0.0)
+                except Exception:  # noqa: BLE001 — never block a write on scoring
+                    importance = 5
         importance = min(max(importance, 1), 10)
 
         # Resolve project scope: sentinel (...) means "use config default"
