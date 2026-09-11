@@ -1,6 +1,6 @@
 """Optional HTTP studio router — the setup-wizard backend.
 
-The four endpoints the nmem-studio wizard (docs/mockups/studio-wizard.html) posts to,
+The four endpoints the nmem-studio wizard (_design/mockups/studio-wizard.html) posts to,
 so a new agent can be configured, connection-tested, and stood up entirely from a web
 UI — no editing files by hand:
 
@@ -251,7 +251,7 @@ def make_studio_router(get_runtime: Callable | None = None, *, config_dir: str =
 
 
 def studio_index_html() -> str:
-    """The productionised wizard SPA (built from docs/mockups/studio-wizard.html into
+    """The productionised wizard SPA (built from _design/mockups/studio-wizard.html into
     studio_ui/index.html), read from the installed package so it ships in the wheel and is
     served straight from an editable checkout too."""
     from importlib.resources import files

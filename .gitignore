@@ -44,4 +44,12 @@ Thumbs.db
 # Internal-only design docs — never publish to the public repo.
 # The whole design folder is treated as private internal reference.
 docs/design/
-/_design/
+# Ignore _design CONTENTS (not the dir itself) so git can still descend to re-include
+# specific paths below — git won't recurse into a fully-excluded directory.
+/_design/*
+# EXCEPT the wizard build pipeline: build_studio_spa.py regenerates the SHIPPED
+# studio_ui/index.html, so its source must stay reproducible in the public repo.
+!/_design/mockups/
+/_design/mockups/*
+!/_design/mockups/build_studio_spa.py
+!/_design/mockups/studio-wizard.html
