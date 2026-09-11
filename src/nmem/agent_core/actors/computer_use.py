@@ -214,7 +214,7 @@ def build_research_action(client: SandboxClient, *, judge: Any = None,
 def build_research_runner(*, mem, backend, agent_id: str, bridge, client: "SandboxClient",
                           action_name: str = "pursue_knowledge", tool_tag: str | None = None,
                           verify_judge: bool = False, reflect_enabled: bool = True,
-                          cap: int = 4):
+                          gate=None, cap: int = 4):
     """Assemble the DIRECT knowledge-seeking executor: a ``ReferenceRunner`` over the research
     :class:`~nmem_act.Action` (:func:`build_research_action`) wrapped with the experiential +
     reflective outcome sink. This is the §33.3 **direct path** — the runner ENFORCES the action's
@@ -230,7 +230,11 @@ def build_research_runner(*, mem, backend, agent_id: str, bridge, client: "Sandb
     bounded Layer-2 strict judge (default OFF — needs held-out calibration first); ``reflect_enabled``
     (default ON) captures ``[DO]``/``[AVOID]`` tool-use skills from the sandbox step trace. Nothing
     here is a new mechanism — it is the assembly of pieces that already live in nmem-act + agent_core,
-    graduated verbatim from the reference agent's ``service/actuation.build_runner``."""
+    graduated verbatim from the reference agent's ``service/actuation.build_runner``.
+
+    ``gate`` is the nmem-act ``AutonomyGate`` the runner enforces before dispatch (None →
+    ReferenceRunner's read-only default, which permits the read-only research action); a host that
+    exposes an autonomy policy passes its own gate so an explicitly denied action is BLOCKED."""
     from nmem_act import ActionRegistry, ReferenceRunner, make_reflective_sink, make_strict_judge
 
     from nmem.agent_core import build_experiential_sink
@@ -255,8 +259,9 @@ def build_research_runner(*, mem, backend, agent_id: str, bridge, client: "Sandb
         build_experiential_sink(bridge, mem, agent_id),
         reflect=_reflect, record_skill=_record_skill,
         agent_id=agent_id, enabled=reflect_enabled, cap=cap, tool_tag=tool_tag or "")
-    runner = ReferenceRunner(reg, outcome_sink=sink)
-    log.info("[computer_use] research runner built (action=%s, reflect=%s)", action_name, reflect_enabled)
+    runner = ReferenceRunner(reg, outcome_sink=sink, gate=gate)
+    log.info("[computer_use] research runner built (action=%s, reflect=%s, gated=%s)",
+             action_name, reflect_enabled, gate is not None)
     return runner
 
 

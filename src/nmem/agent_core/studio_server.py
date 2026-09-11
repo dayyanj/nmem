@@ -186,6 +186,18 @@ async def _start_agent(spec: dict, agent_dir: str) -> None:
 
 
 # ── the two apps ────────────────────────────────────────────────────────────────
+# Research-mode dispatch name: the sandbox Action, the capability descriptor, /act, AND the
+# runtime's auto-default proposal builder must ALL dispatch on the same action_type, else an
+# autonomous pursuit emits an action the ReferenceRunner never registered. Pin this when a
+# computer_use block is present but leaves action_type unset (codex Step-3 P1).
+_RESEARCH_ACTION_DEFAULT = "pursue_knowledge"
+
+
+def _env_on(name: str, default: str = "false") -> bool:
+    """Read a boolean capabilities.env flag (the entrypoint sourced it into os.environ)."""
+    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _build_gate(cfg: dict | None):
     """Build the actor autonomy gate from the agent's ``autonomy`` config.
     ``{level: read_only|tiered|full, allow: [...], deny: [...]}``. Defaults to read_only —
@@ -210,8 +222,11 @@ def build_agent_app():
     """AGENT mode: the app for the one agent on the data volume. Now a thin caller of the reusable
     ``agent_core.host.create_agent_app`` (host-shell-convergence-plan.md Step 1) — the generic host
     owns the lifespan/bootstrap/ops + the default /chat; this function layers only the STUDIO-specific
-    features (the selector executor, dashboard, ``/tools``, ``/act``, SessionAuth). Returns (app, ctx);
-    the runtime is built in the lifespan (``ctx.runtime`` is None until startup), started on uvicorn's
+    features (the executor, dashboard, ``/tools``, ``/act``, SessionAuth). The executor has two
+    config-selected MODES (mutually exclusive, §33.3): a top-level ``computer_use:`` block ⇒ the
+    DIRECT verifier-enforced research runner (``build_research_runner``); an ``actors:`` block ⇒ the
+    gated selector (``ToolCallingExecutor``); neither ⇒ a pure thinker. Returns (app, ctx); the
+    runtime is built in the lifespan (``ctx.runtime`` is None until startup), started on uvicorn's
     loop (asyncpg binds to the serving loop)."""
     import yaml
     from fastapi.responses import HTMLResponse
@@ -229,32 +244,111 @@ def build_agent_app():
     persona = Persona.from_dict(yaml.safe_load(open(persona_yaml))) if os.path.exists(persona_yaml) \
         else Persona(agent_id=config.get("db", {}).get("config_key", "agent"))
 
-    # Studio's SELECTOR executor: the assembled tool registry (built async in pre_start, stashed on
-    # ctx.state) wrapped as a gated ToolCallingExecutor. Pure thinker if the agent declares no actors.
+    # Two executor MODES, chosen by config (mutually exclusive — §33.3). A top-level `computer_use:`
+    # block ⇒ the DIRECT verifier-enforced research runner (an LLM selector's Done(True) must not be
+    # able to override the sandbox Verifier); otherwise an `actors:` block ⇒ the gated selector
+    # (ToolCallingExecutor). Neither ⇒ a pure thinker. computer_use is deliberately NOT an
+    # assemble_registry actor, so it is never selector-visible.
+    # Presence, not truthiness: an explicit `computer_use:` key (even `{}` or null → SandboxClient
+    # defaults it disabled) declares a research agent, so it must still supersede a stale capability
+    # row and suppress the selector. `cu_cfg` tolerates a null value.
+    cu_present = "computer_use" in config
+    cu_cfg = config.get("computer_use") or {}
+    if cu_present:
+        # P1: pin the dispatch name so the runner, the capability descriptor, /act, AND the runtime's
+        # auto-default proposal builder (AgentRuntime._default_proposal reads pursuit.action_type)
+        # all agree — otherwise an omitted action_type defaults to pursue_knowledge for the runner but
+        # llm_tool_call for the proposal, and autonomous pursuits dispatch an unregistered action.
+        # `or {}` normalizes an empty `pursuit:` YAML section (safe_load → None) before setdefault.
+        pcfg = config.get("pursuit") or {}
+        pcfg.setdefault("action_type", _RESEARCH_ACTION_DEFAULT)
+        config["pursuit"] = pcfg
+
+    _cu_action = (config.get("pursuit") or {}).get("action_type", _RESEARCH_ACTION_DEFAULT)
+
+    async def _on_resources_ready(ctx):
+        # Own the one SandboxClient whenever a computer_use block is PRESENT — even disabled — so
+        # _on_started can register UNAVAILABLE and supersede a stale 'available' descriptor from an
+        # earlier enabled boot (codex Step-3 P2). Built before the runtime is constructed; the
+        # research runner + capability registrar both read it off ctx.state.
+        if cu_present:
+            from nmem.agent_core.actors.computer_use import SandboxClient
+            ctx.state["sandbox"] = SandboxClient(cu_cfg)
+
     async def _pre_start(ctx):
+        # Selector mode only: assemble the actor registry (connect MCP/A2A + register tools) BEFORE
+        # start(). A computer_use agent is a research agent — never also a selector — so skip it
+        # whenever the block is present (enabled or not; a disabled sandbox → pure thinker, below).
+        if cu_present:
+            if config.get("actors"):
+                log.warning("[studio] computer_use is configured — using the direct research runner; "
+                            "the actors: selector tools are IGNORED (§33.3)")
+            return
         actors_cfg = config.get("actors")
-        if actors_cfg:                                 # connect MCP/A2A + register tools BEFORE start()
+        if actors_cfg:
             from nmem.agent_core.actors import assemble_registry
             ctx.state["reg"], ctx.state["close"] = await assemble_registry(actors_cfg)
             ctx.state["gate"] = _build_gate(config.get("autonomy"))
 
     def _build_executor(ctx, bridge):
-        reg = ctx.state.get("reg")
+        sandbox = ctx.state.get("sandbox")
+        if sandbox is not None and sandbox.is_enabled():  # research mode: verifier-enforced runner
+            from nmem.agent_core import build_research_runner
+            pcfg = config.get("pursuit") or {}
+            # Honor the SAME autonomy policy the selector mode does — an operator's
+            # autonomy.deny of the research action must BLOCK it here too (codex Step-3). Defaults
+            # to read_only, which permits the read-only research action.
+            return build_research_runner(
+                mem=ctx.runtime.mem, backend=ctx.runtime.backend, agent_id=ctx.runtime.agent_id,
+                bridge=bridge, client=sandbox,
+                action_name=_cu_action, tool_tag=pcfg.get("tool_tag"),
+                verify_judge=_env_on("ACTUATOR_VERIFY_JUDGE_ENABLED"),
+                reflect_enabled=_env_on("ACT_LLM_REFLECT_ENABLED", "true"),
+                gate=_build_gate(config.get("autonomy")))
+        reg = ctx.state.get("reg")                     # a disabled sandbox falls through to here → None
         if reg is None or len(reg) == 0:
             return None                                # nothing to act with → stays a pure thinker
         from nmem.agent_core.actors import build_executor as _mk
         return _mk(reg, backend=ctx.runtime.backend, mem=ctx.runtime.mem, agent_id=ctx.runtime.agent_id,
                    bridge=bridge, gate=ctx.state.get("gate"))
 
+    async def _on_started(ctx):
+        # Declare the sandbox to the nmem-sym capability registry as the catch-all knowledge actuator
+        # so the feasibility planner can bind decomposition goals to it. Gated on goal_registry_enabled.
+        # Runs whenever the client exists (present, enabled or not): a disabled client registers
+        # UNAVAILABLE, which supersedes a stale 'available' row from a prior enabled boot (§33.2, P2).
+        sandbox = ctx.state.get("sandbox")
+        if sandbox is None:
+            return
+        try:
+            from nmem_sym import config as sym_config
+            if not getattr(sym_config.settings, "goal_registry_enabled", False):
+                return
+            from nmem.agent_core.actors.computer_use import register_computer_use_capability
+            scope = getattr(getattr(ctx.runtime, "hive", None), "agent_id", None)
+            avail = await register_computer_use_capability(
+                ctx.runtime.bridge, goal_scope=scope, client=sandbox, action_name=_cu_action)
+            log.info("[studio] registered computer-use capability %r under scope %r (%s)",
+                     _cu_action, scope, avail)
+        except Exception:  # noqa: BLE001
+            log.warning("[studio] computer-use capability registration failed (non-fatal)", exc_info=True)
+
     async def _on_shutdown(ctx):
         close = ctx.state.get("close")
         if close is not None:
             await close()                              # tear down live MCP/A2A sessions
+        sandbox = ctx.state.get("sandbox")
+        if sandbox is not None:
+            await sandbox.aclose()                     # single-owner lifecycle contract (no-op today)
 
     def _health_extras(ctx):
-        return {"agent_id": persona.agent_id,
-                "viz": bool(os.environ.get("NMEM_VIZ_INGEST_URL")),
-                "viz_url": os.environ.get("NMEM_VIZ_PUBLIC_URL", "")}
+        out = {"agent_id": persona.agent_id,
+               "viz": bool(os.environ.get("NMEM_VIZ_INGEST_URL")),
+               "viz_url": os.environ.get("NMEM_VIZ_PUBLIC_URL", "")}
+        sandbox = ctx.state.get("sandbox")
+        if sandbox is not None:
+            out["sandbox"] = {"enabled": sandbox.is_enabled(), "url": sandbox.cfg("url")}
+        return out
 
     def _studio_routes(app, ctx):
         dashboard = agent_dashboard_html()
@@ -265,7 +359,9 @@ def build_agent_app():
 
         @app.get("/tools")
         async def tools():
-            """The actor tools this agent has, with capability class + autonomy level."""
+            """The actuator(s) this agent has, with capability class + autonomy level. Selector mode
+            lists the registry; research mode reports the single sandbox actuator (it is deliberately
+            NOT in the selector registry, §33.3) so the dashboard surfaces it and keeps /act reachable."""
             reg = ctx.state.get("reg")
             items = []
             if reg is not None:
@@ -273,34 +369,50 @@ def build_agent_app():
                     a = reg.get(name)
                     items.append({"name": name, "capability": a.capability_class.value,
                                   "description": a.description})
+            sandbox = ctx.state.get("sandbox")
+            if sandbox is not None and sandbox.is_enabled():
+                items.append({"name": _cu_action, "capability": "read_only",
+                              "description": "Drive the computer-use sandbox to seek and verify "
+                                             "knowledge for a goal."})
             return {"ok": True, "tools": items,
                     "autonomy": (config.get("autonomy") or {}).get("level", "read_only"),
                     "has_executor": ctx.runtime is not None and ctx.runtime._runner is not None}
 
         @app.post("/act")
         async def act(req: dict):
-            """Give the agent a goal and let it use its tools (one gated, outcome-recorded
-            ToolCallingExecutor run). Body: {goal}."""
+            """Give the agent a goal and run it through its actuator ONCE. Selector mode → a gated,
+            outcome-recorded ToolCallingExecutor run; research mode → the verifier-enforced sandbox
+            runner (the goal rides as the pursuit objective). Body: {goal}."""
             goal = (req or {}).get("goal", "").strip()
             if not goal:
                 return {"ok": False, "error": "goal required"}
             if ctx.runtime is None or ctx.runtime._runner is None:
-                return {"ok": False, "error": "this agent has no tools configured (pure thinker)"}
-            from nmem.agent_core.actors import run as _run
+                return {"ok": False, "error": "this agent has no actuator configured (pure thinker)"}
             try:
-                outcome = await _run(ctx.runtime._runner, goal)
+                if ctx.state.get("sandbox") is not None:   # research mode: build the pursue proposal
+                    from nmem_act import ActionProposal, CapabilityClass
+                    proposal = ActionProposal(action_type=_cu_action, rationale=goal,
+                                              capability_class=CapabilityClass.READ_ONLY,
+                                              params={"objective": goal})
+                    outcome = await ctx.runtime._runner.execute(proposal)
+                else:
+                    from nmem.agent_core.actors import run as _run
+                    outcome = await _run(ctx.runtime._runner, goal)
                 obs = outcome.observations or {}
+                summary = getattr(outcome, "actual_outcome", None) or getattr(outcome, "outcome", "")
                 return {"ok": True, "status": getattr(outcome.status, "value", str(outcome.status)),
-                        "steps": obs.get("steps", []), "summary": getattr(outcome, "outcome", "")}
+                        "steps": obs.get("steps", []), "summary": summary}
             except Exception as e:  # noqa: BLE001
                 log.warning("[studio] act failed: %s", e, exc_info=True)
                 return {"ok": False, "error": str(e)}
 
     # The generic host owns lifespan/bootstrap/ops + the default /chat (runtime.converse — exactly
-    # studio's old /chat). Studio injects only its selector executor + UI routes + auth.
+    # studio's old /chat). Studio injects only its executor (selector OR research runner) + the
+    # sandbox lifecycle (resources_ready/started) + UI routes + auth.
     app, ctx = create_agent_app(
         config, persona,
-        build_executor=_build_executor, pre_start=_pre_start, on_shutdown=_on_shutdown,
+        build_executor=_build_executor, on_resources_ready=_on_resources_ready,
+        pre_start=_pre_start, on_started=_on_started, on_shutdown=_on_shutdown,
         extra_health=_health_extras, extra_routes=_studio_routes,
         title=f"nmem agent · {persona.agent_id}")
 

@@ -59,14 +59,14 @@ class _StubMem:
     journal = _Journal()
 
 
-def _run_one(result: str, monkeypatch):
+def _run_one(result: str, monkeypatch, *, gate=None):
     async def _no_sleep(_):
         return None
 
     monkeypatch.setattr("nmem.agent_core.actors.computer_use.asyncio.sleep", _no_sleep)
     runner = build_research_runner(mem=_StubMem(), backend=object(), agent_id="a",
                                    bridge=_StubBridge(), client=_FakeClient(result),
-                                   reflect_enabled=False)
+                                   reflect_enabled=False, gate=gate)
     from nmem_act import ActionProposal, CapabilityClass
     p = ActionProposal(action_type="pursue_knowledge", id="pursue:1", rationale="find X",
                        capability_class=CapabilityClass.READ_ONLY,
@@ -87,6 +87,16 @@ def test_insubstantial_finding_is_rejected_the_handler_cannot_self_certify(monke
     out = _run_one("x", monkeypatch)
     assert out.observations["verified"] is False
     assert out.observations["verification_status"] == "failed"
+
+
+def test_autonomy_gate_blocks_a_denied_research_action(monkeypatch):
+    # A host that passes a gate denying the research action must BLOCK it before dispatch — the
+    # runner never reaches the sandbox. (Default gate=None ⇒ read_only, which permits it: proven
+    # by the two tests above, which run the action.)
+    from nmem_act import AutonomyGate, AutonomyLevel, OutcomeStatus
+    gate = AutonomyGate(level=AutonomyLevel.TIERED, deny={"pursue_knowledge"})
+    out = _run_one("a substantial finding that would otherwise verify", monkeypatch, gate=gate)
+    assert out.status == OutcomeStatus.BLOCKED
 
 
 if __name__ == "__main__":
