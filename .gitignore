@@ -44,3 +44,4 @@ Thumbs.db
 # Internal-only design docs — never publish to the public repo.
 # The whole design folder is treated as private internal reference.
 docs/design/
+/_design/
