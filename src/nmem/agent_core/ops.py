@@ -108,20 +108,15 @@ def make_ops_router(get_runtime: Callable, *, extra_health: Callable[[], dict] |
 
     @router.post("/admin/dreamstate")
     async def dreamstate():
-        """Run one nmem-sym dreamstate cycle (explore, detect + bridge structural holes,
-        generate hypotheses)."""
+        """Run one FULL nmem-sym dreamstate cycle via the BRIDGE — self-organizes the graph (explore,
+        detect + bridge structural holes, hypotheses) AND emits curiosity signals from new hypotheses.
+        A raw scheduler run does the former but NOT the latter, so this routes through
+        ``bridge.run_dreamstate_cycle`` to exercise the full act→learn→get-curious loop."""
         rt = _rt()
-        if rt is None or rt.graph is None:
-            return {"ok": False, "error": "runtime not started (or no symbol graph)"}
+        if rt is None or getattr(rt, "bridge", None) is None:
+            return {"ok": False, "error": "runtime not started (or no symbol bridge)"}
         try:
-            from nmem_sym.dreamstate import DreamstateScheduler
-            g = rt.graph
-            sched = DreamstateScheduler(
-                g.pool, g._embedder,
-                vllm_backends=getattr(g, "vllm_backends", None),
-                vllm_model=getattr(g, "vllm_model", None))
-            stats = await sched.run_once()
-            return {"ok": True, "stats": str(stats)}
+            return {"ok": True, **(await rt.bridge.run_dreamstate_cycle())}
         except Exception as e:  # noqa: BLE001
             log.warning("[ops] dreamstate failed: %s", e, exc_info=True)
             return {"ok": False, "error": str(e)}
