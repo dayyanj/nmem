@@ -317,6 +317,29 @@
     </section>
 
     <section class="card">
+      <span class="eyebrow">Step 04b · Research sandbox <span style="color:var(--muted);font-weight:400;font-size:13px">(optional)</span></span>
+      <h2>Let it seek &amp; verify knowledge</h2>
+      <p class="sub">Give the agent a <b>computer-use sandbox</b> — a separate browser/desktop it drives to
+        read live sources and <b>verify</b> what's actually true instead of guessing. Every finding is
+        checked before it counts (a non-finding is an honest failure, never fabricated). This makes a
+        <b>research agent</b> that uses the sandbox as its one actuator, so any tools added above are
+        not used. It still obeys the autonomy level.</p>
+
+      <label class="fld"><span class="lab">Research sandbox</span>
+        <select id="cu_mode" onchange="onCuMode()">
+          <option value="off">Off · no sandbox (default)</option>
+          <option value="on">On · drive a computer-use sandbox to research</option>
+        </select></label>
+
+      <div id="cu_fields" hidden>
+        <label class="fld"><span class="lab">Sandbox URL <span class="keynote">(your computer-use harness endpoint)</span></span>
+          <input type="text" id="cu_url" placeholder="http://127.0.0.1:8080"></label>
+        <label class="fld"><span class="lab">Max steps <span class="keynote">(per research session; browser UI mechanics burn steps fast)</span></span>
+          <input type="text" id="cu_steps" placeholder="40"></label>
+      </div>
+    </section>
+
+    <section class="card">
       <span class="eyebrow">Step 05 · Hive membership <span style="color:var(--muted);font-weight:400;font-size:13px">(optional)</span></span>
       <h2>Solo, or part of a hive</h2>
       <p class="sub">A solo agent owns its own world-model. A <b>hive</b> member shares ONE symbol-graph
@@ -572,6 +595,14 @@ function collectActors(){const a={};
   const g=TOOLS.filter(t=>t._type==='a2a').map(({_type,...r})=>r);
   if(w.length)a.webhooks=w;if(m.length)a.mcp=m;if(g.length)a.a2a=g;
   return Object.keys(a).length?a:null;}
+// ── research sandbox (Step 04b): a computer_use block ⇒ the direct verifier-enforced research
+// runner (§33.3). Mutually exclusive with selector tools — the appliance ignores actors: when a
+// computer_use block is present. ──
+function onCuMode(){document.getElementById('cu_fields').hidden=
+  document.getElementById('cu_mode').value!=='on';}
+function collectComputerUse(){if(document.getElementById('cu_mode').value!=='on')return null;
+  const cu={enabled:true};const url=_v('cu_url');if(url)cu.url=url;
+  const s=parseInt(_v('cu_steps'),10);if(!isNaN(s))cu.max_steps=s;return cu;}
 // ── hive membership (Step 05): solo (no block) or a shared_world member with a graph role ──
 function onHiveMode(){document.getElementById('hive_role_f').hidden=
   document.getElementById('hive_mode').value!=='shared_world';}
@@ -586,7 +617,9 @@ async function create(){const aid=document.getElementById('aid').value.trim();co
     world_entities:document.getElementById('ent').value.trim()};
   const body={agent_id:aid,enabled:[...enabled],persona,llm:llmSpec(),embedding:embeddingSpec(),
     outward_actions:'explore',autonomy:{level:document.getElementById('autonomy').value}};
-  const actors=collectActors(); if(actors)body.actors=actors;
+  const cu=collectComputerUse();
+  if(cu){body.computer_use=cu;}                 // research agent: the sandbox is its one actuator (§33.3)
+  else{const actors=collectActors(); if(actors)body.actors=actors;}  // else selector tools (if any)
   const hive=collectHive(); if(hive)body.hive=hive;
   t.textContent='creating '+aid+'…';t.classList.add('on');
   const res=await api('/studio/create',body);
