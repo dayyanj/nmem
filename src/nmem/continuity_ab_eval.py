@@ -289,6 +289,11 @@ async def clear_agent(mem, agent_id: str, scope) -> None:
         (f"DELETE FROM nmem_journal_entries WHERE agent_id = :a AND {sc}", p),
         (f"DELETE FROM nmem_curiosity_signals WHERE source_agent = :a AND {sc}", p),
         (f"DELETE FROM nmem_narrative_self WHERE agent_id = :a AND {sc}", p),
+        # A running consolidator can PROMOTE a high-importance planted fixture into LTM; deleting
+        # only the journal row would leave it retrievable via wake()'s search lane (leaking a
+        # prior probe's history into later arms) and behind after the run. Clear scoped LTM too
+        # (codex P2). Scoped to agent+eval-scope, so it only ever removes this harness's fixtures.
+        (f"DELETE FROM nmem_long_term_memory WHERE agent_id = :a AND {sc}", p),
     ]
     async with mem._db.session() as s:
         for sql, params in stmts:
@@ -526,6 +531,345 @@ async def run_realstate(mem, backend, judge, *, agent_id: str, genuine_goals: li
     return {"aggregate": agg, "verdict": verd, "report": format_report(agg, verd), "records": records}
 
 
+# ── Cognition mode: history-DEPENDENT probes (3-arm ON / OFF / TOLD) ───────────
+#
+# The isolated + realstate modes above top out at INFO-ACCESS: whenever the correct answer is
+# derivable from the prompt the judge sees, OFF matches ON, so they only ever measure whether
+# continuity SUPPLIES facts — never whether it improves history-dependent JUDGEMENT. These probes
+# break that ceiling by construction: the correct ACTION hinges on an idiosyncratic fact that
+# lives ONLY in the agent's own history (NOT reconstructable from general competence), and the
+# stimulus never states it. Three arms separate the two distinct questions a memory layer raises:
+#
+#   ON   — continuity on: the planted history reaches the turn via the real ``wake()`` snapshot.
+#   OFF  — continuity off, history NOT in the prompt. ADMISSIBILITY CONTROL: if OFF succeeds, the
+#          answer did not need history (general competence sufficed) → the probe LEAKS and is
+#          excluded from the cognition claim. A probe counts toward the verdict only if OFF fails.
+#   TOLD — continuity off, but the SAME history handed over as plain prompt text. INFO-ACCESS
+#          CONTROL: if TOLD ≈ ON, continuity is pure plumbing (the facts are what matter, not the
+#          assembled form); if ON > TOLD, the wake assembly/salience adds value beyond raw facts.
+#
+# HONEST LIMIT (codex, carried from realstate_verdict): for a memory layer you cannot fully
+# separate reasoning-gain from info-gain — supplying relevant info IS its job. So ON>OFF is
+# reported as "continuity ENABLES correct history-dependent action" (behavioural value, and
+# stronger than the prior probes because OFF here ACTS WRONG, not merely "says I don't know"),
+# and the ONLY cleanly-separable reasoning question is ON vs TOLD (same info, different delivery).
+# ON also carries incidental remembered context TOLD lacks, so a positive form-gain is an upper
+# bound, not proof of reasoning. Either outcome is a real, publishable result.
+
+@dataclass(frozen=True)
+class CognitionProbe:
+    name: str
+    metric: str                      # predicate family (kind of judgement tested)
+    stimulus: str
+    rubric: str                      # scores the behavioural predicate 0..1
+    told_context: str                # the SAME history as plain prompt text (info-access control)
+    history: dict                    # planting spec: {journal:[...], checkpoint:{}, curiosity:[], backdate_hours}
+    role: str = "cognition"          # "cognition" (history→right action) | "guard" (must-not-harm)
+    admissible_if_off_below: float = 0.34   # OFF must score below this ⇒ the probe genuinely needs history
+
+
+COGNITION_PROBES: tuple[CognitionProbe, ...] = (
+    # P1 — ruled-out avoidance (the repeat-mistake / learning test). The fix is IDIOSYNCRATIC
+    # (a named trigger), so a competent model cannot reconstruct it without the incident → OFF fails.
+    CognitionProbe(
+        name="ruled_out_avoidance", metric="avoids_failed_path",
+        history={"journal": [{
+            "entry_type": "outcome",
+            "title": "Staging catalog import FAILED — audit_sync trigger deadlock",
+            "content": ("Ran the product-catalog import on staging. It FAILED: the `audit_sync` "
+                        "trigger fires per row and deadlocked on batches over 50 rows, aborting the "
+                        "import half-done. Fix that worked: DISABLE the `audit_sync` trigger for the "
+                        "duration of the import and keep batches at 50."),
+            "importance": 8}]},
+        told_context=("For reference: last time you ran the product-catalog import on staging it FAILED "
+                      "because the `audit_sync` trigger fires per row and deadlocks on batches over 50; "
+                      "the fix was to DISABLE `audit_sync` during the import and batch at 50."),
+        stimulus="You need to run the product-catalog import on staging again. What's your plan?",
+        rubric=("Score whether the plan AVOIDS repeating the known failure. Full credit (1.0) if it "
+                "DISABLES (or pauses) the `audit_sync` trigger during the import AND/OR keeps batches "
+                "at ~50 rows. 0.0 if it ignores the audit_sync trigger or proposes large/!default "
+                "batches. Partial if vague. The correct plan depends on a PAST INCIDENT, not general "
+                "best practice."),
+    ),
+    # P2 — trajectory integration (next-step inference). The correct step depends on the SPECIFIC
+    # documented state; the generic answer proposes work already done → OFF fails.
+    CognitionProbe(
+        name="trajectory_integration", metric="builds_on_progress",
+        history={"journal": [
+            {"entry_type": "progress", "title": "Outreach taxonomy v1 drafted",
+             "content": "Drafted the outreach segmentation taxonomy v1 — 8 customer segments.",
+             "importance": 6},
+            {"entry_type": "progress", "title": "Validated 6 of 8 segments against CRM",
+             "content": ("Validated the 8 segments against CRM data: 6 have matches. Two segments — "
+                         "`dormant_vip` and `trial_expired` — returned ZERO CRM matches and are blocked "
+                         "pending a data question."), "importance": 7},
+            {"entry_type": "progress", "title": "Email templates built for the 6 validated segments",
+             "content": "Built and reviewed the outreach email templates for the 6 validated segments.",
+             "importance": 6}]},
+        told_context=("For reference, on the outreach-segmentation project you have: drafted an 8-segment "
+                      "taxonomy; validated 6 of 8 against CRM (segments `dormant_vip` and `trial_expired` "
+                      "returned ZERO matches and are blocked); and built email templates for the 6 "
+                      "validated segments."),
+        stimulus="What is the single most valuable next step on the outreach-segmentation project?",
+        rubric=("Score whether the next step BUILDS ON the documented state. Full credit (1.0) if it "
+                "acts on the specific current state — either RESOLVES the two zero-match segments "
+                "(`dormant_vip` / `trial_expired`) or LAUNCHES/ships the 6 validated segments. 0.0 if it "
+                "proposes work ALREADY DONE (defining segments, building templates for the validated "
+                "segments) or a generic restart. Requires knowing the project's actual progress."),
+    ),
+    # P3a — commitment hold under distractor (cognition). The committed RATIONALE is history-only;
+    # without it the appealing distractor (speed) wins → OFF flips → fails.
+    CognitionProbe(
+        name="commitment_hold", metric="holds_justified_commitment",
+        history={"journal": [{
+            "entry_type": "decision",
+            "title": "Chose Postgres over MongoDB for the datastore",
+            "content": ("Committed to Postgres (not MongoDB) for the datastore. Rationale: the "
+                        "loyalty-points ledger needs multi-row transactional integrity (atomic "
+                        "debit/credit across rows), which MongoDB cannot guarantee for this workload. "
+                        "Speed was secondary to correctness of the ledger."),
+            "importance": 8}],
+            "checkpoint": {"last_interaction_summary": (
+                "Settled the datastore: Postgres, because the loyalty-points ledger needs multi-row "
+                "transactional integrity.")}},
+        told_context=("For reference: you already committed to Postgres over MongoDB because the "
+                      "loyalty-points ledger needs multi-row transactional integrity (atomic debit/credit "
+                      "across rows) that MongoDB can't guarantee here; speed was judged secondary."),
+        stimulus=("A teammate wants to switch the datastore to MongoDB — it benchmarks 3x faster on our "
+                  "read path. Do we switch?"),
+        rubric=("Full credit (1.0) if the reply RESISTS switching ON THE GROUNDS that the loyalty-points "
+                "ledger needs multi-row transactional integrity (the prior committed rationale), rather "
+                "than flipping on the speed benchmark. 0.0 if it endorses switching to MongoDB for speed. "
+                "Partial if it hedges without citing the transactional-integrity reason."),
+    ),
+    # P3b — commitment pivot (GUARD: must NOT anchor). New input VOIDS the rationale; holding would be
+    # stale-anchoring. OFF may land "switch" by accident, so this is a no-regression guard, not a
+    # cognition-gain probe — paired with P3a so "always hold" can't fake a pass.
+    CognitionProbe(
+        name="commitment_pivot", metric="no_stale_anchor", role="guard",
+        history={"journal": [{
+            "entry_type": "decision",
+            "title": "Chose Postgres over MongoDB for the datastore",
+            "content": ("Committed to Postgres (not MongoDB) because the loyalty-points ledger needs "
+                        "multi-row transactional integrity that MongoDB can't guarantee here."),
+            "importance": 8}]},
+        told_context=("For reference: you committed to Postgres over MongoDB because the loyalty-points "
+                      "ledger needs multi-row transactional integrity MongoDB can't guarantee."),
+        stimulus=("Update: the loyalty-points feature was cancelled — there is no transactional ledger "
+                  "anymore. A teammate wants MongoDB (3x faster). Do we switch?"),
+        rubric=("Full credit (1.0) if the reply RECOGNISES that the prior reason to avoid MongoDB (the "
+                "ledger's transactional integrity) NO LONGER APPLIES now the loyalty feature is cancelled, "
+                "and is therefore open to switching / evaluating MongoDB on its merits. 0.0 if it RIGIDLY "
+                "REFUSES citing the now-obsolete ledger requirement (stale anchoring)."),
+    ),
+    # null — irrelevant history must not distract (GUARD vs the continuity block adding noise).
+    CognitionProbe(
+        name="null_irrelevant_history", metric="null", role="guard",
+        history={"journal": [{
+            "entry_type": "note", "title": "Prefers dark-mode dashboards",
+            "content": "Noted a stylistic preference for dark-mode dashboards. Unrelated to anything.",
+            "importance": 3}]},
+        told_context="For reference: you noted a preference for dark-mode dashboards. (Irrelevant here.)",
+        stimulus="Quick one: what is 17 multiplied by 23?",
+        rubric=("Full credit (1.0) if the answer is 391 (correct). 0.0 if wrong. Ignore any preamble; "
+                "score only the arithmetic."),
+    ),
+)
+
+_COG_OFF_THRESH = {p.name: p.admissible_if_off_below for p in COGNITION_PROBES}
+
+
+async def plant_history(mem, agent_id: str, scope, spec: dict) -> None:
+    """Plant a probe's HISTORY through real nmem APIs so ``wake()`` assembles it like a live turn.
+    Journal entries surface in wake's ``recent`` lane (last 7d, capped) AND its query-driven
+    ``relevant`` lane; checkpoint/curiosity/backdate reuse the isolated ``plant()``."""
+    for j in spec.get("journal", []):
+        await mem.journal.add(agent_id=agent_id, entry_type=j.get("entry_type", "outcome"),
+                              title=j["title"], content=j["content"],
+                              importance=j.get("importance", 7))
+    base = {k: spec[k] for k in ("checkpoint", "curiosity", "backdate_hours") if k in spec}
+    if base:
+        await plant(mem, agent_id, scope, base)
+
+
+def _cognition_system(agent_id: str, *, cont: str = "", told: str = "") -> str:
+    """Subject system prompt — identical across arms EXCEPT the injected context: ON gets the real
+    wake block, TOLD gets the same history as plain text, OFF gets neither. So the A/B isolates
+    (ON vs OFF) "does memory enable the right action" and (ON vs TOLD) "does the assembled form
+    beat raw facts"."""
+    base = (f"You are {agent_id}, an agent with a persistent memory. Decide what to do grounded in "
+            "what you actually know; take into account anything you have learned or committed to "
+            "before. If you cannot recall something, say so plainly rather than inventing it.")
+    if cont.strip():
+        base += "\n\n# Continuity — where you are right now\n" + cont
+    if told.strip():
+        base += "\n\n# What you know from before\n" + told
+    return base
+
+
+async def cognition_reply(backend, mem, agent_id: str, probe: CognitionProbe, arm: str) -> str:
+    """One subject turn for a cognition probe. arm ∈ {on, off, told}. Same model/temp/stimulus;
+    only the injected context differs."""
+    cont = told = ""
+    if arm == "on":
+        from nmem.agent_core.continuity import continuity_block
+        cont = await continuity_block(mem, agent_id, query=probe.stimulus)
+    elif arm == "told":
+        told = probe.told_context
+    messages = [{"role": "system", "content": _cognition_system(agent_id, cont=cont, told=told)},
+                {"role": "user", "content": probe.stimulus}]
+    return await backend.chat(messages, temperature=0.3, max_tokens=450)
+
+
+def aggregate_cognition(records: list[dict]) -> dict:
+    """records: [{scenario, role, condition: on|off|told, score, parse_failed?}]. → per-probe
+    arm means + enables(ON-OFF) + form_gain(ON-TOLD) + admissibility (OFF genuinely failed).
+    parse_failed records are excluded from means (see aggregate())."""
+    def _mean(xs: list[float]) -> float:
+        return sum(xs) / len(xs) if xs else 0.0
+
+    valid = [r for r in records if not r.get("parse_failed")]
+    by: dict = {}
+    for s in sorted({r["scenario"] for r in records}):
+        role = next((r["role"] for r in records if r["scenario"] == s), "cognition")
+        arm = {c: [r["score"] for r in valid if r["scenario"] == s and r["condition"] == c]
+               for c in ("on", "off", "told")}
+        on, off, told = _mean(arm["on"]), _mean(arm["off"]), _mean(arm["told"])
+        by[s] = {"role": role, "on": round(on, 3), "off": round(off, 3), "told": round(told, 3),
+                 "enables": round(on - off, 3), "form_gain": round(on - told, 3),
+                 "n": {c: len(arm[c]) for c in arm},
+                 "admissible": off < _COG_OFF_THRESH.get(s, 0.34)}
+    return by
+
+
+# Pre-registered cognition thresholds. Fixed BEFORE the run.
+_T_COG_ENABLE = 0.30     # mean(ON-OFF) over admissible cognition probes ≥ this ⇒ memory enables right action
+_T_COG_FORM = 0.20       # mean(ON-TOLD) ≥ this ⇒ assembled form adds value BEYOND raw facts
+_T_COG_REGRESS = 0.15    # a guard probe where ON trails OFF by more than this ⇒ continuity HARMS
+_T_COG_NULL_GAP = 0.15   # |ON-OFF| above this on the null ⇒ the continuity block is net noise
+
+
+def cognition_verdict(by: dict) -> dict:
+    """Pre-registered verdict. Order: harms/confounds poison positives, so they are checked first;
+    then admissibility (probes that leaked don't count); then the enable/form distinction."""
+    cog = [s for s, d in by.items() if d["role"] == "cognition"]
+    guards = [s for s, d in by.items() if d["role"] == "guard"]
+    null_guards = [s for s in guards if "null" in s]
+    pivot_guards = [s for s in guards if ("pivot" in s or "stale" in s)]
+    # Sufficiency — and the falsification controls MUST have actually run (codex P1). A positive
+    # verdict with empty guard arms would mean the null/anchor checks silently passed on
+    # zero-valued data (the controls never falsified anything). So missing guard data — or a
+    # caller that omitted the null/pivot controls entirely — is as disqualifying as missing
+    # cognition data. Cognition probes need all 3 arms (form uses TOLD); guards need ON+OFF.
+    missing_cog = [s for s in cog if any(by[s]["n"][c] == 0 for c in ("on", "off", "told"))]
+    missing_guard = [s for s in (null_guards + pivot_guards)
+                     if by[s]["n"]["on"] == 0 or by[s]["n"]["off"] == 0]
+    reasons = []
+    if not cog:
+        reasons.append("no cognition probes")
+    if not null_guards or not pivot_guards:
+        reasons.append("missing a null and/or pivot GUARD probe — the falsification controls "
+                       "were not present")
+    if missing_cog:
+        reasons.append("cognition probes without valid judged data: " + ", ".join(missing_cog))
+    if missing_guard:
+        reasons.append("guard probes without valid judged data: " + ", ".join(missing_guard))
+    if reasons:
+        return {"verdict": "INCONCLUSIVE — " + "; ".join(reasons)
+                + ". Re-run with the falsification controls evaluated.", "checks": {}}
+
+    null_confounded = any(abs(by[s]["on"] - by[s]["off"]) > _T_COG_NULL_GAP for s in null_guards)
+    anchor_regressed = any(by[s]["enables"] < -_T_COG_REGRESS for s in pivot_guards)
+
+    admissible = [s for s in cog if by[s]["admissible"]]
+    leaked = [s for s in cog if not by[s]["admissible"]]
+
+    def _mean(xs: list[float]) -> float:
+        return sum(xs) / len(xs) if xs else 0.0
+    mean_enable = round(_mean([by[s]["enables"] for s in admissible]), 3)
+    mean_form = round(_mean([by[s]["form_gain"] for s in admissible]), 3)
+
+    checks = {"admissible_probes": admissible, "leaked_probes": leaked,
+              "mean_enable_ON_minus_OFF": mean_enable, "mean_form_ON_minus_TOLD": mean_form,
+              "null_confounded": null_confounded, "anchor_regressed": anchor_regressed}
+
+    if null_confounded:
+        v = ("CONFOUNDED — the continuity block moved the null (irrelevant history changed the "
+             "answer), so ON's wins may be noise, not memory. Positives cannot be trusted.")
+    elif anchor_regressed:
+        v = ("FALSIFIED — continuity HURTS: on the pivot guard ON anchored on the VOIDED commitment "
+             "instead of deferring to the present. Stale-anchoring regression.")
+    elif not admissible:
+        v = ("INADMISSIBLE — every cognition probe was solved WITHOUT history (OFF passed on general "
+             "competence), so these probes don't isolate memory. Redesign with harder history-only facts.")
+    elif mean_enable >= _T_COG_ENABLE and mean_form >= _T_COG_FORM:
+        v = (f"CONTINUITY ADDS BEYOND INFO (enable Δ={mean_enable:+.2f}, form Δ={mean_form:+.2f}) — ON "
+             f"beats OFF (no history) AND TOLD (same history as raw text): the assembled wake form "
+             f"improves history-dependent judgement, not just fact-supply. NOTE: ON also carries "
+             f"incidental remembered context TOLD lacks, so the form-gain is an UPPER BOUND.")
+    elif mean_enable >= _T_COG_ENABLE:
+        v = (f"CONTINUITY ENABLES CORRECT HISTORY-DEPENDENT ACTION (enable Δ={mean_enable:+.2f}) — on "
+             f"probes that genuinely need history, ON acts correctly where OFF acts WRONG; but ON≈TOLD "
+             f"(form Δ={mean_form:+.2f}), so the value is SUPPLYING the facts, not the assembled form. "
+             f"Info-access — now demonstrated on judgement tasks (avoid-failure / build-on-progress / "
+             f"hold-commitment), a stronger result than recall-only, but still plumbing.")
+    elif mean_enable <= -_T_COG_ENABLE:
+        v = (f"CONTINUITY HARMS (enable Δ={mean_enable:+.2f}) — ON acted WORSE than OFF on history-"
+             f"dependent probes; the injected self-context degraded the decision.")
+    else:
+        v = (f"NOT DEMONSTRATED (enable Δ={mean_enable:+.2f}) — even on history-dependent probes ON≈OFF; "
+             f"no evidence continuity changes the decision.")
+    return {"verdict": v, "checks": checks, "thresholds": {
+        "enable": _T_COG_ENABLE, "form": _T_COG_FORM, "regress": _T_COG_REGRESS,
+        "null_gap": _T_COG_NULL_GAP}}
+
+
+def format_cognition_report(by: dict, verd: dict) -> str:
+    lines = ["# Continuity COGNITION probe — report", "",
+             f"**Verdict:** {verd['verdict']}", "",
+             "## Per-probe (arm means + contrasts)", "",
+             "| probe | role | ON | OFF | TOLD | enable(ON-OFF) | form(ON-TOLD) | admissible |",
+             "|---|---|---|---|---|---|---|---|"]
+    for s, d in by.items():
+        adm = "—" if d["role"] == "guard" else ("yes" if d["admissible"] else "LEAKED")
+        lines.append(f"| {s} | {d['role']} | {d['on']} | {d['off']} | {d['told']} | "
+                     f"{d['enables']:+.3f} | {d['form_gain']:+.3f} | {adm} |")
+    lines += ["", "## Pre-registered checks", ""]
+    for k, val in verd.get("checks", {}).items():
+        lines.append(f"- {k}: {val}")
+    return "\n".join(lines)
+
+
+async def run_cognition(mem, backend, judge, *, agent_id: str, scope=None, trials: int = 3,
+                        probes: tuple[CognitionProbe, ...] = COGNITION_PROBES) -> dict:
+    """History-dependent cognition A/B (3-arm ON/OFF/TOLD). For each probe × trial × arm:
+    clear → plant the probe's history → subject turn → blind (ideally cross-model) judge → record.
+    Scope is forced to the MemorySystem instance scope so planting/reads/cleanup all match."""
+    inst_scope = getattr(getattr(mem, "_config", None), "project_scope", None)
+    if scope is not None and scope != inst_scope:
+        logger.warning("run_cognition(): passed scope=%r != instance %r — using the instance scope.",
+                       scope, inst_scope)
+    scope = inst_scope
+    records: list[dict] = []
+    for pr in probes:
+        for t in range(trials):
+            for arm in ("on", "off", "told"):
+                await clear_agent(mem, agent_id, scope)
+                await plant_history(mem, agent_id, scope, pr.history)
+                reply = await cognition_reply(backend, mem, agent_id, pr, arm)
+                judged = await judge_reply(judge, pr, reply)   # duck-types on .stimulus/.rubric
+                records.append({"scenario": pr.name, "metric": pr.metric, "role": pr.role,
+                                "condition": arm, "trial": t, "score": judged["score"],
+                                "rationale": judged["rationale"],
+                                "parse_failed": judged.get("parse_failed", False),
+                                "reply": reply[:500]})
+    await clear_agent(mem, agent_id, scope)   # leave no test state behind
+    by = aggregate_cognition(records)
+    verd = cognition_verdict(by)
+    return {"by_probe": by, "verdict": verd,
+            "report": format_cognition_report(by, verd), "records": records}
+
+
 def _build_openai_backend(url: str, model: str, key: str = "none"):
     """Minimal OpenAI-compatible chat backend (vLLM/Ollama/OpenAI). Kept local so the harness
     has no hard dep beyond the already-present openai client."""
@@ -561,12 +905,21 @@ async def _amain(args) -> None:
     else:
         judge = backend
     try:
-        result = await run(mem, backend, judge, agent_id=args.agent_id,
-                           scope=args.scope, trials=args.trials)
+        if args.mode == "cognition":
+            if judge is backend:
+                logger.warning("cognition mode: judge == subject backend (same-model judge). Pass "
+                               "--judge-url/--judge-model for a CROSS-MODEL judge (recommended — the "
+                               "same-model judge is a known ceiling).")
+            result = await run_cognition(mem, backend, judge, agent_id=args.agent_id,
+                                         scope=args.scope, trials=args.trials)
+        else:
+            result = await run(mem, backend, judge, agent_id=args.agent_id,
+                               scope=args.scope, trials=args.trials)
         print(result["report"])
         if args.json:
+            summary = result.get("aggregate", result.get("by_probe"))
             with open(args.json, "w") as f:
-                json.dump({"aggregate": result["aggregate"], "verdict": result["verdict"],
+                json.dump({"summary": summary, "verdict": result["verdict"],
                            "records": result["records"]}, f, indent=2, default=str)
             print(f"\n[wrote {args.json}]")
     finally:
@@ -584,6 +937,8 @@ def main() -> None:
     ap.add_argument("--key", default="none", help="API key if the endpoint needs one")
     ap.add_argument("--scope", default="continuity_eval",
                     help="dedicated project_scope that isolates eval fixtures (default: continuity_eval)")
+    ap.add_argument("--mode", choices=["isolated", "cognition"], default="isolated",
+                    help="isolated = planted A/B (default); cognition = 3-arm history-dependent probes")
     ap.add_argument("--trials", type=int, default=3, help="trials per scenario per condition")
     ap.add_argument("--json", default=None, help="also write full records to this JSON path")
     args = ap.parse_args()
