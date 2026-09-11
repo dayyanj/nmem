@@ -4,8 +4,8 @@ Extracted from `studio_server.build_agent_app` (host-shell-convergence-plan.md S
 FastAPI host that boots an agent on `AgentRuntime` from an already-loaded `(config, persona)`. The
 studio APPLIANCE (wizard/provision/restart, SessionAuth, dashboard, `/tools`, `/act`) is ONE caller
 that layers its features on top; a bespoke agent is another caller that injects its
-own executor/comms/routes. Config DISCOVERY (AGENT_CONFIG vs the studio data-dir scan vs DJAI_CONFIG)
-stays in the caller — this host is source-agnostic.
+own executor/comms/routes. Config DISCOVERY (an ``AGENT_CONFIG``-style env var vs the studio
+data-dir scan) stays in the caller — this host is source-agnostic.
 
 Lifecycle — all on uvicorn's serving loop (asyncpg binds to it), inside the FastAPI lifespan:
 

@@ -264,12 +264,8 @@ class AnthropicBackend:
 # ── factory ──
 def _llm_env(field: str) -> str | None:
     """Read an agent-neutral LLM override env var, `NMEM_LLM_<FIELD>` (e.g. NMEM_LLM_BASE_URL).
-    Env wins over config so a deployment can repoint the brain without editing the repo.
-
-    Transitional: falls back to the legacy `MICHELLE_LLM_<FIELD>` name so a not-yet-migrated env
-    keeps working. Drop the fallback once every fleet env file uses NMEM_LLM_* (config-alignment:
-    canonical-single-name). Agent-neutral names unblock general deployment overrides (G7)."""
-    return os.environ.get(f"NMEM_LLM_{field}") or os.environ.get(f"MICHELLE_LLM_{field}")
+    Env wins over config so a deployment can repoint the brain without editing the repo."""
+    return os.environ.get(f"NMEM_LLM_{field}")
 
 
 def build_backend(config: dict, role: str = "brain"):
