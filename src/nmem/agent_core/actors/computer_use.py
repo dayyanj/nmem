@@ -211,6 +211,55 @@ def build_research_action(client: SandboxClient, *, judge: Any = None,
         verifier=Verifier(judge=judge, min_chars=min_chars))
 
 
+def build_research_runner(*, mem, backend, agent_id: str, bridge, client: "SandboxClient",
+                          action_name: str = "pursue_knowledge", tool_tag: str | None = None,
+                          verify_judge: bool = False, reflect_enabled: bool = True,
+                          cap: int = 4):
+    """Assemble the DIRECT knowledge-seeking executor: a ``ReferenceRunner`` over the research
+    :class:`~nmem_act.Action` (:func:`build_research_action`) wrapped with the experiential +
+    reflective outcome sink. This is the §33.3 **direct path** — the runner ENFORCES the action's
+    intrinsic ``Verifier`` after the handler (so the actuator cannot self-certify), which is why
+    computer-use uses this rather than the selector ``ToolCallingExecutor``. Returns an object
+    implementing the nmem-act executor protocol (``execute(proposal) -> Outcome``), ready to drop
+    into ``AgentRuntime(build_executor=…)`` / ``GoalPursuit``.
+
+    Every input is a PRIMITIVE (``mem`` / ``backend`` / ``agent_id`` / ``bridge`` / ``client``), so
+    this stays host-shape-agnostic — a thin host reads them off its own ctx, the studio appliance
+    off ``ctx``/``ctx.runtime``. ``tool_tag`` scopes reflective skill capture to the agent's
+    actuator namespace (pre-action lesson recall keys on the SAME tag). ``verify_judge`` adds the
+    bounded Layer-2 strict judge (default OFF — needs held-out calibration first); ``reflect_enabled``
+    (default ON) captures ``[DO]``/``[AVOID]`` tool-use skills from the sandbox step trace. Nothing
+    here is a new mechanism — it is the assembly of pieces that already live in nmem-act + agent_core,
+    graduated verbatim from the reference agent's ``service/actuation.build_runner``."""
+    from nmem_act import ActionRegistry, ReferenceRunner, make_reflective_sink, make_strict_judge
+
+    from nmem.agent_core import build_experiential_sink
+
+    # Layer-2 judge is generic (nmem-act.make_strict_judge); the host only injects its backend's chat.
+    judge = make_strict_judge(backend.chat) if verify_judge else None
+    reg = ActionRegistry()
+    reg.register(build_research_action(client, judge=judge, action_name=action_name))
+    log.info("[computer_use] research action %r registered (READ_ONLY, structural verify intrinsic%s)",
+             action_name, " + judge" if judge else "")
+
+    async def _reflect(messages):
+        return await backend.chat(messages, max_tokens=320)
+
+    async def _record_skill(what, **kw):
+        return await mem.skills.record(what, **kw)
+
+    # The experiential loop (episode + procedure reward + honest discharge + merit finding memory)
+    # is the graduated agent_core sink; nmem-act's make_reflective_sink wraps it to reflect on the
+    # sandbox step trace and capture tool-use skills (reflect LLM + skill writer injected here).
+    sink = make_reflective_sink(
+        build_experiential_sink(bridge, mem, agent_id),
+        reflect=_reflect, record_skill=_record_skill,
+        agent_id=agent_id, enabled=reflect_enabled, cap=cap, tool_tag=tool_tag or "")
+    runner = ReferenceRunner(reg, outcome_sink=sink)
+    log.info("[computer_use] research runner built (action=%s, reflect=%s)", action_name, reflect_enabled)
+    return runner
+
+
 async def register_computer_use_capability(bridge, *, goal_scope: str | None,
                                            client: SandboxClient,
                                            action_name: str = "pursue_knowledge") -> str:
