@@ -1,7 +1,7 @@
 # Upgrading to nmem 0.9.x
 
 This guide is for **host applications that embed nmem (and nmem-sym)** — e.g. the
-Spwig Refinery — moving from the 0.8.x line to **nmem 0.9.2 + nmem-sym 0.9.1**.
+A production deployment — moving from the 0.8.x line to **nmem 0.9.2 + nmem-sym 0.9.1**.
 
 Two things changed that a host needs to act on:
 

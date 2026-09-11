@@ -1,13 +1,13 @@
 # Adopting nmem 0.10 – 0.11: skills, autonomy, self-engineering
 
-This guide is for **host applications that embed nmem** — e.g. DJ-AI — that are
+This guide is for **host applications that embed nmem** that are
 already on **0.9.x** and want to turn on the capabilities added in **0.10.0** and
 **0.11.0**. It covers what each capability is, the config to enable it, the Python
 API, the MCP tools, and the events to subscribe to.
 
 **The one thing to know up front:** every new capability is **opt-in and OFF by
 default**. If you upgrade the package and change nothing, behavior is identical to
-0.9.x. Nothing here activates until you flip a flag — so DJ-AI gets none of it
+0.9.x. Nothing here activates until you flip a flag — so the host gets none of it
 "for free"; adoption is deliberate.
 
 There are no breaking changes in 0.10/0.11. (The last breaking change was the
@@ -28,7 +28,7 @@ Via environment (for the MCP server): `NMEM_SKILLS__ENABLED=1`,
 `NMEM_AUTONOMY__ENABLED=1`, `NMEM_SELF_ENGINEERING__ENABLED=1` (prefix `NMEM_`,
 nested delimiter `__`).
 
-> **Recommended rollout for DJ-AI:** enable **skills** first (lowest risk, immediately
+> **Recommended rollout:** enable **skills** first (lowest risk, immediately
 > useful), then **autonomy** (proactive surfacing), and only then **self-engineering**
 > (it makes autonomous LLM calls — see §3). Each is independent; you can stop at any tier.
 
@@ -103,7 +103,7 @@ is byte-for-byte unchanged.
 
 nmem watches its own event stream and, on qualifying journal writes, can **capture a
 skill** and/or **proactively surface** relevant memory + skills — *offering* them to
-DJ-AI via a single event. nmem never forces injection; it only offers.
+the host via a single event. nmem never forces injection; it only offers.
 
 All autonomy work runs **off the write path** (backgrounded), is per-agent
 cooldown-limited, and tags its own searches so it can't feed back into a storm.
@@ -127,7 +127,7 @@ config = NmemConfig(
 )
 ```
 
-### The event DJ-AI subscribes to
+### The event the host subscribes to
 
 ```python
 @mem.on("memory.surfaced")
@@ -135,10 +135,10 @@ async def _on_surfaced(data):
     # data = {agent_id, trigger, source, reason, results:[…], skills:[…]}
     # results: [{tier, id, title, content, recognition, recognition_score}, …]
     # skills:  [{id, name, what, outcome, worked, success_count, trial_count}, …]
-    dj.offer_context(data["results"], data["skills"])   # DJ-AI decides whether to use it
+    dj.offer_context(data["results"], data["skills"])   # the host decides whether to use it
 ```
 
-nmem *offers*; DJ-AI decides. This is the whole contract — nothing is injected behind
+nmem *offers*; the host decides. This is the whole contract — nothing is injected behind
 your back.
 
 ### On-demand surfacing
@@ -164,9 +164,9 @@ nightly consolidation to turn proven experience into reusable artifacts. Two hal
   injected into nmem's own context as `## Learned Guidance (advisory)` (placed last,
   explicitly subordinate to policy and direct memory).
 - **Sub-agent proposals** — rich, **propose-only** sub-agent specs. nmem never runs
-  them; DJ-AI inspects proposals and instantiates the ones it wants.
+  them; the host inspects proposals and instantiates the ones it wants.
 
-> **Cost & safety.** Self-engineering runs on the nightly consolidation cycle, so DJ-AI
+> **Cost & safety.** Self-engineering runs on the nightly consolidation cycle, so the host
 > must have consolidation running (`mem.start_consolidation()`, or the MCP server with
 > `NMEM_START_CONSOLIDATION` set). Each run is bounded by a hard `max_llm_calls_per_run`
 > **and** per-prompt input-size caps. Recipes are auto-active but tagged, near-exact-match
@@ -197,7 +197,7 @@ config = NmemConfig(
 
 ### Context recipes — Python API (`mem.self_engineering`)
 
-Distillation happens automatically on the nightly cycle. DJ-AI's job is to **inspect
+Distillation happens automatically on the nightly cycle. the host's job is to **inspect
 and veto**:
 
 ```python
@@ -218,11 +218,11 @@ proposals = await mem.self_engineering.list_proposals("proposed")
 # each: {id, name, system_prompt, trigger_conditions, context_recipe,
 #        suggested_tools, source_skill_ids, reliability_evidence, status}
 
-# DJ-AI instantiates/runs the ones it wants, then records feedback:
+# the host instantiates/runs the ones it wants, then records feedback:
 await mem.self_engineering.resolve_proposal(proposal_id, accepted=True)   # or False to dismiss
 ```
 
-**nmem never executes a proposal** — it's inert data. DJ-AI owns instantiation and
+**nmem never executes a proposal** — it's inert data. the host owns instantiation and
 execution. The `context_recipe` is a snapshot (copied in), so an accepted proposal stays
 valid even if the source recipe is later disabled.
 
@@ -234,7 +234,7 @@ valid even if the source recipe is later disabled.
 ### Events
 
 `recipe.distilled` (a recipe went live), `recipe.rejected` (failed the acceptance gate),
-`recipe.disabled`; `subagent.proposed` (a spec is ready for DJ-AI), `subagent.rejected`.
+`recipe.disabled`; `subagent.proposed` (a spec is ready for the host), `subagent.rejected`.
 
 ```python
 @mem.on("subagent.proposed")
@@ -274,16 +274,16 @@ each returns a "disabled" message when its feature's config flag is off. Enable 
 
 ---
 
-## 6. DJ-AI adoption checklist
+## 6. the host adoption checklist
 
 1. **Upgrade** to nmem 0.11.0 (and nmem-sym 0.10.0 if you use the cognitive backend).
    No code changes required to keep 0.9.x behavior.
-2. **Skills first.** Set `skills.enabled=True`. Have DJ-AI call
+2. **Skills first.** Set `skills.enabled=True`. Have the host call
    `mem.skills.record(...)` at natural "that worked / that didn't" moments, and
    `mem.skills.find(...)` (or `include_in_prompt`) when starting a task. Call
    `reinforce()` on re-use.
 3. **Autonomy next.** Set `autonomy.enabled` (+ `auto_capture_skills`,
-   `proactive_retrieve`) and subscribe to `memory.surfaced`. DJ-AI decides whether to
+   `proactive_retrieve`) and subscribe to `memory.surfaced`. the host decides whether to
    inject what nmem offers.
 4. **Self-engineering last.** Configure a real `llm.provider`, ensure consolidation is
    running, set `self_engineering.enabled` (+ `include_in_prompt`, and
