@@ -111,6 +111,18 @@ async def converse(runtime, message: str, *, history: list[dict] | None = None,
         system += "\n\n# Continuity — where you are right now\n" + cont
     if ctx.strip():
         system += "\n\n# Memory\n" + ctx
+    # Working memory — the agent-level autonomous lane (current focus / last outcome). Lets a
+    # chat turn reflect what the agent is *currently* working on even when the caller passes no
+    # session_id (the session-scoped lane is already folded into `ctx` via build_context).
+    # Gated + fail-open.
+    try:
+        if runtime.mem._config.working.enabled:
+            from nmem.tiers.working import AUTONOMOUS_SESSION
+            wm = await runtime.mem.working.build_prompt(AUTONOMOUS_SESSION, runtime.agent_id)
+            if wm and wm.strip():
+                system += "\n\n# Working memory — what I'm currently focused on\n" + wm.strip()
+    except Exception:  # noqa: BLE001 — additive, never blocks a reply
+        log.warning("[chat] working-memory inject failed (non-fatal)", exc_info=True)
     # Phase 1 — symbol surfacing on the chat turn (a soft surface, credited later by
     # affect/feedback). Writes a participation-ledger row keyed to a per-turn id so
     # representational self-improvement can learn from chat too. Byte-identical when the
@@ -176,6 +188,15 @@ async def converse(runtime, message: str, *, history: list[dict] | None = None,
         reply = await runtime.backend.chat(messages, **kw)
     if continuity:
         await record_turn_checkpoint(runtime.mem, runtime.agent_id, message, reply)
+    # Working memory: record this turn's task in the session lane (read back on the next turn
+    # via build_context's session-scoped working read). Session-scoped, gated, fail-open.
+    if session_id:
+        try:
+            if runtime.mem._config.working.enabled:
+                await runtime.mem.working.set(
+                    session_id, runtime.agent_id, "current_task", message[:500], priority=1)
+        except Exception:  # noqa: BLE001 — additive, never blocks
+            log.warning("[chat] working-memory current_task write failed (non-fatal)", exc_info=True)
     # Phase 1 — attach the produced answer to this turn's surfacing-ledger row so the
     # offline echo-back pass can attribute which surfaced items the answer relied on.
     if _surf_turn_id:

@@ -489,7 +489,20 @@ class AgentRuntime:
         from uuid import uuid4
 
         async def wrapped(goal):
-            # Build the host proposal first so it is always returned even if surfacing fails.
+            # Working memory: record what the agent is working on RIGHT NOW (the active goal),
+            # in the agent-level autonomous lane — BEFORE building, so default_proposal reads THIS
+            # goal's focus (not the prior cycle's). Bounded so a long objective can't blow the
+            # working-memory prompt budget and suppress the whole lane. Fail-open + gated.
+            try:
+                from nmem.tiers.working import AUTONOMOUS_SESSION
+                if self.mem._config.working.enabled:
+                    obj = (getattr(goal, "objective", "") or "").strip()
+                    if obj:
+                        await self.mem.working.set(
+                            AUTONOMOUS_SESSION, self.agent_id, "current_focus", obj[:280], priority=1)
+            except Exception:  # noqa: BLE001 — working memory is additive, never a blocker
+                log.warning("[runtime] working-memory current_focus write failed (non-fatal)", exc_info=True)
+            # Build the host proposal (always returned even if surfacing fails).
             built = build(goal)
             proposal = await built if inspect.isawaitable(built) else built
             try:

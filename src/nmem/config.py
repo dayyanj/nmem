@@ -63,6 +63,12 @@ class LLMConfig(BaseModel):
 class WorkingConfig(BaseModel):
     """Tier 1: Working memory settings."""
 
+    enabled: bool = False
+    """Wire working memory into cognition: the autonomous pursuit loop writes the agent's
+    current focus / last outcome and reads it back into each proposal, and chat turns record
+    the current task. Off by default (byte-identical) — opt in via NMEM_WORKING__ENABLED.
+    Independent of the external adapters, which use the working tier regardless."""
+
     max_slots_per_session: int = 20
     """Maximum working memory slots per session."""
 

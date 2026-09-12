@@ -106,6 +106,17 @@ def build_experiential_sink(bridge, mem, agent_id: str):
                 mem, agent_id, f"{verb}: {obj}" + (f" — {note[:160]}" if note else ""))
         except Exception:  # noqa: BLE001
             pass
+
+        # 5. working memory: record the latest pursuit result in the agent-level autonomous lane
+        # so the NEXT proposal (and a chat turn) sees "what just happened". Gated + fail-open.
+        try:
+            if mem._config.working.enabled:
+                from nmem.tiers.working import AUTONOMOUS_SESSION
+                summary = f"{vstatus}: {obj}" + (f" — {note[:160]}" if note else "")
+                await mem.working.set(
+                    AUTONOMOUS_SESSION, agent_id, "last_outcome", summary[:500], priority=3)
+        except Exception:  # noqa: BLE001
+            log.warning("[experiential-sink] working-memory last_outcome write failed (non-fatal)", exc_info=True)
         # NB: tool-use skill capture is not here — wrap this sink with nmem-act's
         # make_reflective_sink (reflect on observations["steps"] -> skills) for that.
 

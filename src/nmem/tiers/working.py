@@ -21,6 +21,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Stable session key for an agent's AUTONOMOUS working-memory lane — the pursuit loop has no
+# chat session, so its "current focus / last outcome" live under this constant (keyed per
+# agent_id). Chat turns use their own session_id. Kept here so producers (runtime, actuation)
+# and readers (proposal, chat) agree on the one key.
+AUTONOMOUS_SESSION = "__auto__"
+
 
 class WorkingMemoryTier:
     """Tier 1: Ephemeral per-session working memory."""

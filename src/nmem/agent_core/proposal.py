@@ -78,6 +78,16 @@ def default_proposal(mem, graph, bridge=None, *, agent_id: str,
             log.warning("[proposal] continuity inject failed", exc_info=True)
 
         try:
+            if mem._config.working.enabled:
+                from nmem.tiers.working import AUTONOMOUS_SESSION
+                wm = await mem.working.build_prompt(AUTONOMOUS_SESSION, agent_id)
+                if wm and wm.strip():
+                    # First = most immediate: what I'm focused on / just did, this session.
+                    prior = "Your working memory (current focus / recent outcome):\n" + wm.strip() + "\n\n" + prior
+        except Exception:  # noqa: BLE001
+            log.warning("[proposal] working-memory inject failed", exc_info=True)
+
+        try:
             from nmem.agent_core import proposal_source
             source = proposal_source(goal)
         except Exception:  # noqa: BLE001
