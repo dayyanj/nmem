@@ -197,6 +197,28 @@ async def check_conflict(
     return None
 
 
+async def emit_conflict_events(on_event, conflicts: "list[MemoryConflictInfo] | None") -> None:
+    """Emit a ``conflict.detected`` bus event per newly-recorded conflict.
+
+    Best-effort: called from tier .save() methods after ``scan_conflicts``. A missing
+    ``on_event`` (tier not wired) or an empty list is a no-op.
+    """
+    if not on_event or not conflicts:
+        return
+    for c in conflicts:
+        try:
+            await on_event("conflict.detected", {
+                "id": c.id,
+                "a_table": c.record_a_table, "a_id": c.record_a_id,
+                "b_table": c.record_b_table, "b_id": c.record_b_id,
+                "agent_a": c.agent_a, "agent_b": c.agent_b,
+                "similarity": c.similarity_score,
+                "description": (c.description or "")[:300],
+            })
+        except Exception:
+            pass
+
+
 # ── Scan: detect conflicts on write ─────────────────────────────────────────
 
 

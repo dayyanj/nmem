@@ -163,7 +163,17 @@ async def converse(runtime, message: str, *, history: list[dict] | None = None,
         _sys = next((m["content"] for m in messages if m.get("role") == "system"), "")
         metacog_audit["grounding_sha"] = _hashlib.sha256(_sys.encode()).hexdigest()[:16]
         metacog_audit["grounding_len"] = len(_sys)
-    reply = await runtime.backend.chat(messages, **kw)
+    # Viz: light the prefrontal "reasoning" field for the duration of the brain call.
+    # No-op + non-throwing when viz is disabled; never touches messages/kw/reply, so
+    # this stays byte-identical to production for the eval rig.
+    try:
+        from nmem_sym.viz_events import viz_llm, REGION_PREFRONTAL
+        _viz_cm = viz_llm("converse", REGION_PREFRONTAL, agent_id=runtime.agent_id)
+    except Exception:  # noqa: BLE001
+        from contextlib import nullcontext
+        _viz_cm = nullcontext()
+    async with _viz_cm:
+        reply = await runtime.backend.chat(messages, **kw)
     if continuity:
         await record_turn_checkpoint(runtime.mem, runtime.agent_id, message, reply)
     # Phase 1 — attach the produced answer to this turn's surfacing-ledger row so the

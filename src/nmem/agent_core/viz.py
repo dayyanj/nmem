@@ -72,25 +72,29 @@ class VizBridge:
         self._enqueue({"ts": time.time(), "source": "nmem-sym", "type": event_type,
                        "data": {**(data or {}), "_system": self.system_id}})
 
-    def _make_nmem(self, event_type: str):
-        async def handler(data):                   # awaited inline by mem._emit → must be instant
-            payload = dict(data) if isinstance(data, dict) else {}
-            payload["_system"] = self.system_id
-            self._enqueue({"ts": time.time(), "source": "nmem", "type": event_type, "data": payload})
-        return handler
+    def _nmem_star(self, event_type: str, data):
+        # Wildcard handler: awaited inline by mem._emit → must be instant (just enqueue).
+        # Forwards EVERY core bus event, so new event types (entity/policy/working/commitment/
+        # skill/recipe/conflict/…) reach viz with no change here.
+        payload = dict(data) if isinstance(data, dict) else {}
+        payload["_system"] = self.system_id
+        self._enqueue({"ts": time.time(), "source": "nmem", "type": event_type, "data": payload})
 
     def attach(self, mem) -> None:
         from nmem_sym.viz_events import viz_enable, viz_on
         viz_enable()                      # force-on; do not rely on the module's == "1" env gate
         viz_on(self._sym)
         self._sym_handler = self._sym
-        # nmem memory-tier events, if this MemorySystem exposes an event hook (labelled nodes)
+        # nmem memory-tier events — subscribe to the "*" wildcard so ALL core events forward
+        # (journal/ltm/shared/entity/policy/working/commitment/skill/recipe/conflict/…),
+        # rather than a hardcoded list that silently drops everything else.
+        self._nmem_hooked = False
         if hasattr(mem, "on"):
-            for et in ("journal.added", "ltm.saved", "shared.saved"):
-                try:
-                    mem.on(et)(self._make_nmem(et))
-                except Exception as e:  # noqa: BLE001
-                    log.debug("[viz] could not hook nmem event %s: %s", et, e)
+            try:
+                mem.on("*")(self._nmem_star)
+                self._nmem_hooked = True
+            except Exception as e:  # noqa: BLE001
+                log.debug("[viz] could not hook nmem wildcard event: %s", e)
 
     async def close(self) -> None:
         import asyncio

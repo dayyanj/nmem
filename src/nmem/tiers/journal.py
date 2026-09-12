@@ -352,6 +352,16 @@ class JournalTier:
                 created_at=actual_created_at,
             ))
 
+            if self._on_event:
+                try:
+                    await self._on_event("journal.added", {
+                        "id": entry_id, "agent_id": agent_id,
+                        "title": title[:300], "importance": importance,
+                        "entry_type": entry_type, "source": "batch",
+                    })
+                except Exception:
+                    pass
+
         return results
 
     async def search(

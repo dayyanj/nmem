@@ -163,8 +163,8 @@ class LTMTier:
         # inline (not fire-and-forget) so tests can observe the detection;
         # bounded by BeliefRevisionConfig.scan_candidates_limit.
         try:
-            from nmem.conflicts import scan_conflicts
-            await scan_conflicts(
+            from nmem.conflicts import scan_conflicts, emit_conflict_events
+            conflicts = await scan_conflicts(
                 self._db,
                 content=content,
                 embedding=list(emb),
@@ -174,6 +174,7 @@ class LTMTier:
                 project_scope=project_scope,
                 config=self._config.belief,
             )
+            await emit_conflict_events(self._on_event, conflicts)
         except Exception as e:
             logger.debug("LTM conflict scan failed (non-fatal): %s", e)
 
@@ -461,11 +462,27 @@ class LTMTier:
         from sqlalchemy import delete as sa_delete
 
         async with self._db.session() as session:
-            stmt = sa_delete(LTMModel).where(
-                and_(LTMModel.agent_id == agent_id, LTMModel.key == key)
+            stmt = (
+                sa_delete(LTMModel)
+                .where(and_(LTMModel.agent_id == agent_id, LTMModel.key == key))
+                .returning(LTMModel.id)
             )
             result = await session.execute(stmt)
-            return result.rowcount > 0  # type: ignore[return-value]
+            # RETURNING gives us the actual row id(s) — a (agent_id, key) can span
+            # project scopes, so this may delete more than one row. The viz consumer
+            # keys mem-nodes by row id (ltm_<id>), so the event must carry ids.
+            deleted_ids = [row[0] for row in result.fetchall()]
+
+        if self._on_event and deleted_ids:
+            try:
+                await self._on_event("ltm.deleted", {
+                    "agent_id": agent_id, "key": key,
+                    "id": deleted_ids[0], "ids": deleted_ids,
+                })
+            except Exception:
+                pass
+
+        return bool(deleted_ids)
 
     async def build_prompt(
         self, agent_id: str, max_chars: int | None = None, query: str | None = None

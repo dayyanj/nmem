@@ -129,8 +129,8 @@ class SharedTier:
         # Scan for conflicts with peer shared-knowledge entries. Bounded
         # by BeliefRevisionConfig.scan_candidates_limit.
         try:
-            from nmem.conflicts import scan_conflicts
-            await scan_conflicts(
+            from nmem.conflicts import scan_conflicts, emit_conflict_events
+            conflicts = await scan_conflicts(
                 self._db,
                 content=content,
                 embedding=list(emb),
@@ -140,6 +140,7 @@ class SharedTier:
                 project_scope=project_scope,
                 config=self._config.belief,
             )
+            await emit_conflict_events(self._on_event, conflicts)
         except Exception as e:
             logger.debug("Shared conflict scan failed (non-fatal): %s", e)
 

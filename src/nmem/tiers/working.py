@@ -28,6 +28,8 @@ class WorkingMemoryTier:
     def __init__(self, db: DatabaseManager, config: NmemConfig):
         self._db = db
         self._config = config
+        # Viz/event hook (set by MemorySystem → MemorySystem._emit)
+        self._on_event: callable | None = None
 
     async def set(
         self,
@@ -78,6 +80,15 @@ class WorkingMemoryTier:
                     context_thread_id=context_thread_id,
                 )
                 session.add(record)
+
+        if self._on_event:
+            try:
+                await self._on_event("working.set", {
+                    "agent_id": agent_id, "session_id": str(session_id),
+                    "slot": slot, "priority": priority,
+                })
+            except Exception:
+                pass
 
         return WorkingSlot(
             session_id=str(session_id),
@@ -144,7 +155,18 @@ class WorkingMemoryTier:
 
             stmt = delete(WorkingMemory).where(and_(*conditions))
             result = await session.execute(stmt)
-            return result.rowcount  # type: ignore[return-value]
+            cleared = result.rowcount
+
+        if self._on_event and cleared:
+            try:
+                await self._on_event("working.cleared", {
+                    "agent_id": agent_id, "session_id": str(session_id),
+                    "slot": slot, "count": cleared,
+                })
+            except Exception:
+                pass
+
+        return cleared  # type: ignore[return-value]
 
     async def build_prompt(
         self, session_id: str, agent_id: str, max_chars: int | None = None

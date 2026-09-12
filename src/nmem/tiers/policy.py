@@ -31,6 +31,8 @@ class PolicyTier:
     def __init__(self, db: DatabaseManager, config: NmemConfig):
         self._db = db
         self._config = config
+        # Viz/event hook (set by MemorySystem → MemorySystem._emit)
+        self._on_event: callable | None = None
 
     async def save(
         self,
@@ -101,7 +103,7 @@ class PolicyTier:
                 existing.change_log = log
                 await session.flush()
                 await session.refresh(existing)
-                return self._row_to_entry(existing)
+                entry = self._row_to_entry(existing)
             else:
                 record = PolicyMemoryModel(
                     scope=scope,
@@ -114,7 +116,19 @@ class PolicyTier:
                 )
                 session.add(record)
                 await session.flush()
-                return self._row_to_entry(record)
+                entry = self._row_to_entry(record)
+
+        if self._on_event:
+            try:
+                await self._on_event("policy.saved", {
+                    "scope": scope, "category": category, "key": key,
+                    "agent_id": agent_id, "status": status,
+                    "version": getattr(entry, "version", 1),
+                })
+            except Exception:
+                pass
+
+        return entry
 
     async def get(self, scope: str, key: str) -> PolicyEntry | None:
         """Get a policy by scope and key. Returns only active policies.

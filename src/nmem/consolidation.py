@@ -953,6 +953,16 @@ class Consolidator:
                     "key": key,
                     "source": "promotion",
                 })
+                # Also emit the explicit promotion event so viz can animate the
+                # journal→LTM consolidation trail (and remove the journal node).
+                await self._on_event("consolidation.promoted", {
+                    "id": ltm_id,
+                    "agent_id": entry.agent_id,
+                    "key": key,
+                    "journal_id": entry.id,
+                    "from_tier": "journal",
+                    "to_tier": "ltm",
+                })
             except Exception:
                 pass
 

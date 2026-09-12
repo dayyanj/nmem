@@ -20,10 +20,11 @@ def test_nmem_handler_never_blocks_on_a_stalled_viz_hub():
             await asyncio.sleep(10)
         bridge._client.post = _hang  # type: ignore[method-assign]
 
-        handler = bridge._make_nmem("ltm.saved")
+        # The bridge now subscribes to the "*" wildcard: _nmem_star(event, data) is called
+        # inline by mem._emit for EVERY core event and must only enqueue (never block).
         t0 = time.monotonic()
         for _ in range(50):
-            await handler({"id": 1, "title": "x"})     # awaited inline by mem._emit
+            bridge._nmem_star("ltm.saved", {"id": 1, "title": "x"})   # called inline by mem._emit
         elapsed = time.monotonic() - t0
         assert elapsed < 0.5, f"handler blocked ({elapsed:.2f}s) — must only enqueue"
         assert bridge._q.qsize() == 50                 # events buffered, not lost

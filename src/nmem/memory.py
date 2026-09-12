@@ -106,6 +106,12 @@ class MemorySystem:
         self._ltm._on_event = self._emit
         self._shared._on_event = self._emit
         self._consolidator._on_event = self._emit
+        # Previously-unwired tiers — give them the same event channel so their
+        # writes are observable (viz, autonomy). entity = relational-self / dossiers,
+        # policy = governance, working = ephemeral prefrontal slots.
+        self._entity._on_event = self._emit
+        self._policy._on_event = self._emit
+        self._working._on_event = self._emit
 
         # Commitments — the conscious record of external obligations. nmem is the
         # front door; it forwards to a registered cognitive backend (nmem-sym).
@@ -1169,6 +1175,7 @@ class MemorySystem:
             - "shared.saved" — shared knowledge updated
             - "conflict.detected" — memory conflict found
             - "consolidation.promoted" — entries promoted during consolidation
+            - "*" — wildcard: receives EVERY emitted event as (event_name, data)
 
         Usage:
             @mem.on("journal.added")
@@ -1183,7 +1190,13 @@ class MemorySystem:
         return decorator
 
     async def _emit(self, event: str, data: Any = None) -> None:
-        """Emit an event to registered handlers."""
+        """Emit an event to registered handlers.
+
+        Handlers registered for the specific ``event`` name receive ``(data)``.
+        Handlers registered under the ``"*"`` wildcard receive ``(event, data)`` —
+        this lets an observer (e.g. the nmem-viz bridge) forward EVERY event without
+        enumerating a list that drifts out of date as new event types are added.
+        """
         for handler in self._event_handlers.get(event, []):
             try:
                 if asyncio.iscoroutinefunction(handler):
@@ -1192,6 +1205,14 @@ class MemorySystem:
                     handler(data)
             except Exception as e:
                 logger.warning("Event handler for '%s' failed: %s", event, e)
+        for handler in self._event_handlers.get("*", []):
+            try:
+                if asyncio.iscoroutinefunction(handler):
+                    await handler(event, data)
+                else:
+                    handler(event, data)
+            except Exception as e:
+                logger.warning("Wildcard event handler failed for '%s': %s", event, e)
 
     # ── Provider Factory ─────────────────────────────────────────────────
 

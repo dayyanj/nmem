@@ -35,6 +35,8 @@ class EntityTier:
         self._embedding = embedding
         # Auto-journal callback (set by MemorySystem)
         self._auto_journal_callback: callable | None = None
+        # Viz/event hook (set by MemorySystem → MemorySystem._emit)
+        self._on_event: callable | None = None
 
     def _check_permission(self, agent_id: str, entity_type: str) -> None:
         """Check if agent has write permission for this entity type."""
@@ -128,8 +130,8 @@ class EntityTier:
 
         # Scan for conflicts with peer entity records
         try:
-            from nmem.conflicts import scan_conflicts
-            await scan_conflicts(
+            from nmem.conflicts import scan_conflicts, emit_conflict_events
+            conflicts = await scan_conflicts(
                 self._db,
                 content=content,
                 embedding=list(emb),
@@ -139,8 +141,20 @@ class EntityTier:
                 project_scope=project_scope,
                 config=self._config.belief,
             )
+            await emit_conflict_events(self._on_event, conflicts)
         except Exception as e:
             logger.debug("Entity conflict scan failed (non-fatal): %s", e)
+
+        if self._on_event:
+            try:
+                await self._on_event("entity.saved", {
+                    "id": entry_id, "entity_type": entity_type,
+                    "entity_id": entity_id, "entity_name": entity_name,
+                    "agent_id": agent_id, "record_type": record_type,
+                    "grounding": grounding,
+                })
+            except Exception:
+                pass
 
         return entity_record
 
@@ -211,7 +225,19 @@ class EntityTier:
 
             await session.flush()
             await session.refresh(record)
-            return self._row_to_record(record)
+            updated = self._row_to_record(record)
+
+        if self._on_event:
+            try:
+                await self._on_event("entity.grounding_updated", {
+                    "id": record_id, "entity_type": updated.entity_type,
+                    "entity_id": updated.entity_id, "agent_id": agent_id,
+                    "from": old_grounding, "to": grounding,
+                })
+            except Exception:
+                pass
+
+        return updated
 
     async def get(
         self,
