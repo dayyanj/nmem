@@ -114,6 +114,29 @@ class SandboxClient:
             log.debug("[computer_use] get_session failed: %s", e)
             return None
 
+    async def get_frame(self, session_id: str, i: int) -> bytes | None:
+        """Fetch one persisted keyframe (downscaled JPEG bytes) for step ``i``, or None.
+
+        Only frames the sandbox actually captured (``SANDBOX_CAPTURE_FRAMES=1``) exist; a step
+        whose keyframe was gated out / never captured → 404 → None. The step trace carries the
+        phash + ``screen_changed`` so the CALLER decides which frames are worth pulling BEFORE
+        transferring pixels (visual-memory worth-storing gate) — this only moves the bytes for
+        frames already chosen. Best-effort: a sandbox outage/disabled client returns None, never
+        crashes the learn loop."""
+        if not session_id:
+            return None
+        try:
+            httpx = self._httpx()
+            async with httpx.AsyncClient(timeout=self._cfg.get("request_timeout", 15.0)) as client:
+                r = await client.get(f"{self._cfg['url']}/session/{session_id}/frame/{i}")
+                if r.status_code == 404:
+                    return None
+                r.raise_for_status()
+                return r.content
+        except Exception as e:  # noqa: BLE001
+            log.debug("[computer_use] get_frame %s/%s failed: %s", session_id, i, e)
+            return None
+
     async def abort_session(self, session_id: str) -> bool:
         """Kill-switch a running session (best-effort) so it doesn't run orphaned and hold the one
         sandbox slot. Returns True on 2xx."""
@@ -136,19 +159,20 @@ class SandboxClient:
 
 
 async def drive_sandbox(client: SandboxClient, task: str,
-                        *, timeout_s: float = _RESEARCH_TIMEOUT_S) -> tuple[str, str, list]:
+                        *, timeout_s: float = _RESEARCH_TIMEOUT_S) -> tuple[str, str, list, str]:
     """Drive the sandbox to completion for one objective.
 
-    Returns ``(status, note, steps)`` where status is ``'achieved'`` (done), ``'failed'`` (a
-    COMPLETED session that didn't succeed — max_steps/error), or ``'infra'`` (the session never
-    really ran: disabled/busy/unavailable/stuck) so the caller can RETRY the goal instead of
-    burning it. ``enabled`` is a real gate: disabled → ``infra`` BEFORE any dispatch.
-    """
+    Returns ``(status, note, steps, session_id)`` where status is ``'achieved'`` (done),
+    ``'failed'`` (a COMPLETED session that didn't succeed — max_steps/error), or ``'infra'`` (the
+    session never really ran: disabled/busy/unavailable/stuck) so the caller can RETRY the goal
+    instead of burning it. ``enabled`` is a real gate: disabled → ``infra`` BEFORE any dispatch.
+    ``session_id`` is surfaced (``""`` when no session started) so a downstream sink can pull the
+    session's captured keyframes (visual memory) — the step trace carries only phash metadata."""
     if not client.is_enabled():
-        return "infra", "computer-use disabled", []
+        return "infra", "computer-use disabled", [], ""
     sid = await client.start_session(task, mode="read_only")
     if not sid:
-        return "infra", "sandbox busy/unavailable", []
+        return "infra", "sandbox busy/unavailable", [], ""
     polls = max(1, int(timeout_s // 6))
     try:
         for _ in range(polls):
@@ -157,14 +181,14 @@ async def drive_sandbox(client: SandboxClient, task: str,
             if s and s.get("status") not in ("queued", "running"):
                 st = s.get("status")
                 res = (s.get("result") or "")[:500]
-                return ("achieved" if st == "done" else "failed"), f"[{st}] {res}", (s.get("steps") or [])
+                return ("achieved" if st == "done" else "failed"), f"[{st}] {res}", (s.get("steps") or []), sid
     except asyncio.CancelledError:
         # Shutdown mid-pursuit — kill the desktop session so it doesn't run orphaned.
         await client.abort_session(sid)
         raise
     # Stopped waiting but the session is likely still running: abort so it doesn't hold the slot.
     await client.abort_session(sid)
-    return "infra", "timeout waiting for sandbox", []
+    return "infra", "timeout waiting for sandbox", [], sid
 
 
 def build_research_action(client: SandboxClient, *, judge: Any = None,
@@ -187,15 +211,17 @@ def build_research_action(client: SandboxClient, *, judge: Any = None,
         task = (lessons + "\n\n" if lessons else "") + (
             f"Seek knowledge to resolve this: {obj}. Read live sources, verify what's actually "
             f"true, and report concisely what you found. Do not guess — if you can't verify, say so.")
-        status, note, steps = await drive_sandbox(client, task, timeout_s=timeout_s)
+        status, note, steps, session_id = await drive_sandbox(client, task, timeout_s=timeout_s)
         # RAW observations (no `verified`): the runner's Verifier stamps verified/sandbox_status/
         # verification_status. `infra` is preserved so GoalPursuit retries rather than burning the
         # goal. `success` here is provisional — the runner overrides it with the verdict.
+        # `session_id` lets a visual-memory sink pull this session's captured keyframes.
         return ActionResult(
             success=(status == "achieved"),
             outcome=note,
             observations={"status": status, "steps": steps, "infra": status == "infra",
                           "objective": obj, "goal_id": params.get("goal_id"),
+                          "session_id": session_id,
                           "procedure_ids": params.get("procedure_ids") or []},
             task_success=1.0 if status == "achieved" else 0.0,
             info_gain=1.0 if status == "achieved" else 0.0,
@@ -214,7 +240,7 @@ def build_research_action(client: SandboxClient, *, judge: Any = None,
 def build_research_runner(*, mem, backend, agent_id: str, bridge, client: "SandboxClient",
                           action_name: str = "pursue_knowledge", tool_tag: str | None = None,
                           verify_judge: bool = False, reflect_enabled: bool = True,
-                          gate=None, cap: int = 4):
+                          gate=None, cap: int = 4, visual_memory=None):
     """Assemble the DIRECT knowledge-seeking executor: a ``ReferenceRunner`` over the research
     :class:`~nmem_act.Action` (:func:`build_research_action`) wrapped with the experiential +
     reflective outcome sink. This is the §33.3 **direct path** — the runner ENFORCES the action's
@@ -234,7 +260,11 @@ def build_research_runner(*, mem, backend, agent_id: str, bridge, client: "Sandb
 
     ``gate`` is the nmem-act ``AutonomyGate`` the runner enforces before dispatch (None →
     ReferenceRunner's read-only default, which permits the read-only research action); a host that
-    exposes an autonomy policy passes its own gate so an explicitly denied action is BLOCKED."""
+    exposes an autonomy policy passes its own gate so an explicitly denied action is BLOCKED.
+
+    ``visual_memory`` (optional :class:`~nmem.agent_core.visual_memory.VisualMemory`) composes a
+    SEE→REMEMBER stage AFTER the experiential/reflective sink: the sandbox session's gated keyframes
+    become sensory memories. None → no visual memory (byte-identical to before). Fail-open."""
     from nmem_act import ActionRegistry, ReferenceRunner, make_reflective_sink, make_strict_judge
 
     from nmem.agent_core import build_experiential_sink
@@ -259,9 +289,14 @@ def build_research_runner(*, mem, backend, agent_id: str, bridge, client: "Sandb
         build_experiential_sink(bridge, mem, agent_id),
         reflect=_reflect, record_skill=_record_skill,
         agent_id=agent_id, enabled=reflect_enabled, cap=cap, tool_tag=tool_tag or "")
+    # SEE→REMEMBER: wrap the learning sink so the sandbox session's gated keyframes become sensory
+    # memories (additive, fail-open). No-op when visual_memory is None or disabled.
+    if visual_memory is not None and getattr(visual_memory, "enabled", False):
+        sink = visual_memory.wrap(sink, agent_id)
     runner = ReferenceRunner(reg, outcome_sink=sink, gate=gate)
-    log.info("[computer_use] research runner built (action=%s, reflect=%s, gated=%s)",
-             action_name, reflect_enabled, gate is not None)
+    log.info("[computer_use] research runner built (action=%s, reflect=%s, gated=%s, visual_memory=%s)",
+             action_name, reflect_enabled, gate is not None,
+             bool(visual_memory is not None and getattr(visual_memory, "enabled", False)))
     return runner
 
 
