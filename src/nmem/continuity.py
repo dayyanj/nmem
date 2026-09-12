@@ -46,6 +46,7 @@ _SECTION_ORDER = (
     "goals",
     "self_model",
     "internal_state",
+    "relational_self",   # "who I am to my world", situation-conditioned (sym seam)
     "relevant",
 )
 
@@ -460,6 +461,10 @@ def assemble_continuity(
     has_drive_state = False
     if sym is not None and sym.drive_state_prose:
         has_drive_state = _emit("internal_state", "### Right now", [sym.drive_state_prose.strip()]) > 0
+
+    # 7b. Relational self — who I am to my world, situation-conditioned (sym seam).
+    if sym is not None and sym.relational_self_prose:
+        _emit("relational_self", "### My world", [sym.relational_self_prose.strip()])
 
     # 8. Query-relevant recall (only when a stimulus is present).
     rel_lines = []

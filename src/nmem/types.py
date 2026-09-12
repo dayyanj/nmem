@@ -385,6 +385,11 @@ class SymContinuityInputs:
     active_goals: tuple[str, ...] = ()
     """Short labels of the agent's own currently-actionable goals."""
 
+    relational_self_prose: str | None = None
+    """One grounded, SITUATION-CONDITIONED line of who the agent is to its world —
+    "oriented around X, Y, Z" — surfaced from the relational self (relationships live in
+    the current situation, not a fixed block). None when the relational self is off/empty."""
+
 
 @dataclass(frozen=True, slots=True)
 class OpenLoop:

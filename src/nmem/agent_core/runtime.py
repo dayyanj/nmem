@@ -62,6 +62,7 @@ def install_continuity_provider(mem, bridge) -> bool:
                 self_model_summary=d.get("self_model_summary"),
                 drive_state_prose=d.get("drive_state_prose"),
                 active_goals=tuple(d.get("active_goals") or ()),
+                relational_self_prose=d.get("relational_self_prose"),
             )
 
         reg(_continuity_provider)
