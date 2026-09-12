@@ -55,13 +55,18 @@ class VisualMemory:
 
     def __init__(self, sandbox_client, *, mem=None, db_dsn: str | None = None,
                  sym_dsn: str | None = None, novelty_hamming: int = 8,
-                 max_frames_per_outcome: int = 6, phash_cache: int = 512,
-                 consolidate_every: int = 0) -> None:
+                 same_screen_hamming: int = 8, max_frames_per_outcome: int = 6,
+                 phash_cache: int = 512, consolidate_every: int = 0,
+                 readback_scan: int = 500) -> None:
         self._sandbox = sandbox_client
         self._mem = mem                          # nmem MemorySystem — for the working-memory read-back channel
         self._db_dsn = db_dsn or os.environ.get("NMEM_SENSOR_DB_DSN")
         self._sym_dsn = sym_dsn or os.environ.get("NMEM_SYM_DB_DSN")
         self._novelty_hamming = novelty_hamming
+        # "Same screen" dhash Hamming radius: different UI screens measure ≥18 apart, same-screen ≤4,
+        # so 8 cleanly separates them (novelty_hamming dedups near-identical frames within one store).
+        self._same_screen_hamming = same_screen_hamming
+        self._readback_scan = readback_scan       # bound the recent-links Hamming scan
         self._max_frames = max_frames_per_outcome
         self._consolidate_every = consolidate_every
         self._sg = None                          # SensorGraph, or None while disabled
@@ -169,7 +174,7 @@ class VisualMemory:
         candidates = [f for f in candidates if f]
 
         stored = 0
-        scenes_seen: set[int] = set()             # chronoception scenes this pursuit landed on
+        screens: list[str] = []                   # dhash of each distinct screen this pursuit stored
         # Store gated frames (may keep nothing — e.g. an unchanged verified pursuit; the read-back
         # below STILL runs so the no-op check fires and any stale lesson is cleared).
         kept = self._select(candidates, surprising) if candidates else []
@@ -198,14 +203,14 @@ class VisualMemory:
                 await self._sg.ingest_frame(img, frame_id=frame_ref,
                                             scene_change=bool(f.get("screen_changed")))
                 stored += 1
-                sc = self._sg.last_scene_id()      # whole-screen "place" this frame resolved to
-                if sc is not None:
-                    scenes_seen.add(sc)
                 # Cache the phash ONLY after a successful store, so a later identical screen is
                 # correctly deduped — and a failed store never suppresses a screen we never saved.
+                # Also collect this screen's dhash (distinct screens only) for the read-back.
                 ph = f.get("phash")
                 if ph:
                     self._recent.append(ph)
+                    if not any(_hamming_hex(ph, s) <= self._same_screen_hamming for s in screens):
+                        screens.append(ph)
             except Exception:  # noqa: BLE001
                 log.warning("[visual-memory] ingest_frame failed", exc_info=True)
 
@@ -218,7 +223,7 @@ class VisualMemory:
         # Reads prior links BEFORE writing this pursuit's, so the current verdict can't contaminate
         # its own lookup. Fail-open: a read-back error must never affect the store above.
         try:
-            await self._readback(agent_id, gid, objective, verdict, scenes_seen, steps)
+            await self._readback(agent_id, gid, objective, verdict, screens, steps)
         except Exception:  # noqa: BLE001
             log.warning("[visual-memory] read-back failed (non-fatal)", exc_info=True)
 
@@ -233,30 +238,43 @@ class VisualMemory:
             except Exception:  # noqa: BLE001
                 log.warning("[visual-memory] consolidate failed", exc_info=True)
 
-    async def _readback(self, agent_id, gid, objective, verdict, scenes_seen, steps) -> None:
-        """Phase 2 SEE→REMEMBER read-back. For the scenes this pursuit landed on, look up PRIOR
-        FAILED pursuits on those same scenes and, if any, warn the NEXT proposal via the working-
-        memory autonomous lane (which ``default_proposal`` already injects — so no proposal plumbing
-        change). Also folds in a frame-diff "did the screen actually change" signal. Then records
-        THIS pursuit's scene→verdict links (after the read, so it can't contaminate its own lookup).
-        The count of revisited-failed scenes is the Phase-3 behavioral-advantage metric."""
+    async def _readback(self, agent_id, gid, objective, verdict, screens, steps) -> None:
+        """Phase 2 SEE→REMEMBER read-back, keyed on the perceptual dhash (discriminative for UI
+        screens, unlike the coarse-colour scene embedding — see migration 004). For the screens this
+        pursuit visited, look up PRIOR FAILED pursuits on the SAME screen (dhash Hamming ≤
+        same_screen_hamming, incl. earlier attempts of the same goal) and, if any, warn the NEXT
+        proposal via the working-memory autonomous lane (which ``default_proposal`` already injects —
+        no proposal plumbing change). Folds in a frame-diff "did the screen change" signal. Records
+        THIS pursuit's screen→verdict links AFTER the lookup (so it can't match its own rows). The
+        count of revisited-failed screens is the Phase-3 behavioral-advantage metric."""
         pool = self._sg.pool
-        prior_fail = []
-        if scenes_seen:
-            # Prior FAILED pursuits on these scenes — INCLUDING earlier attempts of the SAME goal
-            # (a retried goal keeps its id; revisiting a screen it failed on before should warn too).
-            # This runs BEFORE inserting the current pursuit's links, so it never sees its own rows.
-            prior_fail = await pool.fetch(
-                """SELECT DISTINCT objective FROM scene_pursuit_links
-                   WHERE scene_id = ANY($1) AND agent_id = $2 AND verdict = 'f'
-                   ORDER BY objective LIMIT 3""",
-                list(scenes_seen), agent_id)
-            # Record this pursuit's scene links for future read-backs.
-            for sc in scenes_seen:
+        prior_fail = False
+        matched = 0
+        seen_objs: list[str] = []
+        if screens:
+            # Bounded scan of this agent's recent FAILED screen links; Hamming-match in Python
+            # (portable — no reliance on a Postgres popcount). Runs BEFORE inserting this pursuit's
+            # own links, so it never matches itself.
+            rows = await pool.fetch(
+                """SELECT phash, objective FROM screen_pursuit_links
+                   WHERE agent_id = $1 AND verdict = 'f'
+                   ORDER BY created_at DESC LIMIT $2""",
+                agent_id, self._readback_scan)
+            for r in rows:
+                if any(_hamming_hex(cur, r["phash"]) <= self._same_screen_hamming for cur in screens):
+                    matched += 1
+                    # Collect up to 3 distinct objective texts for a legible warning — but the MATCH
+                    # itself counts even when the objective is empty (else a failure with no objective
+                    # would silently suppress the warning).
+                    if r["objective"] and r["objective"] not in seen_objs and len(seen_objs) < 3:
+                        seen_objs.append(r["objective"])
+            prior_fail = matched > 0
+            # Record this pursuit's screen links for future read-backs (one per distinct screen).
+            for ph in screens:
                 await pool.execute(
-                    """INSERT INTO scene_pursuit_links (scene_id, agent_id, goal_id, verdict, objective)
+                    """INSERT INTO screen_pursuit_links (phash, agent_id, goal_id, verdict, objective)
                        VALUES ($1, $2, $3, $4, $5)""",
-                    sc, agent_id, gid, verdict, (objective or "")[:200])
+                    ph, agent_id, gid, verdict, (objective or "")[:200])
 
         # Frame-diff: fraction of steps that visibly changed the screen. A "verified" success that
         # never changed the screen is suspicious (the actuator may not have taken effect).
@@ -267,8 +285,7 @@ class VisualMemory:
 
         lines = []
         if prior_fail:
-            objs = "; ".join((r["objective"] or "a prior task") for r in prior_fail if r["objective"]) \
-                   or "a prior task"
+            objs = "; ".join(seen_objs) or "a prior task"
             lines.append(
                 f"You are on screen(s) you have visited during a FAILED attempt before "
                 f"(e.g. “{objs[:160]}”). Do NOT repeat what failed there — try a different approach.")
@@ -277,8 +294,8 @@ class VisualMemory:
                 "Your last pursuit reported success but the screen never changed across its steps — "
                 "confirm the action actually took effect before relying on it.")
         if prior_fail:
-            log.info("[visual-memory] read-back: %d scene(s) revisited from FAILED pursuits (goal %s)",
-                     len(prior_fail), gid)
+            log.info("[visual-memory] read-back: %d screen(s) revisited from FAILED pursuits (goal %s)",
+                     matched, gid)
 
         await self._write_visual_lesson(agent_id, "\n".join(lines) if lines else None)
 
