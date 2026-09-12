@@ -53,13 +53,18 @@ class VisualMemory:
     lifecycle as the ``SandboxClient`` it reads from.
     """
 
-    def __init__(self, sandbox_client, *, mem=None, db_dsn: str | None = None,
-                 sym_dsn: str | None = None, novelty_hamming: int = 8,
+    def __init__(self, sandbox_client, *, mem=None, agent_id: str | None = None,
+                 db_dsn: str | None = None, sym_dsn: str | None = None, novelty_hamming: int = 8,
                  same_screen_hamming: int = 8, max_frames_per_outcome: int = 6,
                  phash_cache: int = 512, consolidate_every: int = 0,
-                 readback_scan: int = 500) -> None:
+                 readback_scan: int = 500, readback_enabled: bool = True) -> None:
         self._sandbox = sandbox_client
         self._mem = mem                          # nmem MemorySystem — for the working-memory read-back channel
+        self._agent_id = agent_id                # for the startup baseline-clean (OFF arm)
+        # A/B isolation: ingest + link-recording ALWAYS run (both arms accumulate the same measurement
+        # data); this gates ONLY the behavioral intervention — the working-memory warning that steers
+        # the next proposal. Off = baseline arm (frames still stored, links still recorded, no warning).
+        self._readback_enabled = readback_enabled
         self._db_dsn = db_dsn or os.environ.get("NMEM_SENSOR_DB_DSN")
         self._sym_dsn = sym_dsn or os.environ.get("NMEM_SYM_DB_DSN")
         self._novelty_hamming = novelty_hamming
@@ -93,6 +98,11 @@ class VisualMemory:
             self._sg = sg
             log.info("[visual-memory] connected (sensor_db=%s, sym_grounding=%s, consolidate_every=%d)",
                      _mask_dsn(self._db_dsn), bool(self._sym_dsn), self._consolidate_every)
+            # A/B baseline must start clean: if we boot into the OFF arm, clear any warning a prior
+            # ON run left in the autonomous lane BEFORE the pursuit loop builds its first proposal
+            # (the per-outcome clear runs too late for that first proposal). Restart applies the flag.
+            if not self._readback_enabled and self._agent_id:
+                await self._write_visual_lesson(self._agent_id, None)
             return True
         except Exception:  # noqa: BLE001
             log.warning("[visual-memory] SensorGraph.connect failed — disabled", exc_info=True)
@@ -270,11 +280,14 @@ class VisualMemory:
                         seen_objs.append(r["objective"])
             prior_fail = matched > 0
             # Record this pursuit's screen links for future read-backs (one per distinct screen).
+            # ALWAYS recorded (both A/B arms) + stamped with the arm active now, so the metric can
+            # attribute a revisit's outcome to whether the agent was actually warned.
             for ph in screens:
                 await pool.execute(
-                    """INSERT INTO screen_pursuit_links (phash, agent_id, goal_id, verdict, objective)
-                       VALUES ($1, $2, $3, $4, $5)""",
-                    ph, agent_id, gid, verdict, (objective or "")[:200])
+                    """INSERT INTO screen_pursuit_links
+                           (phash, agent_id, goal_id, verdict, objective, readback)
+                       VALUES ($1, $2, $3, $4, $5, $6)""",
+                    ph, agent_id, gid, verdict, (objective or "")[:200], self._readback_enabled)
 
         # Frame-diff: fraction of steps that visibly changed the screen. A "verified" success that
         # never changed the screen is suspicious (the actuator may not have taken effect).
@@ -294,10 +307,15 @@ class VisualMemory:
                 "Your last pursuit reported success but the screen never changed across its steps — "
                 "confirm the action actually took effect before relying on it.")
         if prior_fail:
-            log.info("[visual-memory] read-back: %d screen(s) revisited from FAILED pursuits (goal %s)",
-                     matched, gid)
+            log.info("[visual-memory] read-back: %d screen(s) revisited from FAILED pursuits (goal %s)"
+                     " [readback %s]", matched, gid, "ON" if self._readback_enabled else "OFF (A/B baseline)")
 
-        await self._write_visual_lesson(agent_id, "\n".join(lines) if lines else None)
+        # Behavioral intervention — the ONLY thing gated by the A/B arm. In the OFF arm we still
+        # CLEAR the slot so a lingering warning can't influence the baseline.
+        if self._readback_enabled:
+            await self._write_visual_lesson(agent_id, "\n".join(lines) if lines else None)
+        else:
+            await self._write_visual_lesson(agent_id, None)
 
     async def _write_visual_lesson(self, agent_id, text) -> None:
         """Set (or clear) the ``visual_lesson`` slot in the autonomous working lane so the next
@@ -338,7 +356,11 @@ async def build_visual_memory(sandbox_client, *, enabled: bool | None = None, **
     ENABLED`` env gate. Fail-open: any failure → ``None`` and the agent runs exactly as before.
 
     ``kw`` forwards to :class:`VisualMemory` (``db_dsn``, ``sym_dsn``, ``novelty_hamming``,
-    ``max_frames_per_outcome``, ``phash_cache``, ``consolidate_every``)."""
+    ``max_frames_per_outcome``, ``phash_cache``, ``consolidate_every``, ``readback_enabled``).
+
+    ``NMEM_VISUAL_MEMORY_ENABLED`` gates the whole feature (ingest + read-back). To A/B the
+    behavioral advantage, keep that ON and toggle ``NMEM_VISUAL_READBACK_ENABLED`` (default on):
+    OFF keeps ingest + link-recording running (same measurement data) but suppresses the warning."""
     if enabled is None:
         enabled = _env_on("NMEM_VISUAL_MEMORY_ENABLED")
     if not enabled:
@@ -346,5 +368,10 @@ async def build_visual_memory(sandbox_client, *, enabled: bool | None = None, **
     if sandbox_client is None or not sandbox_client.is_enabled():
         log.info("[visual-memory] sandbox disabled — visual memory inert")
         return None
+    kw.setdefault("readback_enabled", _env_on("NMEM_VISUAL_READBACK_ENABLED", "true"))
     vm = VisualMemory(sandbox_client, **kw)
-    return vm if await vm.connect() else None
+    ok = await vm.connect()
+    if ok:
+        log.info("[visual-memory] ready (read-back %s)",
+                 "ON" if vm._readback_enabled else "OFF — A/B baseline arm")
+    return vm if ok else None
