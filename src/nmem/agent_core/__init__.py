@@ -62,6 +62,7 @@ _LAZY = {
     "build_research_runner": ("nmem.agent_core.actors.computer_use", "build_research_runner"),
     "build_visual_memory": ("nmem.agent_core.visual_memory", "build_visual_memory"),
     "VisualMemory": ("nmem.agent_core.visual_memory", "VisualMemory"),
+    "summarize_and_remember": ("nmem.agent_core.session_summary", "summarize_and_remember"),
     "make_ops_router": ("nmem.agent_core.ops", "make_ops_router"),
     "create_agent_app": ("nmem.agent_core.host", "create_agent_app"),
     "HostContext": ("nmem.agent_core.host", "HostContext"),
