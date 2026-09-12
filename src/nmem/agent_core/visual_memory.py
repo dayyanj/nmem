@@ -53,10 +53,12 @@ class VisualMemory:
     lifecycle as the ``SandboxClient`` it reads from.
     """
 
-    def __init__(self, sandbox_client, *, db_dsn: str | None = None, sym_dsn: str | None = None,
-                 novelty_hamming: int = 8, max_frames_per_outcome: int = 6,
-                 phash_cache: int = 512, consolidate_every: int = 0) -> None:
+    def __init__(self, sandbox_client, *, mem=None, db_dsn: str | None = None,
+                 sym_dsn: str | None = None, novelty_hamming: int = 8,
+                 max_frames_per_outcome: int = 6, phash_cache: int = 512,
+                 consolidate_every: int = 0) -> None:
         self._sandbox = sandbox_client
+        self._mem = mem                          # nmem MemorySystem — for the working-memory read-back channel
         self._db_dsn = db_dsn or os.environ.get("NMEM_SENSOR_DB_DSN")
         self._sym_dsn = sym_dsn or os.environ.get("NMEM_SYM_DB_DSN")
         self._novelty_hamming = novelty_hamming
@@ -158,23 +160,26 @@ class VisualMemory:
         if not sid or not steps:
             return
         gid = obs.get("goal_id")
-        surprising = not bool(obs.get("verified"))
+        objective = obs.get("objective", "")
+        verified = bool(obs.get("verified"))
+        surprising = not verified
+        verdict = "v" if verified else "f"           # tags scene links + frame refs (Phase 2 read-back)
         candidates = [s.get("frame") for s in steps
                       if isinstance(s, dict) and isinstance(s.get("frame"), dict)]
         candidates = [f for f in candidates if f]
-        if not candidates:
-            return
-        kept = self._select(candidates, surprising)
-        if not kept:
-            return
-        try:
-            import cv2
-            import numpy as np
-        except Exception:  # noqa: BLE001
-            log.warning("[visual-memory] opencv/numpy missing — cannot decode frames", exc_info=True)
-            return
 
         stored = 0
+        scenes_seen: set[int] = set()             # chronoception scenes this pursuit landed on
+        # Store gated frames (may keep nothing — e.g. an unchanged verified pursuit; the read-back
+        # below STILL runs so the no-op check fires and any stale lesson is cleared).
+        kept = self._select(candidates, surprising) if candidates else []
+        if kept:
+            try:
+                import cv2
+                import numpy as np
+            except Exception:  # noqa: BLE001
+                log.warning("[visual-memory] opencv/numpy missing — cannot decode frames", exc_info=True)
+                kept = []
         for f in kept:
             fid = f.get("frame_id")
             if fid is None:
@@ -186,13 +191,16 @@ class VisualMemory:
             img = cv2.imdecode(arr, cv2.IMREAD_COLOR)  # HWC uint8 BGR (what ingest_frame wants)
             if img is None:
                 continue
-            # The frame ref encodes the goal so a later read-back joins a visually-similar past
-            # screen to THIS goal's outcome in nmem-sym (objective text is too long for the ref).
-            frame_ref = f"cu:{agent_id}:{gid}:{sid}:{fid}"
+            # The frame ref encodes goal + verdict so a later read-back knows a visually-similar past
+            # screen belonged to a FAILED ('f') vs verified ('v') pursuit (objective is too long here).
+            frame_ref = f"cu:{agent_id}:{gid}:{verdict}:{sid}:{fid}"
             try:
                 await self._sg.ingest_frame(img, frame_id=frame_ref,
                                             scene_change=bool(f.get("screen_changed")))
                 stored += 1
+                sc = self._sg.last_scene_id()      # whole-screen "place" this frame resolved to
+                if sc is not None:
+                    scenes_seen.add(sc)
                 # Cache the phash ONLY after a successful store, so a later identical screen is
                 # correctly deduped — and a failed store never suppresses a screen we never saved.
                 ph = f.get("phash")
@@ -205,6 +213,15 @@ class VisualMemory:
             log.info("[visual-memory] stored %d/%d keyframe(s) for goal %s (%s outcome)",
                      stored, len(candidates), gid, "surprising" if surprising else "verified")
 
+        # Phase 2 — scene-level read-back into the NEXT proposal. ALWAYS runs (even when no frame was
+        # kept) so the "success but screen never changed" warning can fire and a stale lesson clears.
+        # Reads prior links BEFORE writing this pursuit's, so the current verdict can't contaminate
+        # its own lookup. Fail-open: a read-back error must never affect the store above.
+        try:
+            await self._readback(agent_id, gid, objective, verdict, scenes_seen, steps)
+        except Exception:  # noqa: BLE001
+            log.warning("[visual-memory] read-back failed (non-fatal)", exc_info=True)
+
         # Throttled consolidation (cluster formation → occipital viz + eventual symbol grounding).
         # OFF by default (consolidate_every=0): consolidation is heavy and better run by a periodic
         # job than on the pursuit hot-path. When >0, run it every Nth outcome for a self-contained
@@ -215,6 +232,73 @@ class VisualMemory:
                 await self._sg.consolidate()
             except Exception:  # noqa: BLE001
                 log.warning("[visual-memory] consolidate failed", exc_info=True)
+
+    async def _readback(self, agent_id, gid, objective, verdict, scenes_seen, steps) -> None:
+        """Phase 2 SEE→REMEMBER read-back. For the scenes this pursuit landed on, look up PRIOR
+        FAILED pursuits on those same scenes and, if any, warn the NEXT proposal via the working-
+        memory autonomous lane (which ``default_proposal`` already injects — so no proposal plumbing
+        change). Also folds in a frame-diff "did the screen actually change" signal. Then records
+        THIS pursuit's scene→verdict links (after the read, so it can't contaminate its own lookup).
+        The count of revisited-failed scenes is the Phase-3 behavioral-advantage metric."""
+        pool = self._sg.pool
+        prior_fail = []
+        if scenes_seen:
+            # Prior FAILED pursuits on these scenes — INCLUDING earlier attempts of the SAME goal
+            # (a retried goal keeps its id; revisiting a screen it failed on before should warn too).
+            # This runs BEFORE inserting the current pursuit's links, so it never sees its own rows.
+            prior_fail = await pool.fetch(
+                """SELECT DISTINCT objective FROM scene_pursuit_links
+                   WHERE scene_id = ANY($1) AND agent_id = $2 AND verdict = 'f'
+                   ORDER BY objective LIMIT 3""",
+                list(scenes_seen), agent_id)
+            # Record this pursuit's scene links for future read-backs.
+            for sc in scenes_seen:
+                await pool.execute(
+                    """INSERT INTO scene_pursuit_links (scene_id, agent_id, goal_id, verdict, objective)
+                       VALUES ($1, $2, $3, $4, $5)""",
+                    sc, agent_id, gid, verdict, (objective or "")[:200])
+
+        # Frame-diff: fraction of steps that visibly changed the screen. A "verified" success that
+        # never changed the screen is suspicious (the actuator may not have taken effect).
+        total = len(steps)
+        changed = sum(1 for s in steps if isinstance(s, dict)
+                      and isinstance(s.get("frame"), dict) and s["frame"].get("screen_changed"))
+        change_ratio = (changed / total) if total else 0.0
+
+        lines = []
+        if prior_fail:
+            objs = "; ".join((r["objective"] or "a prior task") for r in prior_fail if r["objective"]) \
+                   or "a prior task"
+            lines.append(
+                f"You are on screen(s) you have visited during a FAILED attempt before "
+                f"(e.g. “{objs[:160]}”). Do NOT repeat what failed there — try a different approach.")
+        if verdict == "v" and total >= 3 and change_ratio == 0.0:
+            lines.append(
+                "Your last pursuit reported success but the screen never changed across its steps — "
+                "confirm the action actually took effect before relying on it.")
+        if prior_fail:
+            log.info("[visual-memory] read-back: %d scene(s) revisited from FAILED pursuits (goal %s)",
+                     len(prior_fail), gid)
+
+        await self._write_visual_lesson(agent_id, "\n".join(lines) if lines else None)
+
+    async def _write_visual_lesson(self, agent_id, text) -> None:
+        """Set (or clear) the ``visual_lesson`` slot in the autonomous working lane so the next
+        proposal surfaces it. Clearing on an empty lesson avoids a stale warning persisting."""
+        mem = self._mem
+        if mem is None:
+            return
+        try:
+            if not getattr(mem._config.working, "enabled", False):
+                return
+            from nmem.tiers.working import AUTONOMOUS_SESSION
+            if text:
+                await mem.working.set(AUTONOMOUS_SESSION, agent_id, "visual_lesson",
+                                      f"\U0001f441 Visual memory: {text}"[:500], priority=2)
+            else:
+                await mem.working.clear(AUTONOMOUS_SESSION, agent_id, slot="visual_lesson")
+        except Exception:  # noqa: BLE001
+            log.warning("[visual-memory] working-lesson write failed (non-fatal)", exc_info=True)
 
     def wrap(self, inner_sink, agent_id: str):
         """Compose this visual-memory ingest AFTER an inner ``OutcomeSink`` (the experiential/
