@@ -337,6 +337,20 @@ class PromptConfig(BaseModel):
     """Proportional weights for token budget distribution across sections.
     Weights are normalized at runtime."""
 
+    focus_expansion: bool = False
+    """Deep-recall / focus expansion. When True, the briefing spends its Known-
+    Facts budget non-uniformly: the top few most-relevant KNOWN memories are
+    resolved to a query-relevant passage of their verbatim `raw_content` (deep),
+    while the rest stay one-line stubs (breadth). Reallocation is WITHIN the
+    existing Known budget — it never inflates the prompt. Off by default
+    (byte-identical legacy briefing); flip on to A/B-eval it. Requires a query."""
+
+    focus_expansion_top_k: int = 2
+    """How many top-ranked KNOWN memories get deep passage expansion."""
+
+    focus_expansion_max_chars: int = 800
+    """Per-item char ceiling for an expanded focus memory's passage."""
+
 
 class ImportanceConfig(BaseModel):
     """Automatic importance scoring (consolidation time, heuristic-based).

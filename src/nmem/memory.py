@@ -804,15 +804,62 @@ class MemorySystem:
         familiar_items = [r for r in search_results if r.recognition == "FAMILIAR"]
         uncertain_items = [r for r in search_results if r.recognition == "UNCERTAIN"]
 
+        # ── Focus expansion (deep-recall) ───────────────────────────────
+        # Opt-in: resolve the top-k most-relevant KNOWN memories to a query-
+        # relevant passage of their verbatim raw_content, reallocating WITHIN
+        # budget_known (depth for focus, breadth traded from the tail). Never
+        # inflates the prompt. Keyed by index into known_items.
+        focus_bodies: dict[int, str] = {}
+        pc = self._config.prompt
+        if pc.focus_expansion and query and known_items and not low_budget:
+            targets = known_items[: max(0, pc.focus_expansion_top_k)]
+            # Cap any single expanded body at the whole Known budget so it can
+            # never crowd out the section to a header-only degenerate case.
+            focus_cap = min(pc.focus_expansion_max_chars, budget_known)
+
+            def _expand() -> dict[int, str]:
+                import numpy as np
+                from nmem.search import extract_passage
+                out: dict[int, str] = {}
+                try:
+                    q_emb = np.array(self._embedding.embed(query))
+                except Exception:
+                    return out
+                for i, r in enumerate(targets):
+                    full = r.raw_content or r.content
+                    if not full:
+                        continue
+                    try:
+                        passage = extract_passage(full, q_emb, self._embedding)
+                    except Exception:
+                        passage = None
+                    body = (passage or full)[:focus_cap]
+                    # Only expand when it adds depth beyond the summary clip.
+                    if len(body) > len(r.content):
+                        out[i] = body
+                return out
+
+            try:
+                focus_bodies = await asyncio.to_thread(_expand)
+            except Exception:
+                focus_bodies = {}
+
         if known_items and not low_budget:
             lines = ["### Known Facts (use directly)"]
             chars = 0
-            for r in known_items:
+            for i, r in enumerate(known_items):
                 label = r.title or r.key or ""
-                if high_budget:
-                    line = f"[KNOWN] {label}: {r.content[:300]}"
+                clip = r.content[:300] if high_budget else r.content[:150]
+                focus_body = focus_bodies.get(i)
+                if focus_body is not None:
+                    line = f"[KNOWN] {label}: {focus_body}"
+                    # If the deep line doesn't fit, degrade to the compact clip
+                    # rather than dropping this item (and the whole tail) — focus
+                    # expansion must never render the section worse than flat.
+                    if chars + len(line) > budget_known:
+                        line = f"[KNOWN] {label}: {clip}"
                 else:
-                    line = f"[KNOWN] {label}: {r.content[:150]}"
+                    line = f"[KNOWN] {label}: {clip}"
                 if chars + len(line) > budget_known:
                     break
                 lines.append(line)

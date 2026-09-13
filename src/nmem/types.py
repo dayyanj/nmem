@@ -168,6 +168,9 @@ class SearchResult:
     id: int
     score: float
     content: str
+    raw_content: str | None = None
+    """Verbatim original (pre-compression) when the tier preserved one; None
+    otherwise. Carried so focus expansion can resolve depth without a re-query."""
     title: str | None = None
     key: str | None = None
     agent_id: str | None = None

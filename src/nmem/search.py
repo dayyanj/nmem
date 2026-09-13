@@ -14,6 +14,7 @@ import asyncio
 import logging
 import re
 import uuid
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -474,16 +475,21 @@ async def extract_passages_for_results(
     except Exception:
         return results
 
+    # SearchResult is frozen — build a new list via dataclasses.replace rather
+    # than mutating in place (mutation raises FrozenInstanceError, which was
+    # silently swallowed here, leaving passage extraction a no-op).
+    out: list[SearchResult] = []
     for result in results:
         if len(result.content) >= PASSAGE_MIN_CONTENT_LENGTH:
             try:
                 passage = extract_passage(result.content, query_embedding, embedder)
                 if passage:
-                    result.passage = passage
+                    result = replace(result, passage=passage)
             except Exception as e:
                 logger.debug("Passage extraction failed for %s: %s", result.key or result.id, e)
+        out.append(result)
 
-    return results
+    return out
 
 
 # ── Cross-Tier Search ─────────────────────────────────────────────────────────
@@ -707,6 +713,7 @@ async def _search_journal(
             id=e.id,
             score=e.relevance_score,
             content=e.content,
+            raw_content=e.raw_content,
             title=e.title,
             agent_id=e.agent_id,
             metadata=meta,
@@ -756,6 +763,7 @@ async def _search_ltm(
             id=e.id,
             score=score,
             content=e.content,
+            raw_content=e.raw_content,
             key=e.key,
             agent_id=e.agent_id,
             metadata=meta,
@@ -943,6 +951,7 @@ async def _search_journal_all_agents(
             id=e.id,
             score=scores.get(eid, 0.0),
             content=e.content,
+            raw_content=e.raw_content,
             title=e.title,
             agent_id=e.agent_id,
             metadata=meta,
@@ -1051,6 +1060,7 @@ async def _search_ltm_all_agents(
             id=e.id,
             score=score,
             content=e.content,
+            raw_content=e.raw_content,
             key=e.key,
             agent_id=e.agent_id,
             metadata=meta,
