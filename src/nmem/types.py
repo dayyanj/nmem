@@ -202,9 +202,9 @@ class PromptContext:
         if self.policy:
             sections.append(f"## Active Policies\n{self.policy}")
         if self.shared:
-            sections.append(f"## Shared Knowledge\n{self.shared}")
+            sections.append(f"## Shared Knowledge (cross-agent)\n{self.shared}")
         if self.ltm:
-            sections.append(f"## Your Long-Term Memory\n{self.ltm}")
+            sections.append(f"## Your Long-Term Memory (your recollection — may be stale)\n{self.ltm}")
         if self.skills:
             sections.append(f"## Relevant Skills\n{self.skills}")
         if self.journal:

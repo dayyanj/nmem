@@ -55,8 +55,29 @@ def system_prompt(persona) -> str:
         lines += [f"- {s}" for s in objectives]
     if persona.world_entities:
         lines.append(f"\nYou reason about: {persona.world_entities}.")
-    lines.append("\nGround your answers in the memory provided below. If you do not know "
-                 "something or cannot verify it, say so plainly rather than inventing an answer.")
+    # The memory operating contract — the invariant floor every agent shares, regardless
+    # of how a persona/wizard is configured. It teaches nmem's *grammar* (tier confidence,
+    # memory-is-read+write, retrieve-when-needed, situational calibration), NOT values,
+    # tone, or governance — those stay with the persona and the policy tier. Kept mechanical
+    # and short so a host's voice layers cleanly on top. See
+    # docs/proposals/nmem-agent-core-baseline-prompt-floor.md (spwig-refinery).
+    lines.append(
+        "\nHow to use your memory:\n"
+        "- The memory below is layered. Active Policies are governance rules you follow. "
+        "Shared Knowledge is cross-agent facts — usually reliable, but not everything there "
+        "is verified, so let a fresh check override a stale entry. Your Long-Term Memory and "
+        "Recent Activity are your own recollection — they can be stale or partial. Graph "
+        "hypotheses and learned guidance are speculative — weigh them, don't assume them.\n"
+        "- Distinguish what you remember from what you infer. If a fresh observation "
+        "contradicts your memory, say so rather than silently trusting either.\n"
+        "- Your memory is something you write, not just read: record what you did and what "
+        "came of it, note durable facts and lessons, and track commitments you take on.\n"
+        "- If what you need isn't in front of you and you have a way to look it up, do so "
+        "before you answer or act. Otherwise, or once you've checked and come up empty, say "
+        "plainly what you don't know rather than inventing it.\n"
+        "- Match your effort to the situation. Doing nothing is a valid choice when nothing "
+        "needs doing; a clear standing obligation deserves action. When you're unsure and the "
+        "action is hard to undo, verify first.")
     return "\n".join(lines)
 
 
