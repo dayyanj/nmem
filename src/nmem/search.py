@@ -213,6 +213,23 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / norm if norm > 0 else 0.0
 
 
+def truncate_on_boundary(text: str, max_chars: int) -> str:
+    """Truncate `text` to at most `max_chars`, cutting on a word boundary.
+
+    Used as the compression fallback so a failed LLM distillation degrades to
+    a clean truncation rather than a mid-word chop. If the last whitespace sits
+    too early (< 80% of the budget) the hard cut is kept, so a single very long
+    token can't collapse the result to almost nothing.
+    """
+    if len(text) <= max_chars:
+        return text
+    hard = text[:max_chars]
+    space = hard.rfind(" ")
+    if space >= int(max_chars * 0.8):
+        return hard[:space].rstrip()
+    return hard.rstrip()
+
+
 def compute_recognition(
     metadata: dict[str, Any],
     config: RecognitionConfig,

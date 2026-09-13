@@ -15,7 +15,12 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select, and_
 
 from nmem.db.models import LTMModel
-from nmem.search import hybrid_memory_search, populate_tsvector, assign_context_thread
+from nmem.search import (
+    hybrid_memory_search,
+    populate_tsvector,
+    assign_context_thread,
+    truncate_on_boundary,
+)
 from nmem.types import LTMEntry
 
 if TYPE_CHECKING:
@@ -96,8 +101,16 @@ class LTMTier:
             self._embedding.embed, f"{key} {content[:500]}"
         )
 
-        if compress and len(content) > self._config.llm.compression_max_chars:
-            content = await self._compress(key, content)
+        # Importance sets the compression ceiling (not a target); the verbatim
+        # original is preserved in raw_content whenever compression shrank the
+        # body, so nothing is lost and the summary can be re-derived later.
+        ceiling = self._config.llm.compression_ceiling_for(importance)
+        raw_content: str | None = None
+        if compress and len(content) > ceiling:
+            compressed = await self._compress(key, content, ceiling)
+            if compressed != content:
+                raw_content = content
+                content = compressed
 
         async with self._db.session() as session:
             # Upsert by (agent_id, key, project_scope)
@@ -112,6 +125,9 @@ class LTMTier:
 
             if existing:
                 existing.content = content
+                # New save's original (None when this save wasn't compressed,
+                # i.e. `content` already is the full original).
+                existing.raw_content = raw_content
                 existing.category = category
                 # Explicit importance always wins over whatever was there
                 # before (manual or auto) and disables auto-scoring forever.
@@ -136,6 +152,7 @@ class LTMTier:
                     category=category,
                     key=key,
                     content=content,
+                    raw_content=raw_content,
                     importance=importance,
                     auto_importance=auto_importance,
                     source=source,
@@ -153,10 +170,12 @@ class LTMTier:
                 await session.refresh(record)
                 entry = self._row_to_entry(record)
 
-        # Populate TSVECTOR (outside session to avoid deadlock)
+        # Populate TSVECTOR (outside session to avoid deadlock). Index the
+        # fuller text (original when compression shrank it) so keywords beyond
+        # the summary stay searchable.
         await populate_tsvector(
             self._db, "nmem_long_term_memory", entry.id,
-            f"{key} {content[:2000]}",
+            f"{key} {(raw_content or content)[:2000]}",
         )
 
         # Scan for conflicts with peer entries in the same scope. Fire
@@ -230,8 +249,13 @@ class LTMTier:
             grounding = entry_dict.get("grounding", "inferred")
             scope = entry_dict.get("project_scope", self._config.project_scope)
 
-            if compress and len(content) > self._config.llm.compression_max_chars:
-                content = await self._compress(key, content)
+            ceiling = self._config.llm.compression_ceiling_for(importance)
+            raw_content: str | None = None
+            if compress and len(content) > ceiling:
+                compressed = await self._compress(key, content, ceiling)
+                if compressed != content:
+                    raw_content = content
+                    content = compressed
 
             async with self._db.session() as session:
                 filters = [LTMModel.agent_id == agent_id, LTMModel.key == key]
@@ -245,6 +269,7 @@ class LTMTier:
 
                 if existing:
                     existing.content = content
+                    existing.raw_content = raw_content
                     existing.category = category
                     existing.importance = max(existing.importance, importance)
                     if not auto_importance:
@@ -264,6 +289,7 @@ class LTMTier:
                         category=category,
                         key=key,
                         content=content,
+                        raw_content=raw_content,
                         importance=importance,
                         auto_importance=auto_importance,
                         source=source,
@@ -283,7 +309,7 @@ class LTMTier:
 
             await populate_tsvector(
                 self._db, "nmem_long_term_memory", entry.id,
-                f"{key} {content[:2000]}",
+                f"{key} {(raw_content or content)[:2000]}",
             )
             results.append(entry)
 
@@ -536,17 +562,26 @@ class LTMTier:
             chars += len(line)
         return "\n".join(lines)
 
-    async def _compress(self, key: str, content: str) -> str:
-        max_chars = self._config.llm.compression_max_chars
+    async def _compress(self, key: str, content: str, max_chars: int | None = None) -> str:
+        """Compress content via LLM distillation to a `max_chars` ceiling.
+
+        The full original is preserved by the caller in raw_content, so this
+        only shapes the compact `content`. On any LLM failure it falls back to
+        a word-boundary truncation (never a mid-word chop).
+        """
+        if max_chars is None:
+            max_chars = self._config.llm.compression_max_chars
         system = (
-            f"Distill the following into a single factual statement. "
-            f"Keep names, dates, numbers, and decisions. "
-            f"Max {max_chars} characters. Output ONLY the compressed fact."
+            f"Distill the following into a concise factual statement. "
+            f"Keep names, dates, numbers, and decisions. Use only as much as "
+            f"the facts require, up to {max_chars} characters. "
+            f"Output ONLY the compressed fact."
         )
         try:
             result = await self._llm.complete(
-                system, f"{key}: {content[:1000]}",
-                max_tokens=self._config.llm.compression_max_tokens,
+                system,
+                f"{key}: {content[:self._config.llm.compression_input_max_chars]}",
+                max_tokens=self._config.llm.compression_tokens_for(max_chars),
                 temperature=0.1, timeout=10.0,
             )
             compressed = result.strip()
@@ -554,7 +589,7 @@ class LTMTier:
                 return compressed[:max_chars]
         except Exception as e:
             logger.debug("LTM compression failed: %s", e)
-        return f"{key}: {content[:max_chars]}"
+        return truncate_on_boundary(f"{key}: {content}", max_chars)
 
     @staticmethod
     def _row_to_entry(row: LTMModel) -> LTMEntry:
@@ -564,6 +599,7 @@ class LTMTier:
             category=row.category,
             key=row.key,
             content=row.content,
+            raw_content=row.raw_content,
             importance=row.importance,
             auto_importance=row.auto_importance,
             salience=row.salience,

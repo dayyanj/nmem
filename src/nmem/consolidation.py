@@ -37,7 +37,7 @@ from nmem.db.models import (
     SharedKnowledgeModel,
     CuriositySignalModel,
 )
-from nmem.search import cosine_similarity
+from nmem.search import cosine_similarity, truncate_on_boundary
 from nmem.types import ConsolidationStats
 
 
@@ -851,9 +851,20 @@ class Consolidator:
         category = _infer_category(entry.title)
         key = entry.title[:200].replace(" ", "_").lower()
         content = f"[{entry.entry_type}] {entry.content}"
+        # Carry the verbatim original into the LTM archive when the journal
+        # entry held a compressed body — otherwise the original is lost once
+        # the journal row expires. When the journal wasn't compressed, `content`
+        # already IS the full original, so raw_content stays NULL (no dup).
+        raw_content = (
+            f"[{entry.entry_type}] {entry.raw_content}"
+            if entry.raw_content else None
+        )
+        # Embed / index from the fullest available text so recall isn't limited
+        # to the summary.
+        index_text = raw_content or content
 
         emb = await asyncio.to_thread(
-            self._embedding.embed, f"{key} {content[:500]}"
+            self._embedding.embed, f"{key} {index_text[:500]}"
         )
 
         scope = getattr(entry, 'project_scope', None)
@@ -879,6 +890,7 @@ class Consolidator:
                 category=category,
                 key=key,
                 content=content,
+                raw_content=raw_content,
                 importance=entry.importance,
                 auto_importance=source_auto,
                 salience=initial_salience,
@@ -891,6 +903,7 @@ class Consolidator:
                 index_elements=["agent_id", "key", "project_scope"],
                 set_={
                     "content": insert_stmt.excluded.content,
+                    "raw_content": insert_stmt.excluded.raw_content,
                     "importance": case(
                         (
                             LTMModel.importance > insert_stmt.excluded.importance,
@@ -920,7 +933,7 @@ class Consolidator:
 
         await populate_tsvector(
             self._db, "nmem_long_term_memory", ltm_id,
-            f"{key} {content[:2000]}",
+            f"{key} {index_text[:2000]}",
         )
 
         # Compress journal entry to a stub with pointer to LTM.
@@ -937,6 +950,10 @@ class Consolidator:
             if row:
                 row.promoted_to_ltm = True
                 row.content = stub_content
+                # Full knowledge now lives in LTM (with its verbatim original in
+                # LTM.raw_content); the journal becomes a lightweight pointer, so
+                # drop its raw copy to avoid duplication.
+                row.raw_content = None
                 row.pointers = [{"type": "ltm", "id": ltm_id, "key": key}]
 
         logger.info("Promoted journal #%d (%s) to LTM for %s",
@@ -1003,7 +1020,7 @@ class Consolidator:
         # Fallback: title (which is usually the first meaningful line)
         if len(title) > 15:
             return title[:max_chars]
-        return f"{title}: {full_content[:max_chars - len(title) - 2]}"
+        return truncate_on_boundary(f"{title}: {full_content}", max_chars)
 
     async def _dedup_similar_memories(self) -> int:
         """Merge semantically duplicate LTM entries per agent.

@@ -20,6 +20,7 @@ from nmem.search import (
     populate_tsvector,
     assign_context_thread,
     cosine_similarity,
+    truncate_on_boundary,
 )
 from nmem.types import JournalEntry
 
@@ -136,9 +137,16 @@ class JournalTier:
             if dedup_result is not None:
                 return dedup_result
 
-        # Compress content to distilled fact (embed first, compress second)
-        if compress and len(content) > self._config.llm.compression_max_chars:
-            compressed = await self._compress(title, content)
+        # Compress content to a distilled fact (embed first, compress second).
+        # Importance sets the ceiling (not a target); the verbatim original is
+        # preserved in raw_content whenever compression actually shrank the
+        # body, so nothing is lost and the summary can be re-derived later.
+        ceiling = self._config.llm.compression_ceiling_for(importance)
+        raw_content: str | None = None
+        if compress and len(content) > ceiling:
+            compressed = await self._compress(title, content, ceiling)
+            if compressed != content:
+                raw_content = content
         else:
             compressed = content
 
@@ -165,6 +173,7 @@ class JournalTier:
                 entry_type=entry_type,
                 title=title[:300],
                 content=compressed,
+                raw_content=raw_content,
                 importance=importance,
                 auto_importance=auto_importance,
                 relevance_score=min(importance / 10.0, 1.0),
@@ -184,10 +193,12 @@ class JournalTier:
             entry_id = record.id
             actual_created_at = record.created_at
 
-        # Populate TSVECTOR (fire-and-forget, non-blocking)
+        # Populate TSVECTOR (fire-and-forget, non-blocking). Index the fuller
+        # text (original when compression shrank it) so keywords beyond the
+        # summary stay searchable.
         await populate_tsvector(
             self._db, "nmem_journal_entries", entry_id,
-            f"{title} {compressed[:2000]}",
+            f"{title} {(raw_content or compressed)[:2000]}",
         )
 
         # Signal consolidator for high-importance entries
@@ -201,6 +212,7 @@ class JournalTier:
             entry_type=entry_type,
             title=title[:300],
             content=compressed,
+            raw_content=raw_content,
             importance=importance,
             auto_importance=auto_importance,
             relevance_score=min(importance / 10.0, 1.0),
@@ -276,9 +288,16 @@ class JournalTier:
             if scope is ...:
                 scope = self._config.project_scope
 
-            # Compress content if requested
-            if compress and len(content) > self._config.llm.compression_max_chars:
-                content = await self._compress(title, content)
+            # Compress content if requested. Importance sets the ceiling (not a
+            # target); the verbatim original is preserved in raw_content when
+            # compression shrank the body.
+            ceiling = self._config.llm.compression_ceiling_for(importance)
+            raw_content: str | None = None
+            if compress and len(content) > ceiling:
+                compressed = await self._compress(title, content, ceiling)
+                if compressed != content:
+                    raw_content = content
+                    content = compressed
 
             # Assign context thread
             thread_id = assign_context_thread(
@@ -304,6 +323,7 @@ class JournalTier:
                     entry_type=entry_type,
                     title=title[:300],
                     content=content,
+                    raw_content=raw_content,
                     importance=importance,
                     auto_importance=auto_importance,
                     relevance_score=min(importance / 10.0, 1.0),
@@ -323,10 +343,11 @@ class JournalTier:
                 entry_id = record.id
                 actual_created_at = record.created_at
 
-            # Populate TSVECTOR (fire-and-forget, non-blocking)
+            # Populate TSVECTOR (fire-and-forget, non-blocking). Index the
+            # fuller text (original when compression shrank it).
             await populate_tsvector(
                 self._db, "nmem_journal_entries", entry_id,
-                f"{title} {content[:2000]}",
+                f"{title} {(raw_content or content)[:2000]}",
             )
 
             # Signal consolidator for high-importance entries
@@ -340,6 +361,7 @@ class JournalTier:
                 entry_type=entry_type,
                 title=title[:300],
                 content=content,
+                raw_content=raw_content,
                 importance=importance,
                 auto_importance=auto_importance,
                 relevance_score=min(importance / 10.0, 1.0),
@@ -455,7 +477,8 @@ class JournalTier:
                 # Override relevance_score with hybrid search score
                 results.append(JournalEntry(
                     id=entry.id, agent_id=entry.agent_id, entry_type=entry.entry_type,
-                    title=entry.title, content=entry.content, importance=entry.importance,
+                    title=entry.title, content=entry.content, raw_content=entry.raw_content,
+                    importance=entry.importance,
                     auto_importance=entry.auto_importance,
                     relevance_score=scores.get(eid, 0.0), access_count=entry.access_count,
                     expires_at=entry.expires_at, promoted_to_ltm=entry.promoted_to_ltm,
@@ -594,19 +617,26 @@ class JournalTier:
             logger.debug("Dedup check failed (non-fatal): %s", e)
         return None
 
-    async def _compress(self, title: str, content: str) -> str:
-        """Compress content using LLM distillation."""
-        max_chars = self._config.llm.compression_max_chars
+    async def _compress(self, title: str, content: str, max_chars: int | None = None) -> str:
+        """Compress content via LLM distillation to a `max_chars` ceiling.
+
+        The full original is preserved by the caller in raw_content, so this
+        only shapes the compact `content`. On any LLM failure it falls back to
+        a word-boundary truncation (never a mid-word chop).
+        """
+        if max_chars is None:
+            max_chars = self._config.llm.compression_max_chars
         system = (
-            f"Distill the following into a single factual statement. "
-            f"Keep names, dates, numbers, and decisions. "
-            f"Max {max_chars} characters. Output ONLY the compressed fact."
+            f"Distill the following into a concise factual statement. "
+            f"Keep names, dates, numbers, and decisions. Use only as much as "
+            f"the facts require, up to {max_chars} characters. "
+            f"Output ONLY the compressed fact."
         )
-        user = f"{title}: {content[:1000]}"
+        user = f"{title}: {content[:self._config.llm.compression_input_max_chars]}"
         try:
             result = await self._llm.complete(
                 system, user,
-                max_tokens=self._config.llm.compression_max_tokens,
+                max_tokens=self._config.llm.compression_tokens_for(max_chars),
                 temperature=0.1,
                 timeout=10.0,
             )
@@ -615,7 +645,7 @@ class JournalTier:
                 return compressed[:max_chars]
         except Exception as e:
             logger.debug("Compression failed (falling back to truncation): %s", e)
-        return f"{title}: {content[:max_chars]}"
+        return truncate_on_boundary(f"{title}: {content}", max_chars)
 
     @staticmethod
     def _row_to_entry(row: JournalEntryModel) -> JournalEntry:
@@ -625,6 +655,7 @@ class JournalTier:
             entry_type=row.entry_type,
             title=row.title,
             content=row.content,
+            raw_content=row.raw_content,
             importance=row.importance,
             auto_importance=row.auto_importance,
             relevance_score=row.relevance_score,

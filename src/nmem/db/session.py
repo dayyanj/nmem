@@ -27,7 +27,7 @@ from nmem.db.models import Base, HAS_PGVECTOR
 logger = logging.getLogger(__name__)
 
 # Current schema version. Bump when adding migrations to _migrate_schema.
-CURRENT_SCHEMA_VERSION = 6
+CURRENT_SCHEMA_VERSION = 7
 
 
 class DatabaseManager:
@@ -327,6 +327,24 @@ class DatabaseManager:
                 "CREATE INDEX IF NOT EXISTS ix_nmem_continuity_checkpoint_agent "
                 "ON nmem_continuity_checkpoint (agent_id, project_scope)",
                 "v6: index continuity_checkpoint by agent+scope",
+            )
+
+        if version < 7:
+            # Verbatim preservation: `content` holds the compact (importance-
+            # tiered) summary; `raw_content` holds the full original whenever
+            # compression shrank the body, so the source is recoverable and the
+            # summary policy is re-runnable. Nullable + non-destructive: existing
+            # rows lost their originals pre-v7 and stay NULL (unrecoverable), new
+            # writes populate it. See tiers/journal.py + tiers/ltm.py.
+            await _run(
+                "ALTER TABLE nmem_journal_entries "
+                "ADD COLUMN IF NOT EXISTS raw_content TEXT",
+                "v7: add raw_content to nmem_journal_entries",
+            )
+            await _run(
+                "ALTER TABLE nmem_long_term_memory "
+                "ADD COLUMN IF NOT EXISTS raw_content TEXT",
+                "v7: add raw_content to nmem_long_term_memory",
             )
 
         # Bump schema version in its own session

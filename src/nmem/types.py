@@ -38,6 +38,9 @@ class JournalEntry:
     entry_type: str
     title: str
     content: str
+    raw_content: str | None = None
+    """Verbatim original when compression shrank `content`; None otherwise
+    (then `content` is already the full original)."""
     importance: int = 5
     auto_importance: bool = True
     relevance_score: float = 0.5
@@ -73,6 +76,9 @@ class LTMEntry:
     category: str
     key: str
     content: str
+    raw_content: str | None = None
+    """Verbatim original when compression shrank `content`; None otherwise
+    (then `content` is already the full original)."""
     importance: int = 5
     auto_importance: bool = True
     salience: float = 1.0

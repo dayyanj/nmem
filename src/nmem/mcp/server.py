@@ -242,6 +242,7 @@ async def memory_get(
     ctx: Context,
     ids: list[int],
     tier: str = "ltm",
+    raw: bool = False,
 ) -> str:
     """Fetch full content for specific memory entries by ID (batch-capable).
 
@@ -252,6 +253,10 @@ async def memory_get(
     Args:
         ids: List of entry IDs to fetch.
         tier: Which tier the IDs belong to: journal, ltm, shared, entity, policy.
+        raw: When True, return the verbatim original (pre-compression) for
+            journal/ltm entries that were distilled at write time. When an entry
+            was not compressed, `content` already is the original and is returned
+            unchanged. Use this when the compact summary drops detail you need.
     """
     mem = _get_mem(ctx)
     from sqlalchemy import select
@@ -313,9 +318,18 @@ async def memory_get(
             header = f"#{row.id} [{getattr(row, 'scope', '')}] {getattr(row, 'key', '')}"
             meta = f"status={row.status}"
 
+        # Serve the verbatim original when the caller asked for raw and this
+        # entry preserved one; otherwise the compact content (which, for
+        # uncompressed entries, already is the original).
+        body = row.content
+        raw_body = getattr(row, "raw_content", None)
+        if raw and raw_body:
+            body = raw_body
+            meta = f"{meta}, verbatim"
+
         lines.append(f"--- {header} ---")
         lines.append(f"({meta})")
-        lines.append(row.content)
+        lines.append(body)
         lines.append("")
 
     return "\n".join(lines)

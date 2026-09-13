@@ -123,6 +123,10 @@ class JournalEntryModel(Base):
     entry_type: Mapped[str] = mapped_column(String(100))
     title: Mapped[str] = mapped_column(String(300))
     content: Mapped[str] = mapped_column(Text)
+    # Verbatim original, preserved only when compression actually shrank the
+    # body. NULL means `content` already IS the full original (no compression,
+    # or the body was under the ceiling) — see migration v7 + JournalTier.add.
+    raw_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_tsv = mapped_column(TSVType, nullable=True)
 
     # Importance and decay.
@@ -188,6 +192,10 @@ class LTMModel(Base):
     category: Mapped[str] = mapped_column(String(50))
     key: Mapped[str] = mapped_column(String(200))
     content: Mapped[str] = mapped_column(Text)
+    # Verbatim original, preserved only when compression actually shrank the
+    # body. NULL means `content` already IS the full original — see migration
+    # v7 + LTMTier.save.
+    raw_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_tsv = mapped_column(TSVType, nullable=True)
 
     # Importance and salience. See JournalEntryModel for the `auto_importance`

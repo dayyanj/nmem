@@ -50,14 +50,66 @@ class LLMConfig(BaseModel):
     base_url: str | None = None
     """Base URL override (for vLLM, Ollama, LiteLLM, etc.)."""
 
+    compression_tiers: bool = True
+    """Scale the compressed-content ceiling by the memory's importance
+    (a ceiling, not a target — the distiller uses only what the facts need,
+    up to the bound). When False, every memory uses the flat
+    `compression_max_chars` (legacy behaviour)."""
+
     compression_max_chars: int = 200
-    """Maximum characters for compressed content."""
+    """Compressed-content ceiling for low-importance memories (importance <= 3).
+    Also the flat ceiling when `compression_tiers` is disabled."""
+
+    compression_max_chars_mid: int = 500
+    """Compressed-content ceiling for mid-importance memories (importance 4-6)."""
+
+    compression_max_chars_high: int = 1000
+    """Compressed-content ceiling for high-importance memories (importance 7-8)."""
+
+    compression_max_chars_max: int = 2000
+    """Compressed-content ceiling for top-importance memories (importance 9-10)."""
+
+    compression_input_max_chars: int = 8000
+    """How many characters of the source the distiller actually reads. The full
+    original is preserved verbatim in `raw_content` regardless — this only
+    bounds what the summarizer sees, protecting the LLM context window on very
+    long inputs (was hardcoded to 1000)."""
 
     compression_max_tokens: int = 128
-    """Maximum tokens for compression LLM call."""
+    """Floor for the compression LLM call's max_tokens. The effective value
+    scales up with the char ceiling (see `compression_tokens_for`) so higher
+    tiers aren't silently clipped by the token limit."""
 
     synthesis_max_tokens: int = 1024
     """Maximum tokens for nightly synthesis LLM call."""
+
+    def compression_ceiling_for(self, importance: int | None) -> int:
+        """Return the compressed-content char ceiling for an importance score.
+
+        A ceiling, not a target: the distiller is instructed to use only as
+        many characters as the facts require, up to this bound. When
+        `compression_tiers` is disabled, always returns the flat
+        `compression_max_chars`.
+        """
+        if not self.compression_tiers:
+            return self.compression_max_chars
+        imp = importance if importance is not None else 5
+        if imp >= 9:
+            return self.compression_max_chars_max
+        if imp >= 7:
+            return self.compression_max_chars_high
+        if imp >= 4:
+            return self.compression_max_chars_mid
+        return self.compression_max_chars
+
+    def compression_tokens_for(self, max_chars: int) -> int:
+        """max_tokens for a compression call sized to its char ceiling.
+
+        ~1 token ≈ 3 chars for English prose; add headroom and never drop
+        below the configured floor, so a raised ceiling is not clipped by the
+        token limit before it reaches the char cap.
+        """
+        return max(self.compression_max_tokens, (max_chars // 3) + 16)
 
 
 class WorkingConfig(BaseModel):
