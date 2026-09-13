@@ -369,6 +369,13 @@ async def build_visual_memory(sandbox_client, *, enabled: bool | None = None, **
         log.info("[visual-memory] sandbox disabled — visual memory inert")
         return None
     kw.setdefault("readback_enabled", _env_on("NMEM_VISUAL_READBACK_ENABLED", "true"))
+    # P5: periodic consolidation (iconic→nodes→clusters, fills occipital + enables symbol grounding).
+    # Default 0 = off (heavy); a modest N runs it every Nth stored outcome on the pursuit path.
+    if "consolidate_every" not in kw:
+        try:
+            kw["consolidate_every"] = int(os.environ.get("NMEM_VISUAL_CONSOLIDATE_EVERY", "0") or 0)
+        except ValueError:
+            kw["consolidate_every"] = 0
     vm = VisualMemory(sandbox_client, **kw)
     ok = await vm.connect()
     if ok:

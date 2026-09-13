@@ -100,11 +100,15 @@ async def summarize_and_remember(mem, backend, agent_id: str, transcript, *,
                 entity_name=interlocutor_name or str(interlocutor_id), agent_id=agent_id,
                 content=summary, record_type="summary", grounding="inferred",
                 tags=["conversation"])
+            # Self-describing content ("About <name> (<type>): …") so it reads as a fact about a
+            # person REGARDLESS of how the tier renders the key — and compress=False keeps it
+            # verbatim (ltm._compress prepends the key before LLM distillation, which otherwise
+            # bleeds the raw key into the stored note). This is what a later recall turn sees.
             await mem.ltm.save(
                 agent_id=agent_id, category="person_note",
                 key=f"conversations_with_{interlocutor_id}",
-                content=f"{interlocutor_name or interlocutor_id}: {summary}",
-                importance=5, record_type="fact", grounding="inferred")
+                content=f"About {interlocutor_name or interlocutor_id} ({interlocutor_type}): {summary}",
+                importance=5, record_type="fact", grounding="inferred", compress=False)
             result["dossier"] = str(interlocutor_id)
         except Exception as e:  # noqa: BLE001
             log.warning("[session-summary] dossier write failed (non-fatal): %s", e, exc_info=True)
