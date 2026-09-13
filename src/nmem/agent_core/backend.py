@@ -52,6 +52,11 @@ class ChatResult:
 
 # ── OpenAI-compatible (vLLM, OpenAI, OpenRouter, Together, Groq, DeepSeek, …) ──
 class OpenAICompatibleBackend:
+    # A multi-round tool loop feeds prior calls back as OpenAI assistant(tool_calls)+tool
+    # messages; this backend speaks that shape natively. (Anthropic needs a different block
+    # shape — see AnthropicBackend.)
+    openai_tool_history = True
+
     def __init__(self, base_url: str, model: str, api_key: str = "", family: str = "generic",
                  timeout: float = 300.0):
         if not base_url:
@@ -170,6 +175,12 @@ class OpenAICompatibleBackend:
 
 # ── Anthropic (Claude) — different API shape, normalized to the same result ──
 class AnthropicBackend:
+    # A single chat_with_tools call works (tools are converted), but a multi-round chat tool
+    # loop feeds history back as OpenAI assistant(tool_calls)+tool messages, which _split_system
+    # drops/mis-roles. Until tool_use/tool_result translation exists, the chat tool loop falls
+    # back to a plain reply on this backend (chat_tools._supports_tool_loop).
+    openai_tool_history = False
+
     def __init__(self, model: str, api_key: str, family: str = "claude",
                  base_url: str = "https://api.anthropic.com", timeout: float = 300.0):
         if not api_key:

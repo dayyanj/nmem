@@ -279,6 +279,16 @@ def build_agent_app():
         # Selector mode only: assemble the actor registry (connect MCP/A2A + register tools) BEFORE
         # start(). A computer_use agent is a research agent — never also a selector — so skip it
         # whenever the block is present (enabled or not; a disabled sandbox → pure thinker, below).
+        # Chat autonomy gate: from the operator's autonomy config, independent of the executor
+        # mode, so a tiered deny/allow binds the always-on memory_search even for a pure-thinker
+        # or computer_use agent — not only when an actors: block is present. Guarded: _build_gate
+        # imports the OPTIONAL nmem_act package, which nmem[host] does not install; a pure-thinker
+        # install without it must still boot (chat tools are unavailable there anyway).
+        try:
+            ctx.state["gate"] = _build_gate(config.get("autonomy"))
+            ctx.runtime.gate = ctx.state["gate"]
+        except ModuleNotFoundError:
+            log.debug("[studio] autonomy gate unavailable (nmem_act not installed) — chat tools off")
         if cu_present:
             if config.get("actors"):
                 log.warning("[studio] computer_use is configured — using the direct research runner; "
@@ -288,7 +298,9 @@ def build_agent_app():
         if actors_cfg:
             from nmem.agent_core.actors import assemble_registry
             ctx.state["reg"], ctx.state["close"] = await assemble_registry(actors_cfg)
-            ctx.state["gate"] = _build_gate(config.get("autonomy"))
+            # Expose the drop-in tools to the CHAT path too (converse/converse_stream), not just
+            # the /act executor — a conversation can then call them under the same gate above.
+            ctx.runtime.tools = ctx.state["reg"]
 
     def _build_executor(ctx, bridge):
         sandbox = ctx.state.get("sandbox")

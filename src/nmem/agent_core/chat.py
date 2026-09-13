@@ -95,32 +95,13 @@ async def build_context(mem, agent_id: str, query: str, *, session_id: str | Non
         return ""
 
 
-async def converse(runtime, message: str, *, history: list[dict] | None = None,
-                   session_id: str | None = None, temperature: float = 0.4,
-                   max_tokens: int = 700, continuity: bool = True,
-                   continuity_tokens: int = 1200,
-                   metacog_arm: str | None = None,
-                   metacog_competence_override: dict | None = None,
-                   metacog_audit: dict | None = None) -> str:
-    """Hold one grounded turn: system prompt (persona) + the living continuity snapshot +
-    retrieved memory for `message` + prior `history` ([{role,content},...]) + the user turn →
-    the agent's backend → reply. After replying, advance the continuity checkpoint so the next
-    turn / a restart resumes from here.
-
-    Stateless w.r.t. conversation: the caller keeps `history` (the studio chat page does). The
-    agent's memory tiers still ground every turn, so it 'remembers' across sessions what its
-    cognition has consolidated — independent of the transient chat history.
-
-    `continuity` (default on) gates both the wake-snapshot read and the checkpoint write; set
-    it False for a pure query-grounded turn with no reorientation overhead.
-
-    `metacog_arm` / `metacog_competence_override` / `metacog_audit` are EVAL-ONLY (the RCT
-    rig, design §16.7) and default to None → this function is byte-identical to production.
-    When `metacog_arm` is set the stack (iff it has eval enabled) applies that arm's lever
-    recommendations for this turn; when `metacog_audit` (a mutable dict) is supplied it is
-    filled with the request-linked audit — assigned arm, untransformed baseline signals,
-    the applied directive/levers, and per-call backend usage — for the analysis, and kept
-    OUT of the prompt and the reply."""
+async def _assemble_grounded_system(runtime, message: str, *, session_id: str | None,
+                                    continuity: bool, continuity_tokens: int) -> tuple[str, str | None]:
+    """Build the grounded system prompt for one turn: persona floor + continuity snapshot +
+    query-retrieved memory + autonomous working-memory + graph hypotheses. Shared by
+    ``converse`` (blocking) and ``converse_stream`` (streaming) so both turns are grounded
+    identically. Returns ``(system, surfacing_turn_id)`` — the id is None unless the nmem-sym
+    surfacing ledger is on. Every enrichment past the persona floor is fail-open."""
     persona = runtime._persona
     ctx = await build_context(runtime.mem, runtime.agent_id, message, session_id=session_id)
     cont = (await continuity_block(runtime.mem, runtime.agent_id, query=message,
@@ -148,21 +129,53 @@ async def converse(runtime, message: str, *, history: list[dict] | None = None,
     # affect/feedback). Writes a participation-ledger row keyed to a per-turn id so
     # representational self-improvement can learn from chat too. Byte-identical when the
     # nmem-sym surfacing ledger is off; fail-open — surfacing never blocks a reply.
-    _surf_turn_id = None
+    surf_turn_id = None
     try:
         _bridge = getattr(runtime, "bridge", None)
         if _bridge is not None:
             from nmem_sym import config as sym_config
             if sym_config.settings.surfacing_ledger_enabled:
                 from uuid import uuid4
-                _surf_turn_id = uuid4().hex
+                surf_turn_id = uuid4().hex
                 _surf = await _bridge.augment_search(
-                    message, turn_id=_surf_turn_id, agent_id=runtime.agent_id)
+                    message, turn_id=surf_turn_id, agent_id=runtime.agent_id)
                 if _surf and _surf.strip():
                     system += ("\n\n# Graph hypotheses (speculative — weigh, don't assume)\n"
                                + _surf.strip())
     except Exception:  # noqa: BLE001 — surfacing is additive, never a blocker
         log.warning("[chat] symbol surfacing failed (non-fatal)", exc_info=True)
+    return system, surf_turn_id
+
+
+async def converse(runtime, message: str, *, history: list[dict] | None = None,
+                   session_id: str | None = None, temperature: float = 0.4,
+                   max_tokens: int = 700, continuity: bool = True,
+                   continuity_tokens: int = 1200,
+                   metacog_arm: str | None = None,
+                   metacog_competence_override: dict | None = None,
+                   metacog_audit: dict | None = None) -> str:
+    """Hold one grounded turn: system prompt (persona) + the living continuity snapshot +
+    retrieved memory for `message` + prior `history` ([{role,content},...]) + the user turn →
+    the agent's backend → reply. After replying, advance the continuity checkpoint so the next
+    turn / a restart resumes from here.
+
+    Stateless w.r.t. conversation: the caller keeps `history` (the studio chat page does). The
+    agent's memory tiers still ground every turn, so it 'remembers' across sessions what its
+    cognition has consolidated — independent of the transient chat history.
+
+    `continuity` (default on) gates both the wake-snapshot read and the checkpoint write; set
+    it False for a pure query-grounded turn with no reorientation overhead.
+
+    `metacog_arm` / `metacog_competence_override` / `metacog_audit` are EVAL-ONLY (the RCT
+    rig, design §16.7) and default to None → this function is byte-identical to production.
+    When `metacog_arm` is set the stack (iff it has eval enabled) applies that arm's lever
+    recommendations for this turn; when `metacog_audit` (a mutable dict) is supplied it is
+    filled with the request-linked audit — assigned arm, untransformed baseline signals,
+    the applied directive/levers, and per-call backend usage — for the analysis, and kept
+    OUT of the prompt and the reply."""
+    system, _surf_turn_id = await _assemble_grounded_system(
+        runtime, message, session_id=session_id, continuity=continuity,
+        continuity_tokens=continuity_tokens)
     messages = [{"role": "system", "content": system}]
     messages += list(history or [])
     messages.append({"role": "user", "content": message})
@@ -206,7 +219,32 @@ async def converse(runtime, message: str, *, history: list[dict] | None = None,
         from contextlib import nullcontext
         _viz_cm = nullcontext()
     async with _viz_cm:
-        reply = await runtime.backend.chat(messages, **kw)
+        # Tool-calling chat turn (flag-gated, default OFF → byte-identical single call).
+        # When on, the turn runs a bounded, gated loop over the agent's drop-in tools +
+        # the always-on memory_search, so it can look things up before answering (the
+        # floor's C4). Eval (metacog_audit) never combines with this — the RCT uses the
+        # plain path — but guard anyway so a tool turn never claims to have used tools it
+        # couldn't. Fail-open: any loop error falls back to the plain reply.
+        from nmem.agent_core.chat_tools import chat_tools_enabled
+        if chat_tools_enabled() and metacog_audit is None:
+            try:
+                from nmem.agent_core.chat_tools import run_chat_tools
+                reply = await run_chat_tools(runtime, messages, **kw)
+            except Exception:  # noqa: BLE001
+                log.warning("[chat] tool loop failed — falling back to plain reply", exc_info=True)
+                reply = await runtime.backend.chat(messages, **kw)
+        else:
+            reply = await runtime.backend.chat(messages, **kw)
+    await _finalize_turn(runtime, message, reply, session_id=session_id,
+                         continuity=continuity, surf_turn_id=_surf_turn_id)
+    return reply
+
+
+async def _finalize_turn(runtime, message: str, reply: str, *, session_id: str | None,
+                         continuity: bool, surf_turn_id: str | None) -> None:
+    """Advance the living state after a reply: continuity checkpoint, session working-memory
+    task, surfacing-ledger answer attribution, and conversational-obligation extraction. Every
+    step is fail-open bookkeeping. Shared by ``converse`` and ``converse_stream``."""
     if continuity:
         await record_turn_checkpoint(runtime.mem, runtime.agent_id, message, reply)
     # Working memory: record this turn's task in the session lane (read back on the next turn
@@ -220,9 +258,9 @@ async def converse(runtime, message: str, *, history: list[dict] | None = None,
             log.warning("[chat] working-memory current_task write failed (non-fatal)", exc_info=True)
     # Phase 1 — attach the produced answer to this turn's surfacing-ledger row so the
     # offline echo-back pass can attribute which surfaced items the answer relied on.
-    if _surf_turn_id:
+    if surf_turn_id:
         try:
-            await runtime.bridge.record_surfacing_answer(_surf_turn_id, reply or "")
+            await runtime.bridge.record_surfacing_answer(surf_turn_id, reply or "")
         except Exception:  # noqa: BLE001
             log.warning("[chat] record_surfacing_answer failed (non-fatal)", exc_info=True)
     # Conversational obligations: if this turn asked the agent to deliver something by a time,
@@ -234,7 +272,99 @@ async def converse(runtime, message: str, *, history: list[dict] | None = None,
         await maybe_impose_from_chat(runtime, message)
     except Exception:  # noqa: BLE001 — additive, never blocks the conversation
         log.warning("[chat] conversational-obligation extraction failed (non-fatal)", exc_info=True)
-    return reply
+
+
+async def converse_stream(runtime, message: str, *, history: list[dict] | None = None,
+                          session_id: str | None = None, temperature: float = 0.4,
+                          max_tokens: int = 700, continuity: bool = True,
+                          continuity_tokens: int = 1200):
+    """Streaming, tool-calling counterpart to ``converse`` — the interactive/voice path.
+
+    Assembles the SAME grounded system prompt as ``converse`` (via ``_assemble_grounded_system``),
+    then runs the bounded, gated chat tool loop (``chat_tools.stream_tool_loop``) and yields
+    SSE-shaped events as they occur:
+
+      * ``{"delta": str}``                     — a chunk of the spoken/typed reply
+      * ``{"progress": {"tool","phase"}}``     — a tool is being called (keep-alive so the
+                                                 client narrates the wait instead of dead air)
+      * ``{"done": True}``                     — the turn is complete
+
+    The tool loop always terminates with a reply (its final round forces a tool-less answer).
+    After streaming, it advances the continuity checkpoint + bookkeeping exactly like
+    ``converse``. Graduates the transport shape of DJ-AI's ``/api/converse`` while reusing
+    agent_core's registry + autonomy gate (not DJ-AI's bespoke tool set)."""
+    system, surf_turn_id = await _assemble_grounded_system(
+        runtime, message, session_id=session_id, continuity=continuity,
+        continuity_tokens=continuity_tokens)
+    messages = [{"role": "system", "content": system}]
+    messages += list(history or [])
+    messages.append({"role": "user", "content": message})
+
+    # Metacognitive control (Level 4) parity with converse: fetch this turn's lever
+    # recommendations (currently reasoning_effort) and forward them to EVERY backend call below —
+    # else switching a Qwen agent to the streaming transport would silently drop its requested
+    # thinking mode + token floor. {} in off/canary → unchanged calls.
+    extra, _audit = await _metacog_extra(runtime, message)
+
+    # Same default-off rollout switch as converse: with tools disabled, stream a plain grounded
+    # reply (no tool loop, no actor execution) so converse_stream can never be a back door around
+    # the flag for mutating actors the autonomy gate would otherwise permit.
+    from nmem.agent_core.chat_tools import chat_tools_enabled
+    if not chat_tools_enabled():
+        try:
+            fb = await runtime.backend.chat(messages, temperature=temperature,
+                                            max_tokens=max_tokens, **extra)
+        except Exception:  # noqa: BLE001
+            log.warning("[chat] converse_stream plain reply failed", exc_info=True)
+            fb = ""
+        if not fb:
+            fb = "Sorry — I couldn't put an answer together just now. Could you say it again?"
+        yield {"delta": fb}
+        await _finalize_turn(runtime, message, fb.strip(), session_id=session_id,
+                             continuity=continuity, surf_turn_id=surf_turn_id)
+        yield {"done": True}
+        return
+
+    parts: list[str] = []
+    answered = False                       # a real CONCLUDING answer was produced (not just a preamble)
+    try:
+        # Registry build is INSIDE the protected path: on an install without nmem_act it raises
+        # ModuleNotFoundError, which must degrade to a plain reply — not a silent empty stream.
+        from nmem.agent_core.chat_tools import build_chat_registry, stream_tool_loop
+        registry, gate = build_chat_registry(runtime)
+        async for kind, data in stream_tool_loop(runtime, messages, registry=registry, gate=gate,
+                                                 temperature=temperature, max_tokens=max_tokens,
+                                                 **extra):
+            if kind == "answer":
+                answered = True
+                parts.append(data)
+                yield {"delta": data}
+            elif kind == "delta":          # a 'let me check…' preamble — streamed, but not an answer
+                parts.append(data)
+                yield {"delta": data}
+            elif kind == "progress":
+                yield {"progress": data}
+    except Exception:  # noqa: BLE001 — a loop error must not break the stream
+        log.warning("[chat] converse_stream tool loop failed", exc_info=True)
+    # Never end a turn without a real answer: if the loop threw, or streamed only a preamble, or
+    # the forced tool-less answer came back empty, produce a reply (or an explicit apology) rather
+    # than checkpoint a preamble/empty and close on a bare {"done": true}. Keyed on `answered`,
+    # NOT on `parts` — a streamed preamble must not suppress recovery.
+    if not answered:
+        try:
+            fb = await runtime.backend.chat(messages, temperature=temperature,
+                                            max_tokens=max_tokens, **extra)
+        except Exception:  # noqa: BLE001
+            log.warning("[chat] converse_stream recovery reply failed", exc_info=True)
+            fb = ""
+        if not fb:
+            fb = "Sorry — I couldn't put an answer together just now. Could you say it again?"
+        parts.append(fb)
+        yield {"delta": fb}
+    reply = "".join(parts).strip()
+    await _finalize_turn(runtime, message, reply, session_id=session_id,
+                         continuity=continuity, surf_turn_id=surf_turn_id)
+    yield {"done": True}
 
 
 async def _metacog_extra(runtime, message: str, *, arm: str | None = None,

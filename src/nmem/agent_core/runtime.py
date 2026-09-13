@@ -128,6 +128,12 @@ class AgentRuntime:
         self.bridge = None
         self._prediction = None
         self._runner = None
+        # Chat-path tools: the host may attach its drop-in actors registry + autonomy gate
+        # here so a *conversation* (chat.converse / converse_stream) can call the same tools
+        # the /act executor uses, under the same policy. None ⇒ chat still gets the always-on
+        # built-in memory_search (see chat_tools.build_chat_registry).
+        self.tools = None
+        self.gate = None
         self._pursuit = None
         self._planned_pursuit = None          # §30.4: optional 2nd pursuit over planned goals
         self._consol_task = None
