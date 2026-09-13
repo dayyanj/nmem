@@ -237,6 +237,13 @@ def test_relational_self_rendered_as_my_world():
     assert "relational_self" in r.sections
 
 
+def test_self_role_rendered_as_my_place():
+    role = "You are oriented around spwig; deferring to the founder; in unresolved tension with pricing."
+    r = _assemble(sym=SymContinuityInputs(relational_self_role=role))
+    assert "### My place in the world" in r.content and role in r.content
+    assert "relational_role" in r.sections
+
+
 def test_budget_truncates_and_reports_dropped():
     curiosity = [_curiosity(f"open question number {i} with padding", composite_score=0.5)
                  for i in range(40)]
@@ -337,7 +344,8 @@ async def test_install_continuity_provider_wires_and_wraps():
             return {"self_model_summary": "strong at synthesis",
                     "drive_state_prose": "a contradiction is pulling attention",
                     "active_goals": ["ship the seam", "close the loop"],
-                    "relational_self_prose": "You are oriented around spwig, the founder."}
+                    "relational_self_prose": "You are oriented around spwig, the founder.",
+                    "relational_self_role": "You are oriented around spwig; deferring to the founder."}
 
     mem = FakeMem()
     assert install_continuity_provider(mem, FakeBridge()) is True
@@ -348,6 +356,7 @@ async def test_install_continuity_provider_wires_and_wraps():
     assert si.self_model_summary == "strong at synthesis"
     assert si.drive_state_prose == "a contradiction is pulling attention"
     assert si.relational_self_prose == "You are oriented around spwig, the founder."
+    assert si.relational_self_role == "You are oriented around spwig; deferring to the founder."
 
 
 def test_install_continuity_provider_noop_without_support():

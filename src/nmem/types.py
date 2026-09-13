@@ -390,6 +390,11 @@ class SymContinuityInputs:
     "oriented around X, Y, Z" — surfaced from the relational self (relationships live in
     the current situation, not a fixed block). None when the relational self is off/empty."""
 
+    relational_self_role: str | None = None
+    """The grounded self_role rollup (design §6): the agent's stable PLACE in the world
+    across all relations — "oriented around X; deferring to Y; in unresolved tension with
+    Z". Emergent from the relational-edge topology, not authored. None when off/empty."""
+
 
 @dataclass(frozen=True, slots=True)
 class OpenLoop:

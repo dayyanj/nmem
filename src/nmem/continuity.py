@@ -47,6 +47,7 @@ _SECTION_ORDER = (
     "self_model",
     "internal_state",
     "relational_self",   # "who I am to my world", situation-conditioned (sym seam)
+    "relational_role",   # "my place in the world", the §6 self_role rollup (sym seam)
     "relevant",
 )
 
@@ -465,6 +466,10 @@ def assemble_continuity(
     # 7b. Relational self — who I am to my world, situation-conditioned (sym seam).
     if sym is not None and sym.relational_self_prose:
         _emit("relational_self", "### My world", [sym.relational_self_prose.strip()])
+
+    # 7c. self_role rollup — my stable place in the world across all relations (sym seam, §6).
+    if sym is not None and sym.relational_self_role:
+        _emit("relational_role", "### My place in the world", [sym.relational_self_role.strip()])
 
     # 8. Query-relevant recall (only when a stimulus is present).
     rel_lines = []
