@@ -248,6 +248,48 @@ class VisualMemory:
             except Exception:  # noqa: BLE001
                 log.warning("[visual-memory] consolidate failed", exc_info=True)
 
+    async def _match_failed(self, agent_id, phashes) -> tuple[int, list[str]]:
+        """Match a list of screen dhashes against this agent's recent FAILED screen links (bounded
+        scan, Python-side Hamming ≤ same_screen_hamming — portable, no Postgres popcount). Returns
+        (match_count, up-to-3 distinct objective texts). The MATCH counts even when the objective is
+        empty (an empty-objective failure must not be silently suppressed). Shared by the post-pursuit
+        read-back and the in-loop seen_fail() query."""
+        if not phashes or self._sg is None:
+            return 0, []
+        rows = await self._sg.pool.fetch(
+            """SELECT phash, objective FROM screen_pursuit_links
+               WHERE agent_id = $1 AND verdict = 'f'
+               ORDER BY created_at DESC LIMIT $2""",
+            agent_id, self._readback_scan)
+        matched = 0
+        objs: list[str] = []
+        for r in rows:
+            if any(_hamming_hex(cur, r["phash"]) <= self._same_screen_hamming for cur in phashes):
+                matched += 1
+                if r["objective"] and r["objective"] not in objs and len(objs) < 3:
+                    objs.append(r["objective"])
+        return matched, objs
+
+    async def seen_fail(self, phash: str, agent_id: str | None = None) -> dict:
+        """Read-only IN-LOOP query (P6b): has this screen (dhash) appeared in a FAILED pursuit before?
+        Lets a sandbox harness ask, per step, whether the CURRENT screen is a known dead end and steer
+        the VLM away mid-pursuit — the within-session lever the post-pursuit read-back can't provide.
+        Fail-open: any error / disabled → ``{"failed_before": False}``."""
+        aid = agent_id or self._agent_id
+        if self._sg is None or not phash or not aid:
+            return {"failed_before": False}
+        try:
+            matched, objs = await self._match_failed(aid, [phash])
+        except Exception:  # noqa: BLE001
+            log.warning("[visual-memory] seen_fail query failed (non-fatal)", exc_info=True)
+            return {"failed_before": False}
+        if not matched:
+            return {"failed_before": False}
+        note = ("You have been on a screen like this during a FAILED attempt before"
+                + (f" (e.g. “{'; '.join(objs)[:160]}”)" if objs else "")
+                + " — do not repeat what failed there; try a different approach.")
+        return {"failed_before": True, "count": matched, "objectives": objs, "note": note}
+
     async def _readback(self, agent_id, gid, objective, verdict, screens, steps) -> None:
         """Phase 2 SEE→REMEMBER read-back, keyed on the perceptual dhash (discriminative for UI
         screens, unlike the coarse-colour scene embedding — see migration 004). For the screens this
@@ -262,22 +304,9 @@ class VisualMemory:
         matched = 0
         seen_objs: list[str] = []
         if screens:
-            # Bounded scan of this agent's recent FAILED screen links; Hamming-match in Python
-            # (portable — no reliance on a Postgres popcount). Runs BEFORE inserting this pursuit's
-            # own links, so it never matches itself.
-            rows = await pool.fetch(
-                """SELECT phash, objective FROM screen_pursuit_links
-                   WHERE agent_id = $1 AND verdict = 'f'
-                   ORDER BY created_at DESC LIMIT $2""",
-                agent_id, self._readback_scan)
-            for r in rows:
-                if any(_hamming_hex(cur, r["phash"]) <= self._same_screen_hamming for cur in screens):
-                    matched += 1
-                    # Collect up to 3 distinct objective texts for a legible warning — but the MATCH
-                    # itself counts even when the objective is empty (else a failure with no objective
-                    # would silently suppress the warning).
-                    if r["objective"] and r["objective"] not in seen_objs and len(seen_objs) < 3:
-                        seen_objs.append(r["objective"])
+            # Match against prior FAILED screens BEFORE inserting this pursuit's own links (so it can't
+            # match itself). Shared with the in-loop seen_fail() query — one implementation.
+            matched, seen_objs = await self._match_failed(agent_id, screens)
             prior_fail = matched > 0
             # Record this pursuit's screen links for future read-backs (one per distinct screen).
             # ALWAYS recorded (both A/B arms) + stamped with the arm active now, so the metric can
