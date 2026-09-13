@@ -1,19 +1,18 @@
-"""Tests for deep-recall / focus expansion in the session briefing (Altitude 1).
+"""Tests for deep-recall / focus expansion (Altitude 1).
 
-Focus expansion resolves the top-k most-relevant KNOWN memories to a query-
-relevant passage of their verbatim raw_content, reallocating WITHIN the Known-
-Facts budget (depth for focus, breadth traded from the tail) — never inflating
-the prompt. Off by default.
+Focus expansion lives in the SHARED renderer LTMTier.build_prompt — the path
+PromptBuilder uses, i.e. agent_core chat (Michelle) and the memory_context MCP
+tool alike. It resolves the top-k most-relevant entries to a query-relevant
+passage of their verbatim raw_content, reallocating WITHIN the section budget
+(depth for focus, breadth traded from the tail) — never inflating the section.
+Off by default.
 
 Also covers the frozen-mutation fix in extract_passages_for_results.
 """
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
-import pytest_asyncio
 
 from nmem import MemorySystem, NmemConfig
 from nmem.search import extract_passages_for_results
@@ -39,25 +38,22 @@ class _SummaryLLM:
         return None
 
 
-def _cfg(focus: bool) -> NmemConfig:
+def _cfg(focus: bool, *, max_chars: int = 100000, top_k: int = 2) -> NmemConfig:
     return NmemConfig(
         database_url=TEST_DB_URL,
         embedding={"provider": "noop", "dimensions": 384},
         llm={"provider": "noop"},
         consolidation={"enabled": False},
-        # Force KNOWN on a confirmed entry — we're testing expansion, not the
-        # recognition heuristic.
-        recognition={"known_threshold": 0.3},
         prompt={
             "focus_expansion": focus,
-            "focus_expansion_top_k": 2,
-            "focus_expansion_max_chars": 700,
+            "focus_expansion_top_k": top_k,
+            "focus_expansion_max_chars": max_chars,
         },
     )
 
 
-async def _fresh_system(focus: bool) -> MemorySystem:
-    system = MemorySystem(_cfg(focus))
+async def _fresh_system(cfg: NmemConfig) -> MemorySystem:
+    system = MemorySystem(cfg)
     await system.initialize()
     await reset_db(system)
     system.ltm._llm = _SummaryLLM()
@@ -65,9 +61,9 @@ async def _fresh_system(focus: bool) -> MemorySystem:
     return system
 
 
-async def _seed_confirmed_ltm(system: MemorySystem) -> None:
+async def _seed_ltm(system: MemorySystem, key: str = "quantum_pumpkins") -> None:
     await system.ltm.save(
-        agent_id="a", category="fact", key="quantum_pumpkins",
+        agent_id="a", category="fact", key=key,
         content=LONG_ORIGINAL, importance=8, grounding="confirmed",
     )
 
@@ -98,10 +94,9 @@ async def test_extract_passages_returns_new_instances_not_mutation():
 
 @pytest.mark.asyncio
 async def test_search_result_carries_raw_content():
-    system = await _fresh_system(focus=False)
+    system = await _fresh_system(_cfg(focus=False))
     try:
-        system.ltm._llm = _SummaryLLM()
-        await _seed_confirmed_ltm(system)
+        await _seed_ltm(system)
         results = await system.search("a", "pumpkins", top_k=10, bump_access=False)
         ltm_hits = [r for r in results if r.tier == "ltm"]
         assert ltm_hits, "expected the seeded LTM entry to be found"
@@ -113,20 +108,21 @@ async def test_search_result_carries_raw_content():
         await system.close()
 
 
-# ── focus expansion behaviour ────────────────────────────────────────────────
+# ── focus expansion behaviour (on the shared build_prompt path) ──────────────
 
 
 @pytest.mark.asyncio
 async def test_focus_expansion_injects_depth_beyond_summary():
-    system = await _fresh_system(focus=True)
+    system = await _fresh_system(_cfg(focus=True))
     try:
-        await _seed_confirmed_ltm(system)
-        result = await system.briefing("a", query="pumpkins", max_tokens=2000)
-        text = result.content if hasattr(result, "content") else str(result)
+        await _seed_ltm(system)
+        section = await system.ltm.build_prompt("a", query="pumpkins", max_chars=4000)
         # The verbatim marker (present only in raw_content, not the summary)
-        # made it into the briefing.
-        assert MARKER in text
-        assert SUMMARY not in text or MARKER in text  # depth replaced the stub
+        # made it into the LTM section.
+        assert MARKER in section
+        # And it flows through the PromptBuilder path Michelle uses.
+        injection = (await system.prompt.build(agent_id="a", query="pumpkins")).full_injection
+        assert MARKER in injection
     finally:
         await reset_db(system)
         await system.close()
@@ -134,66 +130,44 @@ async def test_focus_expansion_injects_depth_beyond_summary():
 
 @pytest.mark.asyncio
 async def test_focus_expansion_off_is_flat():
-    system = await _fresh_system(focus=False)
+    system = await _fresh_system(_cfg(focus=False))
     try:
-        await _seed_confirmed_ltm(system)
-        result = await system.briefing("a", query="pumpkins", max_tokens=2000)
-        text = result.content if hasattr(result, "content") else str(result)
+        await _seed_ltm(system)
+        section = await system.ltm.build_prompt("a", query="pumpkins", max_chars=4000)
         # Legacy behaviour: only the compact summary, never the verbatim marker.
-        assert MARKER not in text
+        assert MARKER not in section
+        assert SUMMARY in section
     finally:
         await reset_db(system)
         await system.close()
 
 
 @pytest.mark.asyncio
-async def test_focus_expansion_oversized_cap_degrades_to_clip_not_header_only():
-    """Even with a pathological max_chars >= the Known budget, a focus item that
-    can't fit must degrade to the compact clip — never leave a header-only
-    section."""
-    system = MemorySystem(NmemConfig(
-        database_url=TEST_DB_URL,
-        embedding={"provider": "noop", "dimensions": 384},
-        llm={"provider": "noop"},
-        consolidation={"enabled": False},
-        recognition={"known_threshold": 0.3},
-        prompt={"focus_expansion": True, "focus_expansion_top_k": 2,
-                "focus_expansion_max_chars": 100000},
-    ))
-    await system.initialize()
-    await reset_db(system)
-    system.ltm._llm = _SummaryLLM()
+async def test_focus_expansion_oversized_cap_degrades_to_summary_not_empty():
+    """With a pathological max_chars >= the section budget, a focus entry that
+    can't fit must degrade to the compact summary — never be dropped."""
+    system = await _fresh_system(_cfg(focus=True, max_chars=100000))
     try:
-        await _seed_confirmed_ltm(system)
-        result = await system.briefing("a", query="pumpkins", max_tokens=1000)
-        text = result.content if hasattr(result, "content") else str(result)
-        assert "### Known Facts" in text
-        # The compact summary is present (degraded), i.e. not a header-only cut.
-        known_section = text.split("### Known Facts")[-1]
-        assert SUMMARY in known_section
+        await _seed_ltm(system)
+        section = await system.ltm.build_prompt("a", query="pumpkins", max_chars=500)
+        assert "quantum_pumpkins" in section   # entry still rendered
+        assert SUMMARY in section               # degraded to summary, not empty
+        assert MARKER not in section            # deep body didn't fit
     finally:
         await reset_db(system)
         await system.close()
 
 
 @pytest.mark.asyncio
-async def test_focus_expansion_respects_known_budget():
-    """Expansion reallocates within budget_known; it must not blow the section
-    budget (no prompt inflation)."""
-    system = await _fresh_system(focus=True)
+async def test_focus_expansion_respects_section_budget():
+    """Expansion reallocates within max_chars; it must not exceed it."""
+    system = await _fresh_system(_cfg(focus=True))
     try:
-        # Several confirmed entries so the tail would fill the budget.
         for i in range(6):
-            await system.ltm.save(
-                agent_id="a", category="fact", key=f"k{i}",
-                content=LONG_ORIGINAL, importance=8, grounding="confirmed",
-            )
-        max_tokens = 2000
-        result = await system.briefing("a", query="pumpkins", max_tokens=max_tokens)
-        text = result.content if hasattr(result, "content") else str(result)
-        known_section = text.split("### Known Facts")[-1].split("###")[0]
-        budget_known = int(max_tokens * 4 * 0.30)  # normal-budget Known share
-        assert len(known_section) <= budget_known + 200  # header/label slack
+            await _seed_ltm(system, key=f"k{i}")
+        max_chars = 1500
+        section = await system.ltm.build_prompt("a", query="pumpkins", max_chars=max_chars)
+        assert len(section) <= max_chars
     finally:
         await reset_db(system)
         await system.close()

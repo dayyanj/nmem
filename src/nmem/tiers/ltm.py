@@ -545,9 +545,51 @@ class LTMTier:
         if not entries:
             return ""
 
+        # ── Focus expansion (deep-recall) ───────────────────────────────
+        # Opt-in: resolve the top-k most-relevant entries to a query-relevant
+        # passage of their verbatim raw_content, reallocating WITHIN max_chars
+        # (depth for focus, breadth traded from the tail). Never inflates the
+        # section. Keyed by index into `entries`. Requires a query. This is the
+        # shared renderer PromptBuilder uses, so it reaches in-process cognition
+        # (agent_core chat) and the memory_context MCP tool alike.
+        focus_bodies: dict[int, str] = {}
+        pc = self._config.prompt
+        if pc.focus_expansion and query:
+            top_k = max(0, pc.focus_expansion_top_k)
+            focus_cap = min(pc.focus_expansion_max_chars, max_chars)
+
+            def _expand() -> dict[int, str]:
+                import numpy as np
+                from nmem.search import extract_passage
+                out: dict[int, str] = {}
+                try:
+                    q_emb = np.array(self._embedding.embed(query))
+                except Exception:
+                    return out
+                for i, e in enumerate(entries[:top_k]):
+                    if isinstance(e, tuple):
+                        continue
+                    full = e.raw_content or e.content
+                    if not full:
+                        continue
+                    try:
+                        passage = extract_passage(full, q_emb, self._embedding)
+                    except Exception:
+                        passage = None
+                    body = (passage or full)[:focus_cap]
+                    # Only expand when it adds depth beyond the summary.
+                    if len(body) > len(e.content):
+                        out[i] = body
+                return out
+
+            try:
+                focus_bodies = await asyncio.to_thread(_expand)
+            except Exception:
+                focus_bodies = {}
+
         lines: list[str] = []
         chars = 0
-        for e in entries:
+        for i, e in enumerate(entries):
             # Defensive: handle both LTMEntry objects and raw tuples
             if isinstance(e, tuple):
                 cat = e[2] if len(e) > 2 else "?"
@@ -555,7 +597,15 @@ class LTMTier:
                 content = e[4] if len(e) > 4 else ""
                 line = f"- [{cat}] {key}: {content}"
             else:
-                line = f"- [{e.category}] {e.key}: {e.content}"
+                focus_body = focus_bodies.get(i)
+                if focus_body is not None:
+                    line = f"- [{e.category}] {e.key}: {focus_body}"
+                    # Degrade to the compact summary if the deep line doesn't
+                    # fit, rather than dropping this entry (and the tail).
+                    if chars + len(line) > max_chars:
+                        line = f"- [{e.category}] {e.key}: {e.content}"
+                else:
+                    line = f"- [{e.category}] {e.key}: {e.content}"
             if chars + len(line) > max_chars:
                 break
             lines.append(line)
