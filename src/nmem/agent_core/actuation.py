@@ -48,7 +48,18 @@ def build_experiential_sink(bridge, mem, agent_id: str):
                 utility={"task_success": 1.0 if verified else 0.0}, actual_outcome=note[:2000],
                 # A2 utility-plasticity: reward the procedures the executor recalled/used
                 # (no-op unless NMEM_SYM_UTILITY_PLASTICITY_ENABLED).
-                procedure_ids=obs.get("procedure_ids") or [])
+                procedure_ids=obs.get("procedure_ids") or [],
+                # Phase 0 post-mortem evidence: forward the outcome detail this sink used
+                # to discard (the coarse success|failure `status` above is unchanged, so
+                # existing routing is byte-identical). `outcome_status` is the executor's
+                # TRUE status; `block_kind` is the runner's governance stamp (a precondition
+                # wall carries none). Persisted to additive nullable episode columns; no
+                # consumer until Stage A. `getattr` guards a host outcome without `.status`.
+                outcome_status=getattr(getattr(outcome, "status", None), "value", "") or "",
+                error=getattr(outcome, "error", None),
+                block_kind=obs.get("block_kind"),
+                verification_reason=obs.get("verification_reason") or "",
+                attempted_strategy=proposal.action_type or "")
         except Exception:  # noqa: BLE001
             log.warning("[experiential-sink] record_action_outcome failed", exc_info=True)
 

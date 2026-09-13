@@ -54,6 +54,26 @@ async def recall_lessons(mem, graph, task_hint: str, *, tool_tag: str,
     except Exception as e:  # noqa: BLE001
         log.warning("[lessons] procedure recall failed: %s", e)
 
+    # Negative-transfer (Phase A/B): distilled lessons from ANALOGOUS past failures — "what
+    # looks like this failed before, here's why / how to recover" — so the tool-selector avoids
+    # repeating the mistake. THIS is how a reopened retry_differently goal becomes genuinely
+    # lesson-informed (the distilled recovery/preventative reaches the next attempt), and every
+    # pursuit gets negative transfer for free. Self-gating: find_analogous_failures no-ops unless
+    # NMEM_SYM_FAILURE_MEMORY; best-effort — never blocks a pursuit.
+    try:
+        if graph is not None:
+            from nmem_sym.failures import find_analogous_failures
+            emb = getattr(graph, "embedder", None) or getattr(graph, "_embedder", None)
+            fails = await find_analogous_failures(
+                graph.pool, emb, task_hint, agent_id=agent_id, limit=3) if emb is not None else []
+            for f in fails:
+                rec = f.recovery_action or f.preventative_rule
+                if f.reason_failed or rec:
+                    lines.append(f"- [AVOID-REPEAT] failed before: {f.reason_failed[:100]}"
+                                 + (f" → {rec}" if rec else ""))
+    except Exception as e:  # noqa: BLE001
+        log.warning("[lessons] failure recall failed: %s", e)
+
     if not lines:
         return "", procedure_ids
     return ("What you have learned about operating this tool — APPLY it before "
