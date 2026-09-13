@@ -34,6 +34,7 @@ double-impose — converse does not journal the raw turn, and nightly detection 
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -153,19 +154,32 @@ def _parse_deadline(value, *, now: datetime) -> datetime | None:
     return dt if dt > now else None
 
 
+# The extraction is post-reply bookkeeping that converse AWAITS before returning the
+# already-generated answer, so it must never withhold a good reply: a stalled backend (both
+# bundled backends default to a 300s HTTP timeout) would otherwise block the chat turn for
+# minutes (codex). Bound it tightly — on timeout we simply skip this turn's extraction.
+_EXTRACT_TIMEOUT_S = 12.0
+
+
 async def extract_commitment(backend, message: str, *, now: datetime,
-                             temperature: float = 0.0) -> ExtractedCommitment | None:
+                             temperature: float = 0.0,
+                             timeout: float = _EXTRACT_TIMEOUT_S) -> ExtractedCommitment | None:
     """LLM structured extraction. Returns an ExtractedCommitment (possibly is_commitment=False)
-    or None on any failure. `backend` is an agent_core chat backend (``.chat(messages)``)."""
+    or None on any failure/timeout. `backend` is an agent_core chat backend (``.chat(messages)``)."""
     if backend is None:
         return None
     user = (f"Current time (UTC): {now.isoformat()}\n"
             f"User message:\n{message.strip()}")
     try:
-        raw = await backend.chat(
-            [{"role": "system", "content": _EXTRACT_SYS},
-             {"role": "user", "content": user}],
-            temperature=temperature, max_tokens=250)
+        raw = await asyncio.wait_for(
+            backend.chat(
+                [{"role": "system", "content": _EXTRACT_SYS},
+                 {"role": "user", "content": user}],
+                temperature=temperature, max_tokens=250),
+            timeout=timeout)
+    except asyncio.TimeoutError:
+        log.warning("[chat-obl] extraction timed out after %.0fs — skipped (non-fatal)", timeout)
+        return None
     except Exception:  # noqa: BLE001 — extraction never disturbs the turn
         log.warning("[chat-obl] extraction backend call failed (non-fatal)", exc_info=True)
         return None
@@ -218,6 +232,17 @@ async def maybe_impose_from_chat(
         if not authorized:
             log.info("[chat-obl] extracted commitment from %r NOT authorized — skipped", who)
             return None
+        # Dedup vs currently-open commitments in this scope (codex): a repeated/retried
+        # "do X by Friday" must not spawn a second live obligation with its own lifecycle.
+        # Matches the nightly detector's (requester, description) key. Best-effort — a list
+        # hiccup falls through to impose rather than dropping a genuine commitment.
+        try:
+            for c in await commitments.list("open"):
+                if c.requester == who and c.description == extracted.description:
+                    log.info("[chat-obl] commitment already open (%r) — not re-imposed", who)
+                    return None
+        except Exception:  # noqa: BLE001
+            log.warning("[chat-obl] open-commitment dedup check failed (non-fatal)", exc_info=True)
         info = await commitments.impose(
             who, extracted.description, extracted.deadline,
             authority=float(authority), source="chat")

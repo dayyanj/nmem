@@ -4,8 +4,9 @@ Pure unit tests over fakes (no Postgres, no real backend): the cue pre-filter, d
 normalization, LLM-JSON extraction, the pluggable authority gate, and the flag-gated,
 fail-open orchestration that imposes a commitment from a chat turn.
 """
+import asyncio
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -89,7 +90,11 @@ def test_open_gate_authorizes_anyone():
 # ── orchestration ───────────────────────────────────────────────────────────────
 
 class _Commitments:
-    def __init__(self): self.imposed = []
+    def __init__(self, open_infos=None):
+        self.imposed = []
+        self._open = list(open_infos or [])
+    async def list(self, status="open"):
+        return self._open
     async def impose(self, requester, description, deadline, *, authority=0.5, **kw):
         self.imposed.append(dict(requester=requester, description=description,
                                  deadline=deadline, authority=authority, kw=kw))
@@ -161,3 +166,27 @@ async def test_impose_noop_without_commitments_manager(monkeypatch):
     monkeypatch.setenv("NMEM_CHAT_OBLIGATIONS_ENABLED", "1")
     rt = SimpleNamespace(backend=_Backend("{}"), mem=SimpleNamespace(commitments=None))
     assert await oe.maybe_impose_from_chat(rt, "please do X by Friday", now=NOW) is None
+
+
+@pytest.mark.asyncio
+async def test_impose_dedups_against_open_commitment(monkeypatch):
+    # A repeated deliver-by request must not spawn a second live obligation (codex).
+    monkeypatch.setenv("NMEM_CHAT_OBLIGATIONS_ENABLED", "1")
+    reply = json.dumps({"is_commitment": True, "description": "research pgvector and reply",
+                        "deadline": "2026-09-18T17:00:00Z", "confidence": 0.9})
+    existing = SimpleNamespace(requester=oe.DEFAULT_REQUESTER, description="research pgvector and reply")
+    c = _Commitments(open_infos=[existing])
+    out = await oe.maybe_impose_from_chat(
+        _runtime(_Backend(reply), c), "can you research pgvector and answer by Friday?", now=NOW)
+    assert out is None and c.imposed == []          # deduped — not re-imposed
+
+
+@pytest.mark.asyncio
+async def test_extract_commitment_times_out(monkeypatch):
+    # A stalled backend must not withhold the chat reply — extraction is bounded (codex).
+    class _Stall:
+        async def chat(self, *a, **k):
+            await asyncio.sleep(10)
+            return "{}"
+    ex = await oe.extract_commitment(_Stall(), "…", now=NOW, timeout=0.05)
+    assert ex is None
