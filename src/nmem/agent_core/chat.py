@@ -204,6 +204,15 @@ async def converse(runtime, message: str, *, history: list[dict] | None = None,
             await runtime.bridge.record_surfacing_answer(_surf_turn_id, reply or "")
         except Exception:  # noqa: BLE001
             log.warning("[chat] record_surfacing_answer failed (non-fatal)", exc_info=True)
+    # Conversational obligations: if this turn asked the agent to deliver something by a time,
+    # lift it into a commitment (→ nmem-sym ObligationLedger → self_accountable_to). Cheap
+    # cue pre-filter gates the LLM; flag-gated (NMEM_CHAT_OBLIGATIONS_ENABLED) + fail-open, so
+    # it is inert and free on ordinary chat. Bookkeeping — runs after the reply is produced.
+    try:
+        from nmem.agent_core.obligation_extraction import maybe_impose_from_chat
+        await maybe_impose_from_chat(runtime, message)
+    except Exception:  # noqa: BLE001 — additive, never blocks the conversation
+        log.warning("[chat] conversational-obligation extraction failed (non-fatal)", exc_info=True)
     return reply
 
 
