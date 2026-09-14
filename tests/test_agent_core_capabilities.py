@@ -3,6 +3,7 @@ from nmem.agent_core.capabilities import (
     CAPABILITIES,
     check_env,
     enabled_flags,
+    preset_flags,
     requires_closure,
     validate,
 )
@@ -73,3 +74,22 @@ def test_surfaced_curated_toggles_are_present_and_valid():
               "NMEM_SYM_DREAMSTATE_GAIN_BUDGET_ENABLED"):
         assert f in CAPABILITIES, f"{f} should be surfaced in the wizard catalog"
     assert "NMEM_SYM_PREDICTION_ENABLED" in requires_closure("NMEM_SYM_PREDICTION_LLM_REASONING_ENABLED")
+
+
+def test_perception_capability_declared_and_valid():
+    # H5: embodied visual memory is a first-class, wizard-selectable capability.
+    assert "NMEM_VISUAL_MEMORY_ENABLED" in CAPABILITIES
+    assert CAPABILITIES["NMEM_VISUAL_MEMORY_ENABLED"].group == "perception"
+    # read-back depends on the memory loop being on…
+    assert requires_closure("NMEM_VISUAL_READBACK_ENABLED") == {"NMEM_VISUAL_MEMORY_ENABLED"}
+    # …so read-back alone is flagged as an incomplete set.
+    issues = validate({"NMEM_VISUAL_READBACK_ENABLED"})
+    assert issues and issues[0].missing == ("NMEM_VISUAL_MEMORY_ENABLED",)
+    # the full perception set is dependency-complete.
+    assert validate({"NMEM_VISUAL_MEMORY_ENABLED", "NMEM_VISUAL_READBACK_ENABLED"}) == []
+
+
+def test_perception_preset_is_dependency_complete():
+    flags = preset_flags("perception")
+    assert {"NMEM_VISUAL_MEMORY_ENABLED", "NMEM_VISUAL_READBACK_ENABLED"} <= flags
+    assert validate(flags) == []

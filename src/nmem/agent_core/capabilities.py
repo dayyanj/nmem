@@ -54,8 +54,10 @@ def _c(flag, group, requires=(), substrate="", summary=""):
 #     analogical_completion/competition, prediction_novelty_gate, prediction_dreamstate,
 #     hypotheses_enabled, trace_persist, retention) — on by construction; the enable-only env can't
 #     express "turn this OFF", and they're not decisions a builder should make in the wizard;
-#   - sensory_context_enabled — needs an external sensory DB (sensory_db_dsn); niche, out of scope for
-#     the text-agent appliance. Set it by hand if you wire a sensory backend.
+#   - nmem-sym's sensory_context_enabled — a TEXT agent pulling ambient sensory context into its
+#     prompt; niche, out of scope for the text-agent appliance. Set it by hand if you wire that.
+# The EMBODIED perception loop (visual memory: SEE→REMEMBER over a computer-use sandbox) IS declared
+# below in the "perception" group — a first-class, wizard-selectable capability for sandbox agents.
 _CAPS = [
     # drives
     _c("NMEM_SYM_DRIVES_ENABLED", "drives",
@@ -175,6 +177,15 @@ _CAPS = [
     _c("NMEM_COMMITMENT_DETECTION__ENABLED", "meta",
        substrate="commitment-language journal entries + the nightly consolidation path",
        summary="Detect commitments in journal content and impose them as obligations."),
+    # perception — embodied visual memory (agent_core.build_visual_memory over a sandbox)
+    _c("NMEM_VISUAL_MEMORY_ENABLED", "perception",
+       substrate="a computer-use sandbox (ctx.state['sandbox']) + a sensory Postgres "
+                 "(NMEM_SENSOR_DB_DSN, pgvector) + nmem-sym-sensor[visual,inference] installed; "
+                 "SensorGraph.connect() self-applies the sensory migrations",
+       summary="SEE→REMEMBER: store sandbox keyframes as sensory memories (visual episodic memory)."),
+    _c("NMEM_VISUAL_READBACK_ENABLED", "perception", requires=["NMEM_VISUAL_MEMORY_ENABLED"],
+       substrate="accumulated screen↔pursuit-outcome links to match against",
+       summary="Warn on revisiting a screen a prior pursuit failed on (dhash read-back)."),
 ]
 
 CAPABILITIES: dict[str, Capability] = {c.flag: c for c in _CAPS}
@@ -264,6 +275,12 @@ PRESETS: dict[str, dict] = {
                   "NMEM_SYM_PREDICTION_ENABLED", "NMEM_SYM_CONSOLIDATION_ENABLED",
                   "NMEM_AUTONOMY__ENABLED", "NMEM_SYM_RECALL_DRIVE_ENABLED",
                   "NMEM_SELF_ENGINEERING__ENABLED", "NMEM_SELF_ENGINEERING__INCLUDE_IN_PROMPT"],
+    },
+    "perception": {
+        "label": "Perception (embodied)",
+        "blurb": "Visual memory over a computer-use sandbox: remember screens seen, warn on "
+                 "revisiting a screen a past pursuit failed on. Needs a sandbox + a sensory DB.",
+        "flags": ["NMEM_VISUAL_MEMORY_ENABLED", "NMEM_VISUAL_READBACK_ENABLED"],
     },
 }
 

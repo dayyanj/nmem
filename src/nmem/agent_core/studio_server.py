@@ -275,6 +275,15 @@ def build_agent_app():
             from nmem.agent_core.actors.computer_use import SandboxClient
             ctx.state["sandbox"] = SandboxClient(cu_cfg)
 
+            # Embodied visual memory (H5): generic, no per-agent wiring. build_visual_memory
+            # self-gates — returns None unless NMEM_VISUAL_MEMORY_ENABLED is on AND the sandbox is
+            # enabled AND a sensory DSN (NMEM_SENSOR_DB_DSN) + the nmem-sym-sensor lib are present;
+            # SensorGraph.connect() self-applies the sensory migrations. Fail-open: a text agent, a
+            # disabled sandbox, or a missing sensor lib just leaves visual_memory = None.
+            from nmem.agent_core import build_visual_memory
+            ctx.state["visual_memory"] = await build_visual_memory(
+                ctx.state["sandbox"], mem=ctx.mem, agent_id=persona.agent_id)
+
     async def _pre_start(ctx):
         # Selector mode only: assemble the actor registry (connect MCP/A2A + register tools) BEFORE
         # start(). A computer_use agent is a research agent — never also a selector — so skip it
@@ -349,6 +358,9 @@ def build_agent_app():
         close = ctx.state.get("close")
         if close is not None:
             await close()                              # tear down live MCP/A2A sessions
+        vm = ctx.state.get("visual_memory")
+        if vm is not None:
+            await vm.aclose()                          # close the sensor pool + save predictor
         sandbox = ctx.state.get("sandbox")
         if sandbox is not None:
             await sandbox.aclose()                     # single-owner lifecycle contract (no-op today)
@@ -360,6 +372,9 @@ def build_agent_app():
         sandbox = ctx.state.get("sandbox")
         if sandbox is not None:
             out["sandbox"] = {"enabled": sandbox.is_enabled(), "url": sandbox.cfg("url")}
+        vm = ctx.state.get("visual_memory")
+        if vm is not None:
+            out["visual_memory"] = bool(getattr(vm, "enabled", False))
         return out
 
     def _studio_routes(app, ctx):
