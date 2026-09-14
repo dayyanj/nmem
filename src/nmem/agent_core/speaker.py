@@ -22,13 +22,61 @@ chat path stays byte-identical to Phase 1.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
+
+# Per-(agent, session) resolution gate. Overlapping turns of the SAME chat session must not
+# interleave their read-modify-write of the author buffer / speaker slot: two concurrent turns
+# can lose one's accumulated text, or let a stale fusion overwrite a newer identity (codex).
+# Serialising the whole resolution per session makes it atomic within this process — the uncontended
+# (normal, non-overlapping) case pays nothing. NOTE: working.get/set use separate DB sessions, so
+# this is process-local; michelle/dj-twin run one event loop where that suffices. A future multi-
+# worker deployment sharing the DB would additionally need a compare-and-swap on the buffer row (rev
+# is the CAS token) — the in-flight staleness guard is the partial cross-process defence until then.
+#
+# The gate is USE-COUNTED rather than a lock table pruned by `locked()`: between a lock's release
+# and its next waiter running, `locked()` is briefly False though a waiter is queued, so a prune
+# `locked()` could drop a lock still in use and let two turns resolve concurrently (codex). Counting
+# live users (holders + waiters) and dropping a guard only when the count hits zero has no such race
+# and needs no size bound — the table holds at most the currently in-flight sessions.
+
+
+class _SessionGuard:
+    __slots__ = ("lock", "users")
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.users = 0
+
+
+_session_guards: dict[str, _SessionGuard] = {}
+
+
+@asynccontextmanager
+async def _session_gate(agent_id: str, session_id: str):
+    """Async context manager serialising resolution for one (agent, session). The guard is made on
+    first use and dropped when its last user (holder or waiter) leaves — race-free under a single
+    event loop (the user-count bump and the guard lookup run without an intervening await)."""
+    key = f"{agent_id}\x00{session_id}"
+    g = _session_guards.get(key)
+    if g is None:
+        g = _session_guards.setdefault(key, _SessionGuard())
+    g.users += 1
+    try:
+        async with g.lock:
+            yield
+    finally:
+        g.users -= 1
+        if g.users <= 0 and _session_guards.get(key) is g:
+            del _session_guards[key]
+
 
 # Speaker sources ordered weakest→strongest by trust. A later fusion step (design:
 # nmem-identity-chat-style, Phase 5) prefers the strongest signal when more than one fills the
@@ -80,6 +128,45 @@ def speaker_resolution_enabled() -> bool:
     ``resolve_speaker`` is a no-op that returns the caller's explicit speaker — Phase 1's explicit
     override path is unaffected either way."""
     return os.getenv("NMEM_CHAT_SPEAKER_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def text_identity_enabled() -> bool:
+    """Flag gate for the Phase-5 text_style fusion (author-vector recognition via the nmem-identity
+    ``/embed`` + ``/resolve`` sidecars). Default OFF, and additionally inert unless the endpoints
+    are configured (``NMEM_IDENTITY_TEXT_EMBED_URL`` / ``NMEM_IDENTITY_MATCHER_URL``) — so turning
+    the flag on without a running identity service still leaves the chat path on the Phase-2 local
+    resolution. Requires ``NMEM_CHAT_SPEAKER_ENABLED`` too: text fusion layers ON the speaker slot,
+    it does not replace it."""
+    val = os.getenv("NMEM_CHAT_TEXT_IDENTITY_ENABLED", "").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
+# The author signal is gathered on a CADENCE, not every turn (design open-Q §11.5 recommendation):
+# accumulate authored chat text per session and only embed+resolve once enough has built up — LUAR
+# is episodic and unreliable on one short turn, and a per-turn HTTP round-trip would tax the path.
+# Underscore-prefixed → internal bookkeeping the working-memory tier keeps OUT of the prompt and the
+# journal flush (this is raw accumulated chat text, never model-facing context).
+_TEXT_BUFFER_SLOT = "_text_identity_buffer"     # working-memory slot: the session's authored turns
+_TEXT_EPISODE_LEN = 16                           # keep the last N authored turns (matches sidecar)
+
+
+def _text_min_chars() -> int:
+    """Authored chars that must accumulate for this session before the text signal fires again."""
+    try:
+        return max(1, int(os.getenv("NMEM_CHAT_TEXT_IDENTITY_MIN_CHARS", "400") or "400"))
+    except ValueError:
+        return 400
+
+
+# How a local (Phase-2) resolution feeds fusion as a contextual PRIOR: (prior log-odds, is-strong).
+# `strong` (an authenticated principal, or a real concurrent voice session) is what lets fusion hit
+# *confident* grounding — a merely CLAIMED name or bare continuity is a prior, never corroboration.
+_SOURCE_PRIOR: dict[str, tuple[float, bool]] = {
+    "principal": (4.0, True),
+    "voice_session": (2.0, True),
+    "declared_name": (1.2, False),
+    "session_continuity": (0.5, False),
+}
 
 
 # A self-declared name in the turn: "it's Dayyan", "this is Dayyan", "I'm Dayyan", "my name is
@@ -238,6 +325,175 @@ async def _recall_speaker(runtime, session_id: str | None) -> Speaker | None:
     return None
 
 
+async def _accumulate_text(runtime, session_id: str | None, message: str, *,
+                           local_id: str | None = None) -> list[str] | None:
+    """Append this turn's text to the session's authored-turn buffer and decide whether the text
+    signal should FIRE this turn. Returns the buffered turns (an episode) when enough authored text
+    has accumulated since the last fire, else None (still accumulating). The buffer lives in working
+    memory (already a core dependency); fail-open — any hiccup returns None (no signal this turn).
+
+    Cadence, not per-turn: the char counter resets on a fire, so the next signal waits for another
+    ``_text_min_chars()`` of authored text. ``local_id`` is the currently-known speaker; when it
+    changes to a DIFFERENT known identity (Alice was speaking, Bob now introduces himself), the
+    previous author's turns are dropped so one author's writing never contaminates another's episode
+    (codex). Paste-awareness spans are not threaded through ``converse`` yet, so v0 treats the whole
+    turn as authored — the nmem-identity sidecar still applies its own sufficiency /
+    heuristic-contamination gate on what it receives."""
+    text = (message or "").strip()
+    if not session_id or not text:
+        return None
+    try:
+        mem = getattr(runtime, "mem", None)
+        if mem is None or not mem._config.working.enabled:
+            return None
+        turns: list[str] = []
+        chars = 0
+        buf_speaker: str | None = None
+        rev = 0
+        # include_internal=True: the buffer is a "_"-prefixed internal slot get() hides from every
+        # model-facing / durable consumer — the owning subsystem is the only reader.
+        for slot in await mem.working.get(session_id, runtime.agent_id, include_internal=True):
+            if slot.slot == _TEXT_BUFFER_SLOT:
+                data = json.loads(slot.content)
+                turns = [str(t) for t in (data.get("turns") or [])]
+                chars = int(data.get("chars", 0))
+                buf_speaker = data.get("speaker_id")
+                rev = int(data.get("rev", 0))
+                break
+        # A known-speaker change resets the episode — never mix two authors' text into one vector.
+        if local_id and buf_speaker and local_id != buf_speaker:
+            turns, chars = [], 0
+        turns = (turns + [text])[-_TEXT_EPISODE_LEN:]
+        chars += len(text)
+        fire = chars >= _text_min_chars()
+        # `rev` bumps on every accumulation write — a monotone session-turn revision. A fusion call
+        # captures the rev it fired at; if a later overlapping turn bumps it before the slow fusion
+        # returns, the stale response is discarded rather than clobbering newer state (codex).
+        rev += 1
+        payload = json.dumps({"turns": turns, "chars": 0 if fire else chars,
+                              "speaker_id": local_id or buf_speaker, "rev": rev})
+        await mem.working.set(session_id, runtime.agent_id, _TEXT_BUFFER_SLOT, payload, priority=1)
+        return (turns, rev) if fire else None
+    except Exception:  # noqa: BLE001 — accumulation is additive bookkeeping, never blocks the turn
+        log.warning("[chat] text accumulate failed (non-fatal)", exc_info=True)
+        return None
+
+
+async def _buffer_rev(runtime, session_id: str | None) -> int:
+    """The author buffer's current revision (0 if no buffer / unavailable). Detects whether an
+    overlapping turn advanced the session while a fusion request was in flight. Fail-open — on any
+    error returns -1 so the caller treats the response as stale and discards it (safe default)."""
+    if not session_id:
+        return 0
+    try:
+        mem = getattr(runtime, "mem", None)
+        if mem is None or not mem._config.working.enabled:
+            return 0
+        for slot in await mem.working.get(session_id, runtime.agent_id, include_internal=True):
+            if slot.slot == _TEXT_BUFFER_SLOT:
+                return int(json.loads(slot.content).get("rev", 0))
+        return 0
+    except Exception:  # noqa: BLE001
+        log.warning("[chat] buffer-rev read failed (non-fatal)", exc_info=True)
+        return -1
+
+
+async def _set_buffer_owner(runtime, session_id: str | None, owner_id: str | None) -> None:
+    """Stamp the author buffer with the RECOGNISED author id (after fusion), so the next turn's
+    change-detection is anchored to who we now believe is speaking. When fusion identifies a
+    *different* author than the buffer already held, also DROP the accumulated turns — otherwise the
+    prior author's text keeps riding along in the episode (no declared-name change fires the
+    _accumulate_text reset), contaminating later recognition and learning (codex). No-op if there is
+    no buffer / no session / it already names this owner. Fail-open — bookkeeping never blocks."""
+    if not session_id or not owner_id:
+        return
+    try:
+        mem = getattr(runtime, "mem", None)
+        if mem is None or not mem._config.working.enabled:
+            return
+        for slot in await mem.working.get(session_id, runtime.agent_id, include_internal=True):
+            if slot.slot == _TEXT_BUFFER_SLOT:
+                data = json.loads(slot.content)
+                prev = data.get("speaker_id")
+                if prev == owner_id:
+                    return                            # already anchored — no redundant write
+                data["speaker_id"] = owner_id
+                if prev is not None:                  # KNOWN author changed → start a clean episode
+                    data["turns"] = []
+                    data["chars"] = 0
+                await mem.working.set(session_id, runtime.agent_id, _TEXT_BUFFER_SLOT,
+                                      json.dumps(data), priority=1)
+                return
+    except Exception:  # noqa: BLE001 — additive bookkeeping, never blocks
+        log.warning("[chat] set-buffer-owner failed (non-fatal)", exc_info=True)
+
+
+def _local_context(local: Speaker | None) -> list[dict]:
+    """The Phase-2 local resolution as a fusion context prior (a claimed name / continuity /
+    principal toward a candidate), or empty when there is none / the source has no prior weight."""
+    if local is None:
+        return []
+    prior = _SOURCE_PRIOR.get(local.source)
+    if prior is None:
+        return []
+    log_odds, strong = prior
+    sig = {"kind": local.source, "log_odds": log_odds, "strong": strong}
+    # A canonical candidate key (cluster:<id> / person:<id>, e.g. a carried-forward fused identity)
+    # is echoed back as `candidate` so text + continuity evidence converge on the SAME identity; a
+    # human name goes as `name` for the matcher to resolve to a person (codex).
+    if local.id.startswith(("cluster:", "person:")):
+        sig["candidate"] = local.id
+    else:
+        sig["name"] = local.id
+    return [sig]
+
+
+async def _resolve_text_style(runtime, message: str, *, session_id: str | None,
+                              local: Speaker | None) -> Speaker | None:
+    """The Phase-5 text_style signal: on a cadence, embed the accumulated authored turns and fuse
+    the author vote with the local resolution (as a prior) into a calibrated identity. Returns a
+    ``text_style``/fused Speaker when the identity service grounds one, else None (fall back to
+    ``local``). Wholly fail-open and inert unless BOTH identity endpoints are configured."""
+    from . import identity_client                # lazy: importing speaker must not require httpx
+    if not identity_client.endpoints_configured():
+        return None                              # inert without both endpoints — no buffer writes
+    acc = await _accumulate_text(runtime, session_id, message,
+                                 local_id=(local.id if local else None))
+    if not acc:                                  # still accumulating, or accumulation unavailable
+        return None
+    turns, fire_rev = acc
+    emb = await identity_client.embed_documents(turns)
+    if not emb or "embedding" not in emb:            # below the sidecar's authored-length floor
+        return None
+    res = await identity_client.resolve(
+        text_embedding=emb["embedding"], text_length=emb.get("authored_chars"),
+        text_quality=emb.get("quality"), text_learn=True, session_id=session_id,
+        context=_local_context(local))
+    if not res:
+        return None
+    sp = res.get("speaker")
+    if not isinstance(sp, dict) or not str(sp.get("id") or "").strip():
+        return None                              # fusion grounded nothing (or below speculative)
+    try:
+        conf = max(0.0, min(1.0, float(sp.get("confidence", 0.0))))
+    except (TypeError, ValueError):
+        conf = 0.0
+    fused = Speaker(id=str(sp["id"]).strip(), confidence=conf,
+                    source=str(sp.get("source") or "text_style").strip() or "text_style")
+    # Staleness guard: if an overlapping turn advanced the session buffer while this (slow) fusion
+    # was in flight, its rev no longer matches — discard this response rather than overwrite the
+    # newer speaker or clear the newer author's text (codex). Optimistic check; a soft prior, so a
+    # rare residual race self-corrects on the next non-overlapping turn.
+    if await _buffer_rev(runtime, session_id) != fire_rev:
+        return None
+    # Anchor the episode to the RECOGNISED author. _accumulate_text stamped the buffer with the
+    # pre-fusion local id (often None on first sighting); once fusion names the author, record it so
+    # a later change to a DIFFERENT author triggers the reset — else an unnamed→named→other-author
+    # sequence would keep mixing text under a stale/absent owner (codex).
+    await _set_buffer_owner(runtime, session_id, fused.id)
+    return fused
+
+
 async def resolve_speaker(runtime, message: str, *, session_id: str | None = None,
                           explicit: Speaker | None = None) -> Speaker | None:
     """Resolve who is speaking this turn, strongest signal first. Called at the top of every
@@ -250,26 +506,52 @@ async def resolve_speaker(runtime, message: str, *, session_id: str | None = Non
     3. **Session continuity** — the last speaker resolved for this ``session_id``, remembered in
        nmem working memory, carried forward at a decayed confidence → ``session_continuity``.
 
-    Voice-session and text_style are deferred (Phase 3/5) and slot in between 1 and 2 by trust.
+    4. **Text_style fusion** (Phase 5, flag-gated ``NMEM_CHAT_TEXT_IDENTITY_ENABLED``) — on a
+       cadence, the accumulated authored text is embedded and fused with the above as a prior into a
+       calibrated identity via the nmem-identity sidecars. It LAYERS on the local result: a grounded
+       fusion wins, otherwise the local resolution stands. text is a weak vote (the matcher never
+       lets it authorise alone), so this only sharpens or corroborates who we thought was speaking.
+
     Flag-gated (``NMEM_CHAT_SPEAKER_ENABLED``): while OFF this returns ``explicit`` untouched with
     no working-memory writes — byte-identical to Phase 1. Wholly fail-open: on any error it returns
     ``explicit`` and the turn proceeds anonymously. Returns a ``Speaker`` or None."""
     try:
-        # Explicit override is honoured whether or not resolution is enabled (Phase 1). Only
-        # persist it for continuity when resolution is on — otherwise no one reads it back.
-        if explicit is not None:
-            if speaker_resolution_enabled():
-                await _remember_speaker(runtime, session_id, explicit)
-            return explicit
-        if not speaker_resolution_enabled():
-            return None
-        declared = _parse_declared_name(message)
-        if declared is not None:
-            await _remember_speaker(runtime, session_id, declared)
-            return declared
-        carried = await _recall_speaker(runtime, session_id)
-        if carried is not None:
-            return carried
+        # Serialise this resolution per (agent, session) so overlapping turns of the same session
+        # can't interleave their buffer / speaker read-modify-writes (codex). Uncontended (free)
+        # in the normal non-overlapping case. No session_id → nothing to serialise against.
+        gate = _session_gate(runtime.agent_id, session_id) if session_id else nullcontext()
+        async with gate:
+            # Explicit override is honoured whether or not resolution is enabled (Phase 1). An
+            # authenticated principal is never second-guessed, so text fusion does not run over it.
+            # Persist it for continuity only when resolution is on — otherwise no one reads it back.
+            if explicit is not None:
+                if speaker_resolution_enabled():
+                    await _remember_speaker(runtime, session_id, explicit)
+                return explicit
+            if not speaker_resolution_enabled():
+                return None
+            # Phase-2 local resolution: self-declared name, then session continuity.
+            declared = _parse_declared_name(message)
+            if declared is not None:
+                await _remember_speaker(runtime, session_id, declared)
+                local = declared
+            else:
+                local = await _recall_speaker(runtime, session_id)
+            # Phase-5: layer text_style fusion on top (additive; inert unless enabled+configured).
+            # A grounded fusion supersedes the local one, carried forward for continuity. Its own
+            # try/except keeps an optional-feature failure from discarding the Phase-2 `local`:
+            # is a soft add-on, never allowed to lose an already-resolved declared/continuity id.
+            if text_identity_enabled():
+                try:
+                    fused = await _resolve_text_style(
+                        runtime, message, session_id=session_id, local=local)
+                except Exception:  # noqa: BLE001 — fusion is additive; fall back to local
+                    log.warning("[chat] text_style fusion failed (non-fatal)", exc_info=True)
+                    fused = None
+                if fused is not None:
+                    await _remember_speaker(runtime, session_id, fused)
+                    return fused
+            return local
     except Exception:  # noqa: BLE001 — resolution is a soft prior; never break the turn
         log.warning("[chat] resolve_speaker failed (non-fatal)", exc_info=True)
     return explicit

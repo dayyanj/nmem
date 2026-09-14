@@ -105,8 +105,15 @@ class WorkingMemoryTier:
             context_thread_id=context_thread_id,
         )
 
-    async def get(self, session_id: str, agent_id: str) -> list[WorkingSlot]:
+    async def get(
+        self, session_id: str, agent_id: str, *, include_internal: bool = False
+    ) -> list[WorkingSlot]:
         """Get all working memory slots for a session/agent, ordered by priority.
+
+        Slots whose name starts with "_" are INTERNAL per-session bookkeeping (e.g. the text
+        author buffer) — never model-facing and never durable. They are excluded by default so no
+        consumer (prompt assembly, session-end checkpoint, briefing, journal flush) surfaces or
+        persists them; the owning subsystem reads them back with ``include_internal=True``.
 
         Returns:
             List of WorkingSlot objects, priority-ordered (1=highest first).
@@ -136,6 +143,7 @@ class WorkingMemoryTier:
                     updated_at=row.updated_at,
                 )
                 for row in rows
+                if include_internal or not row.slot.startswith("_")
             ]
 
     async def clear(
@@ -190,6 +198,7 @@ class WorkingMemoryTier:
         lines: list[str] = []
         chars = 0
         for s in slots:
+            # Internal "_"-prefixed slots are already excluded by get(); nothing to skip here.
             line = f"- [{s.slot}] {s.content}"
             if chars + len(line) > max_chars:
                 break
@@ -213,25 +222,25 @@ class WorkingMemoryTier:
         Returns:
             Number of slots flushed.
         """
+        # get() excludes internal "_"-prefixed bookkeeping (e.g. the raw author buffer) — they never
+        # enter the durable summary. But the clear MUST still run when only internal slots remain,
+        # else that transient state (raw chat text) would leak past the session boundary (codex).
         slots = await self.get(session_id, agent_id)
-        if not slots:
-            return 0
-
-        lines = [f"[{s.slot}] {s.content}" for s in slots]
-        content = "\n".join(lines)
-        title = f"Session {session_id[:8]} working memory ({len(slots)} slots)"
-
-        await journal_tier.add(
-            agent_id=agent_id,
-            entry_type="session_summary",
-            title=title,
-            content=content,
-            importance=None,
-            session_id=session_id,
-            tags=["working_memory_flush", f"session:{session_id}"],
-        )
+        if slots:
+            lines = [f"[{s.slot}] {s.content}" for s in slots]
+            content = "\n".join(lines)
+            title = f"Session {session_id[:8]} working memory ({len(slots)} slots)"
+            await journal_tier.add(
+                agent_id=agent_id,
+                entry_type="session_summary",
+                title=title,
+                content=content,
+                importance=None,
+                session_id=session_id,
+                tags=["working_memory_flush", f"session:{session_id}"],
+            )
 
         if clear_after:
-            await self.clear(session_id, agent_id)
+            await self.clear(session_id, agent_id)      # clears ALL slots, incl internal "_" ones
 
         return len(slots)
