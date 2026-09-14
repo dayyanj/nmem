@@ -286,9 +286,39 @@ async function create(){const aid=document.getElementById('aid').value.trim();co
   const hive=collectHive(); if(hive)body.hive=hive;
   t.textContent='creating '+aid+'…';t.classList.add('on');
   const res=await api('/studio/create',body);
-  if(res.ok){const dep=res.auto_enabled?.length?` (+${res.auto_enabled.length} deps)`:'';
-    flash(`✓ ${aid} created · ${res.written.length} files${dep}${res.started?' · started':''}`);}
+  if(res.ok){ waitForAgent(aid); }              // hand off to the "building your agent" interstitial
   else flash('✗ '+(res.error||'create failed'));}
+
+// ── post-Create interstitial: the container restarts into agent mode, so hold a friendly overlay
+// and poll /health until the agent is up, then land on its dashboard. No "what just happened?". ──
+function waitForAgent(aid){
+  let ov=document.getElementById('bootov');
+  if(!ov){ov=document.createElement('div');ov.id='bootov';
+    ov.style.cssText='position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center;'
+      +'background:var(--bg,#0b0d10);color:var(--ink,#e8eaed);padding:24px;text-align:center';
+    ov.innerHTML='<div style="max-width:460px">'
+      +'<div class="bootspin" style="width:38px;height:38px;margin:0 auto 18px;border:3px solid var(--line-2,#333);'
+      +'border-top-color:var(--accent,#6ea8fe);border-radius:50%;animation:bootspin 0.9s linear infinite"></div>'
+      +'<h2 style="margin:0 0 8px">Building <span style="font-family:var(--mono,monospace)">'+aid+'</span>…</h2>'
+      +'<p id="bootmsg" style="margin:0;color:var(--muted,#9aa)">Provisioning its memory and waking it up. '
+      +'The appliance restarts into your agent — this takes ~15 seconds.</p></div>';
+    const st=document.createElement('style');st.textContent='@keyframes bootspin{to{transform:rotate(360deg)}}';
+    document.head.appendChild(st);document.body.appendChild(ov);}
+  const msg=document.getElementById('bootmsg');
+  const t0=Date.now();
+  const tick=async()=>{
+    try{
+      const r=await fetch('/health',{cache:'no-store'});
+      if(r.ok){const h=await r.json(); if(h && h.agent_id){ location.href='/'; return; }}  // agent mode is up
+    }catch(e){/* container mid-restart: keep waiting */}
+    if(Date.now()-t0>25000 && msg) msg.textContent='Still waking up… (a first boot can take a little longer). '
+      +'If this lingers, check `docker compose logs studio`.';
+    if(Date.now()-t0>120000){ if(msg)msg.innerHTML='Taking longer than expected. '
+      +'Check <code>docker compose logs studio</code>, then <a href="/" style="color:var(--accent,#6ea8fe)">reload</a>.'; return; }
+    setTimeout(tick,2000);
+  };
+  setTimeout(tick,2500);   // give the SIGTERM/restart a moment before the first poll
+}
 
 // ── boot: gate on auth (if enabled), then fetch the live catalog + render ──
 async function initApp(){

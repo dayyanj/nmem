@@ -48,4 +48,11 @@ PY
 # text_style columns/index the chat-style fusion path needs).
 nmem-identity schema-apply
 
+# Seed a conservative DEFAULT text_style calibration so writing-style identity works out of the box
+# (an uncalibrated channel abstains → the feature would silently do nothing). Idempotent — it won't
+# clobber a real fit. It's a generic prior, not a benchmark fit; safe because fusion caps text_style
+# to a soft signal that can never authorize alone. Refit for accuracy with fit_calibration.
+# (Loaded at matcher startup, which is exactly next — so no reload route is needed.)
+nmem-identity seed-text-calibration || echo "[identity] warning: could not seed default text calibration (recognition will stay inert until one is fit)"
+
 exec python "$SVC/matcher_server.py"

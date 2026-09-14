@@ -326,10 +326,13 @@
         </select></label>
 
       <div id="cu_fields" hidden>
-        <label class="fld"><span class="lab">Sandbox URL <span class="keynote">(your computer-use harness endpoint)</span></span>
-          <input type="text" id="cu_url" placeholder="http://127.0.0.1:8080"></label>
+        <label class="fld"><span class="lab">Sandbox URL <span class="keynote">(the bundled sandbox — leave as-is)</span></span>
+          <input type="text" id="cu_url" placeholder="http://sandbox:8080" value="http://sandbox:8080"></label>
         <label class="fld"><span class="lab">Max steps <span class="keynote">(per research session; browser UI mechanics burn steps fast)</span></span>
           <input type="text" id="cu_steps" placeholder="40"></label>
+        <p class="sub" style="margin-top:4px">Bring the sandbox up with <code>docker compose --profile perception up</code>,
+          and give it its own vision model (<code>SANDBOX_VLM_URL</code> / <code>SANDBOX_VLM_MODEL</code>) — it's the
+          sandbox's eyes, separate from this agent's brain. The dashboard will warn if it isn't reachable.</p>
       </div>
     </section>
 
@@ -357,6 +360,9 @@
       <div class="create" style="margin-top:20px;border-top:1px solid var(--line);padding-top:18px">
         <button class="go" onclick="create()">Create agent →</button>
         <span class="note">writes <code>agent.yaml</code> + <code>capabilities.env</code> + persona, bootstraps the DB, starts the runtime.</span>
+        <p class="sub" style="margin-top:10px">This appliance runs <b>one</b> agent — Create configures it, then the container
+          restarts into it (you'll see a short “building your agent…” screen, then its dashboard). To run a different
+          agent, reset the data volume; for several at once, run several appliances.</p>
       </div>
     </section>
   </div>

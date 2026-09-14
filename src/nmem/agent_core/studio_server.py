@@ -198,6 +198,30 @@ def _env_on(name: str, default: str = "false") -> bool:
     return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
 
 
+async def _probe_identity_readiness() -> dict | None:
+    """One-shot boot probe for the writing-style (LUAR) identity sidecars, so the dashboard can tell
+    the operator plainly whether the feature is actually live. Returns None when text-identity is off
+    (nothing to say). Never raises — text-identity fails open, so this only drives a hint, never
+    behaviour. Cached at boot; brought up-to-date on the next agent restart."""
+    if not _env_on("NMEM_CHAT_TEXT_IDENTITY_ENABLED"):
+        return None
+    matcher = os.environ.get("NMEM_IDENTITY_MATCHER_URL", "").strip()
+    embed = os.environ.get("NMEM_IDENTITY_TEXT_EMBED_URL", "").strip()
+    if not (matcher and embed):
+        return {"configured": False}
+
+    async def _ok(base: str) -> bool:
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=2.0) as c:
+                r = await c.get(base.rstrip("/") + "/health")
+                return r.status_code == 200 and bool((r.json() or {}).get("ok", True))
+        except Exception:  # noqa: BLE001 — unreachable/timeout is just "not ready"
+            return False
+
+    return {"configured": True, "matcher": await _ok(matcher), "text_embed": await _ok(embed)}
+
+
 def _build_gate(cfg: dict | None):
     """Build the actor autonomy gate from the agent's ``autonomy`` config.
     ``{level: read_only|tiered|full, allow: [...], deny: [...]}``. Defaults to read_only —
@@ -335,6 +359,12 @@ def build_agent_app():
                    bridge=bridge, gate=ctx.state.get("gate"))
 
     async def _on_started(ctx):
+        # Probe the writing-style identity sidecars once, so the dashboard can say plainly whether the
+        # feature is live (fail-open means a down profile is otherwise silent). Cached for _health_extras.
+        try:
+            ctx.state["readiness_identity"] = await _probe_identity_readiness()
+        except Exception:  # noqa: BLE001 — readiness is advisory, never fatal
+            ctx.state["readiness_identity"] = None
         # Declare the sandbox to the nmem-sym capability registry as the catch-all knowledge actuator
         # so the feasibility planner can bind decomposition goals to it. Gated on goal_registry_enabled.
         # Runs whenever the client exists (present, enabled or not): a disabled client registers
@@ -376,7 +406,41 @@ def build_agent_app():
         vm = ctx.state.get("visual_memory")
         if vm is not None:
             out["visual_memory"] = bool(getattr(vm, "enabled", False))
+        out["readiness"] = _readiness(ctx)
         return out
+
+    def _readiness(ctx):
+        """Plain-English 'is this actually working?' notes for capabilities that need an optional
+        profile or extra wiring — so an enabled-but-unsatisfied capability is a visible, actionable
+        banner on the dashboard, never a silent no-op. warn = enabled but inert; info = enabled + live."""
+        items: list[dict] = []
+        ri = ctx.state.get("readiness_identity")
+        if ri is not None:                                     # writing-style identity is ON
+            if not ri.get("configured"):
+                items.append({"level": "warn", "capability": "writing-style identity",
+                              "message": "Writing-style identity is ON but its sidecars aren't configured "
+                                         "(NMEM_IDENTITY_MATCHER_URL / _TEXT_EMBED_URL)."})
+            elif not (ri.get("matcher") and ri.get("text_embed")):
+                items.append({"level": "warn", "capability": "writing-style identity",
+                              "message": "Writing-style identity is ON but the LUAR sidecars aren't "
+                                         "reachable — recognition stays off until they're up. Start them: "
+                                         "docker compose --profile identity up."})
+            else:
+                items.append({"level": "info", "capability": "writing-style identity",
+                              "message": "Writing-style identity is live (using a default calibration — "
+                                         "refit with nmem-identity fit_calibration for best accuracy)."})
+        if _env_on("NMEM_VISUAL_MEMORY_ENABLED"):              # embodied visual memory is ON
+            sandbox = ctx.state.get("sandbox")
+            if sandbox is None or not sandbox.is_enabled():
+                items.append({"level": "warn", "capability": "visual memory",
+                              "message": "Visual memory is ON but no computer-use sandbox is attached. "
+                                         "Start it: docker compose --profile perception up, and set the "
+                                         "Research sandbox to http://sandbox:8080."})
+            elif ctx.state.get("visual_memory") is None:
+                items.append({"level": "warn", "capability": "visual memory",
+                              "message": "Visual memory is ON and a sandbox is attached, but the sensory "
+                                         "store isn't available (check NMEM_SENSOR_DB_DSN / nmem-sym-sensor)."})
+        return items
 
     def _studio_routes(app, ctx):
         dashboard = agent_dashboard_html()

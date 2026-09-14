@@ -96,6 +96,13 @@
   pre.res{margin:0;padding:14px;font:12px/1.6 var(--mono);white-space:pre-wrap;word-break:break-word;max-height:44vh;overflow:auto;color:var(--ink)}
   button.go{font:700 13px/1 var(--sans);background:var(--accent);color:var(--accent-ink);border:0;border-radius:9px;padding:0 18px;cursor:pointer}
   button.go:hover{filter:brightness(1.06)} button.go:disabled{opacity:.5;cursor:default}
+  #readiness{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
+  #readiness:empty{display:none}
+  .banner{border-radius:10px;padding:10px 13px;font-size:13px;line-height:1.45;border:1px solid}
+  .banner.warn{background:color-mix(in srgb,var(--warn) 12%,transparent);border-color:var(--warn);color:var(--ink)}
+  .banner.info{background:var(--surface-2);border-color:var(--line-2);color:var(--muted)}
+  .banner b{color:var(--ink)}
+  .banner code{font-family:var(--mono);font-size:12px;background:var(--surface-2);padding:1px 5px;border-radius:5px}
   .chatlog{background:var(--surface-2);border:1px solid var(--line-2);border-radius:10px;padding:12px;
     min-height:120px;max-height:44vh;overflow:auto;display:flex;flex-direction:column;gap:10px;margin-bottom:10px}
   .msg{max-width:88%;padding:9px 12px;border-radius:12px;font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
@@ -140,6 +147,7 @@
 
 <main>
   <div>
+    <div id="readiness"></div>
     <section class="card">
       <span class="eyebrow">Agent</span>
       <h1 id="agenttitle">…</h1>
@@ -242,6 +250,16 @@ function chip(status){
   const ok=status==='healthy';
   c.className='chip '+(ok?'ok':'warn'); t.textContent=ok?'healthy':(status||'unreachable');
 }
+// Readiness banners: turn an enabled-but-inert capability into a visible, actionable note. Server
+// text is trusted (it's ours); we only convert `docker …`/env tokens to <code> for legibility.
+function renderReadiness(items){
+  const host=document.getElementById('readiness'); if(!host)return;
+  if(!items||!items.length){host.innerHTML='';return;}
+  const esc=s=>s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  const fmt=s=>esc(s).replace(/(docker compose[^.]*|https?:\/\/[^\s.]+|NMEM_[A-Z_]+)/g,'<code>$1</code>');
+  host.innerHTML=items.map(it=>`<div class="banner ${it.level==='warn'?'warn':'info'}">`
+    +`${it.level==='warn'?'⚠ ':'✓ '}${fmt(it.message)}</div>`).join('');
+}
 function stateEl(label,on,valOn,valOff){
   return `<div class="state ${on?'on':'off'}"><span class="sw"></span><span class="lbl">${label}</span>`+
          `<span class="val">${on?(valOn||'on'):(valOff||'off')}</span></div>`;
@@ -250,6 +268,7 @@ async function refresh(){
   let h;
   try{ h=await getJSON('/health'); }catch(e){ chip('unreachable'); return; }
   chip(h.status);
+  renderReadiness(h.readiness);
   const id=h.agent_id||'agent';
   document.getElementById('agentname').textContent='· '+id;
   document.getElementById('agenttitle').textContent=id;
