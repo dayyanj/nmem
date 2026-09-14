@@ -17,21 +17,27 @@ class MockBackend:
 
     def __init__(self):
         self.requestors: dict[str, int] = {}
+        self.authority: dict[int, float] = {}           # rid -> latest standing (like the ledger)
         self._next_req = 1
         self._next_obl = 1
         self.calls: list = []
 
     async def register_requestor(self, name, authority=0.5):
-        self.calls.append(("register_requestor", name))
-        if name in self.requestors:                     # dedup by name
-            return SimpleNamespace(id=self.requestors[name])
+        self.calls.append(("register_requestor", name, authority))
+        if name in self.requestors:                     # dedup by name; REFRESH standing in place
+            rid = self.requestors[name]
+            self.authority[rid] = authority
+            return SimpleNamespace(id=rid)
         rid = self._next_req
         self._next_req += 1
         self.requestors[name] = rid
+        self.authority[rid] = authority
         return SimpleNamespace(id=rid)
 
     async def impose_obligation(self, requester_id, description, deadline, importance=1.0):
-        self.calls.append(("impose_obligation", requester_id, description))
+        # Snapshot the requestor's CURRENT authority, as the real ledger's authority_weight does.
+        self.calls.append(("impose_obligation", requester_id, description,
+                           self.authority.get(requester_id)))
         oid = self._next_obl
         self._next_obl += 1
         return SimpleNamespace(id=oid)
@@ -107,13 +113,29 @@ async def test_flush_pending_mirrors_on_backend_attach(mem):
 
 
 @pytest.mark.asyncio
-async def test_requester_is_registered_once(mem):
+async def test_requester_registration_refreshes_standing(mem):
+    # Phase 6-B contract: the requester is re-registered on every impose so its STANDING
+    # authority stays current (deference re-grounds over time), but it dedups to ONE requestor
+    # id (no duplicate track record).
     backend = MockBackend()
     mem.register_cognitive_backend(backend)
     await mem.commitments.impose("founder", "a")
     await mem.commitments.impose("founder", "b")
     regs = [c for c in backend.calls if c[0] == "register_requestor"]
-    assert len(regs) == 1                                     # cached name → id
+    assert len(regs) == 2                                     # re-registered each impose
+    assert len(backend.requestors) == 1                       # …but only ONE requestor exists
+
+
+@pytest.mark.asyncio
+async def test_changing_authority_propagates_to_next_obligation(mem):
+    # A requester first bound at low authority, then higher: the LATER obligation snapshots the
+    # updated standing (the behaviour Phase 6-B's deference gate depends on).
+    backend = MockBackend()
+    mem.register_cognitive_backend(backend)
+    await mem.commitments.impose("dayyan", "early", authority=0.5)
+    await mem.commitments.impose("dayyan", "late", authority=0.875)
+    imposes = [c for c in backend.calls if c[0] == "impose_obligation"]
+    assert [c[3] for c in imposes] == [0.5, 0.875]            # each snapshots the current standing
 
 
 @pytest.mark.asyncio

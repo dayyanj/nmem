@@ -35,8 +35,10 @@ double-impose — converse does not journal the raw turn, and nightly detection 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -100,9 +102,11 @@ class ExtractedCommitment:
 
 
 class AuthorityGate(Protocol):
-    """WHO may bind the agent. Returns (authorized, authority_weight). The weight feeds the
-    obligation's authority (pressure/importance) downstream. A pluggable seam: v1 is open."""
-    def __call__(self, requester: str, description: str, runtime) -> tuple[bool, float]: ...
+    """WHO may bind the agent. Returns (authorized, authority_weight), or a coroutine of the
+    same (an async gate that reads a store — e.g. `deference_gate` — is awaited by the caller).
+    The weight feeds the obligation's `authority` (the requester's standing trust) downstream.
+    A pluggable seam: v1 is open; Phase 6-B grades the weight by learned deference."""
+    def __call__(self, requester: str, description: str, runtime): ...
 
 
 def open_gate(requester: str, description: str, runtime) -> tuple[bool, float]:
@@ -110,6 +114,101 @@ def open_gate(requester: str, description: str, runtime) -> tuple[bool, float]:
     with a modest default authority. Replace via the `gate` param to tighten later (e.g.
     authorize only interlocutors the agent already `self_defers_to`, once identity is known)."""
     return True, 0.5
+
+
+# ─── Phase 6-B: relationship-weighted authority ──────────────────────────────
+# The gate seam above anticipated this: grade the obligation's `authority` by how much the
+# agent already `self_defers_to` the resolved requester (learned in nmem-sym from the host's
+# approval/correction path). An ask from a strongly-deferred-to authority binds harder; a
+# stranger's binds weakly. GRADED, NEVER a binary reject in the core — `authorized` stays True
+# always; the host policy tier owns any hard "won't do this for them" (design §6 overtrust
+# guardrail, non-negotiable). Deference lifts ONLY `authority` (standing trust); per-turn
+# identity confidence stays on `importance` (Phase 1). Flag-gated OFF; a cold graph (no grounded
+# deference yet) with the default BASE≈0.5 is behaviourally identical to `open_gate`.
+
+
+# The deference read runs inside the post-reply obligation bookkeeping that converse AWAITS
+# before returning; bound it tightly so a stalled query never withholds a ready reply (mirrors
+# _EXTRACT_TIMEOUT_S). On expiry the gate degrades to the stranger base.
+_DEFERENCE_TIMEOUT_S = 2.0
+
+
+def deference_authority_enabled() -> bool:
+    """Phase 6-B flag. Default OFF (graduation rule). When off, `maybe_impose_from_chat` uses
+    `open_gate` and behaviour is byte-identical to Phase 5."""
+    return os.getenv("NMEM_CHAT_DEFERENCE_AUTHORITY_ENABLED", "").strip().lower() \
+        in ("1", "true", "yes", "on")
+
+
+def _env_float(name: str, default: float) -> float:
+    """A finite float from env, else the default (a malformed/non-finite value is ignored)."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return v if math.isfinite(v) else default
+
+
+def _deference_base() -> float:
+    """Stranger/ungrounded authority — the floor everyone binds at. Default 0.5 so a flag-ON
+    cold graph == today's flat `open_gate`."""
+    return _env_float("NMEM_CHAT_DEFERENCE_BASE", 0.5)
+
+
+def _deference_span() -> float:
+    """How far a maximally-deferred-to, warm authority climbs above BASE. Default 0.5 → up to
+    ~1.0 total for the strongest grounded deference."""
+    return _env_float("NMEM_CHAT_DEFERENCE_SPAN", 0.5)
+
+
+def _candidate_refs(who: str) -> list[str]:
+    """The nmem-sym counterpart refs that could carry deference toward this requester. Deference
+    is produced under `authority:{id}` (the approval producer), so a bare resolved id maps to
+    that ref. Phase 6-A extends this with person-aliases so voice/face/text converge; Phase 6-B
+    reads the single authority ref."""
+    who = (who or "").strip()
+    return [f"authority:{who}"] if who else []
+
+
+async def deference_gate(requester: str, description: str, runtime) -> tuple[bool, float]:
+    """Phase 6-B graded gate. `authorized` is ALWAYS True (never a binary reject in the core).
+    `authority = BASE + SPAN·(strength · max(0, valence))` from the strongest GROUNDED
+    self_defers_to edge toward `requester`, clamped to [0,1]:
+      - stranger / ungrounded / nmem-sym absent / read error → BASE (fail-open to today's flat);
+      - a FRAUGHT bond (negative valence) lifts NOTHING (max(0, valence)) — real deference
+        evidence, but you don't grant standing to a judgement you keep having to block."""
+    base = _deference_base()
+    try:
+        graph = getattr(runtime, "graph", None)
+        pool = getattr(graph, "pool", None)
+        if pool is None:                    # no symbol graph (thin agent) → stranger default
+            return True, base
+        bridge = getattr(runtime, "bridge", None)
+        if bridge is not None and hasattr(bridge, "effective_owner"):
+            owner = bridge.effective_owner()
+        else:                               # bridge not wired — fall back to the isolated owner key
+            from nmem_sym import config as _sym_cfg
+            owner = getattr(_sym_cfg.settings, "recall_agent_id", "") or ""
+        from nmem_sym.relational_surface import deference_for
+        # Bound the lookup: this gate is awaited by _finalize_turn BEFORE converse returns the
+        # already-generated reply, so a stalled query / exhausted pool must not withhold it —
+        # on timeout, degrade to the stranger base (same discipline as extract_commitment).
+        d = await asyncio.wait_for(
+            deference_for(pool, owner_agent=owner, counterpart_refs=_candidate_refs(requester)),
+            timeout=_DEFERENCE_TIMEOUT_S)
+        if not d.grounded:
+            return True, base
+        lift = _deference_span() * (d.strength * max(0.0, d.valence))
+        authority = base + lift
+        if not math.isfinite(authority):
+            return True, base
+        return True, max(0.0, min(1.0, authority))
+    except Exception:  # noqa: BLE001 — the gate must never fail the turn; degrade to stranger
+        log.warning("[chat-obl] deference_gate failed (non-fatal) — stranger auth", exc_info=True)
+        return True, base
 
 
 _EXTRACT_SYS = (
@@ -210,7 +309,7 @@ async def maybe_impose_from_chat(
     speaker: Speaker | None = None,
     requester: str | None = None,
     now: datetime | None = None,
-    gate: AuthorityGate = open_gate,
+    gate: AuthorityGate | None = None,
     min_confidence: float = 0.6,
 ):
     """Orchestrate chat → obligation for one user turn. Flag-gated, fail-open. Returns the
@@ -245,7 +344,15 @@ async def maybe_impose_from_chat(
         if extracted.deadline is None or extracted.confidence < min_confidence:
             return None                        # obligations need a real future deadline
         who = (speaker.id if speaker is not None else None) or requester or DEFAULT_REQUESTER
-        authorized, authority = gate(who, extracted.description, runtime)
+        # Gate selection: an explicit gate wins (callers/tests); else the Phase 6-B
+        # deference gate when its flag is on, otherwise the open v1 gate. A gate may be sync
+        # (open_gate) or async (deference_gate reads nmem-sym) — await the latter.
+        active_gate = gate if gate is not None else (
+            deference_gate if deference_authority_enabled() else open_gate)
+        gate_result = active_gate(who, extracted.description, runtime)
+        if inspect.isawaitable(gate_result):
+            gate_result = await gate_result
+        authorized, authority = gate_result
         if not authorized:
             log.info("[chat-obl] extracted commitment from %r NOT authorized — skipped", who)
             return None

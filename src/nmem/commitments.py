@@ -187,11 +187,27 @@ class CommitmentManager:
         row_id = None
         new_status = _TERMINAL.get(kind)
         async with self._db.session() as session:
-            row = (await session.execute(
-                select(CommitmentModel).where(
-                    CommitmentModel.sym_obligation_id == sym_obligation_id))
-            ).scalar_one_or_none()
-            if row is not None:
+            # sym_obligation_id is indexed but NOT unique: a backend that reuses
+            # obligation ids can leave several commitments pointing at the same
+            # id (e.g. a ledger that started fresh at id 1 on each restart before
+            # obligation persistence was enabled). Don't use scalar_one_or_none
+            # here — it raises MultipleResultsFound on that legacy fan-out. Take
+            # the most-recent match, which is the one the live obligation now
+            # represents (impose ids increase, and the newest is what the backend
+            # last persisted for this id).
+            rows = (await session.execute(
+                select(CommitmentModel)
+                .where(CommitmentModel.sym_obligation_id == sym_obligation_id)
+                .order_by(CommitmentModel.id.desc()))).scalars().all()
+            if len(rows) > 1:
+                logger.warning(
+                    "record_event(%s): %d commitments share sym_obligation_id=%s "
+                    "(backend id reuse) — applying to newest (id=%d); older rows "
+                    "%s are orphaned and left untouched",
+                    kind, len(rows), sym_obligation_id, rows[0].id,
+                    [r.id for r in rows[1:]])
+            if rows:
+                row = rows[0]
                 row_id = row.id
                 if new_status is not None:
                     row.status = new_status
@@ -240,12 +256,19 @@ class CommitmentManager:
             if row[1] != "open":
                 return   # resolved before we could mirror — nothing to forward
             try:
-                req_id = self._requester_ids.get(info.requester)
-                if req_id is None:
-                    req = await self._backend.register_requestor(info.requester, info.authority)
-                    req_id = getattr(req, "id", req)
-                    if req_id is not None:
-                        self._requester_ids[info.requester] = req_id
+                # Always (re-)register: authority is the requester's STANDING weight and can
+                # change as the agent's learned deference re-grounds (Phase 6-B). register_requestor
+                # dedups by name and updates the standing in place, so the impose below snapshots
+                # the CURRENT authority — a requester first seen at 0.5 whose deference later lifts
+                # to 0.875 binds subsequent obligations at 0.875 (and a declining one relaxes).
+                # Idempotent when unchanged (the flat 0.5 → 0.5 no-op with Phase-6 flag off). The
+                # id is still cached to avoid re-resolving it on failure.
+                req = await self._backend.register_requestor(info.requester, info.authority)
+                req_id = getattr(req, "id", req)
+                if req_id is not None:
+                    self._requester_ids[info.requester] = req_id
+                else:
+                    req_id = self._requester_ids.get(info.requester)
                 obl = await self._backend.impose_obligation(
                     req_id, info.description, info.deadline, importance=info.importance)
                 sym_id = getattr(obl, "id", obl)
