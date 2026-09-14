@@ -175,7 +175,7 @@ def create_agent_app(
             if ctx.runtime is None:
                 return {"ok": False, "error": "runtime not ready"}
             try:
-                from nmem.agent_core.obligation_extraction import Speaker
+                from nmem.agent_core.speaker import Speaker
                 speaker = Speaker.from_dict((req or {}).get("speaker"))
                 reply = await ctx.runtime.converse(
                     msg, history=(req or {}).get("history") or [], speaker=speaker)

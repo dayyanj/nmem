@@ -43,6 +43,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Awaitable, Callable, Protocol
 
+# The Speaker value object now lives in agent_core.speaker (its home once speaker RESOLUTION —
+# not just attribution — became a first-class per-turn concern, Phase 2). Re-exported here so
+# existing ``obligation_extraction.Speaker`` callers and tests keep working unchanged.
+from nmem.agent_core.speaker import SPEAKER_SOURCES, Speaker  # noqa: F401
+
 log = logging.getLogger(__name__)
 
 # v1 requester when no interlocutor identity is threaded through the chat turn. The chat path
@@ -52,47 +57,6 @@ log = logging.getLogger(__name__)
 # collapses to per-person accountability with no change here.
 DEFAULT_REQUESTER = "interlocutor"
 
-# Speaker sources ordered weakest→strongest by trust. A later fusion step (design:
-# nmem-identity-chat-style, Phase 5) prefers the strongest signal when more than one fills the
-# slot for a turn. Plain strings (not an Enum) so a host may pass any label; an unknown label
-# is treated as weakest.
-SPEAKER_SOURCES = (
-    "unknown", "text_style", "session_continuity", "voice_session", "declared_name", "principal",
-)
-
-
-@dataclass(frozen=True)
-class Speaker:
-    """A soft, optional identity for the interlocutor of a chat turn (design note
-    ``nmem-identity-chat-style-modality``). ``id`` is the stable person key used as the
-    obligation ``requester``; ``confidence`` (0..1) is how sure we are it is really them;
-    ``source`` records which signal filled the slot (see ``SPEAKER_SOURCES``).
-
-    Phase 1 uses ``id`` (attribution) and ``confidence`` (authority modulation) only. A ``None``
-    Speaker is the pre-identity default and keeps the chat path byte-identical to before —
-    identity is *soft*: it may modulate an obligation's pressure but never authorizes anything.
-    """
-    id: str
-    confidence: float = 0.0
-    source: str = "unknown"
-
-    @classmethod
-    def from_dict(cls, d: dict | None) -> Speaker | None:
-        """Build from a chat-request payload ``{id, confidence?, source?}``. A missing/blank
-        ``id`` (or a non-dict) → ``None`` (no speaker), so a malformed or absent field degrades
-        cleanly to the anonymous default rather than raising on the request path."""
-        if not isinstance(d, dict):
-            return None
-        sid = str(d.get("id") or "").strip()
-        if not sid:
-            return None
-        try:
-            conf = float(d.get("confidence", 0.0))
-        except (TypeError, ValueError):
-            conf = 0.0
-        conf = max(0.0, min(1.0, conf))
-        src = str(d.get("source") or "unknown").strip() or "unknown"
-        return cls(id=sid, confidence=conf, source=src)
 
 # Cheap pre-filter: a request cue AND a deadline cue in the same turn. Deliberately broad
 # (recall over precision — the LLM is the real decision) but not so broad it fires on every

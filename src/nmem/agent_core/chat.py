@@ -35,8 +35,8 @@ import hashlib as _hashlib
 import logging
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:  # annotation only — avoids importing the obligation path at module load
-    from nmem.agent_core.obligation_extraction import Speaker
+if TYPE_CHECKING:  # annotation only — keeps module load light
+    from nmem.agent_core.speaker import Speaker
 
 # The continuity read/write helpers are shared across all turn-taking seams (chat, peer,
 # comms) — re-exported here so existing ``chat.continuity_block`` / ``chat.record_turn_checkpoint``
@@ -183,6 +183,11 @@ async def converse(runtime, message: str, *, history: list[dict] | None = None,
     filled with the request-linked audit — assigned arm, untransformed baseline signals,
     the applied directive/levers, and per-call backend usage — for the analysis, and kept
     OUT of the prompt and the reply."""
+    # Resolve who is asking (Phase 2): explicit `speaker=` wins, else a name self-declared in the
+    # turn, else this session's carried-over speaker. Flag-gated + fail-open — returns `speaker`
+    # unchanged when off, so this is byte-identical to Phase 1 unless resolution is enabled.
+    from nmem.agent_core.speaker import resolve_speaker
+    speaker = await resolve_speaker(runtime, message, session_id=session_id, explicit=speaker)
     system, _surf_turn_id = await _assemble_grounded_system(
         runtime, message, session_id=session_id, continuity=continuity,
         continuity_tokens=continuity_tokens)
@@ -305,6 +310,10 @@ async def converse_stream(runtime, message: str, *, history: list[dict] | None =
     After streaming, it advances the continuity checkpoint + bookkeeping exactly like
     ``converse``. Graduates the transport shape of DJ-AI's ``/api/converse`` while reusing
     agent_core's registry + autonomy gate (not DJ-AI's bespoke tool set)."""
+    # Resolve the speaker once at the top so every _finalize_turn path below attributes to the
+    # same interlocutor (Phase 2). Flag-gated + fail-open — no-op returning `speaker` when off.
+    from nmem.agent_core.speaker import resolve_speaker
+    speaker = await resolve_speaker(runtime, message, session_id=session_id, explicit=speaker)
     system, surf_turn_id = await _assemble_grounded_system(
         runtime, message, session_id=session_id, continuity=continuity,
         continuity_tokens=continuity_tokens)
