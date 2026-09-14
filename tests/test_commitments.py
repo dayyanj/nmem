@@ -185,3 +185,41 @@ async def test_reverse_channel_breach_updates_record(mem):
     await mem.record_obligation_event("breached", c.sym_obligation_id, {"foo": 1})
     assert await _count(mem, "breached") == 1
     assert events and events[0]["id"] == c.id
+
+
+@pytest.mark.asyncio
+async def test_record_event_survives_reused_sym_obligation_id(mem):
+    """Regression: a backend that reuses obligation ids (e.g. a ledger that
+    restarted at id 1 before persistence was enabled) leaves several
+    commitments pointing at the same sym_obligation_id. record_event must NOT
+    raise MultipleResultsFound — it applies to the newest and leaves the
+    orphaned older rows open (they belong to obligations the ledger no longer
+    tracks)."""
+    from sqlalchemy import text
+
+    backend = MockBackend()
+    mem.register_cognitive_backend(backend)
+    events = []
+
+    async def _rec(d):
+        events.append(d)
+
+    mem.on("commitment.breached")(_rec)
+
+    older = await mem.commitments.impose("r", "stale work")
+    newer = await mem.commitments.impose("r", "current work")
+    # Force the collision the old ledger produced: both share sym_obligation_id.
+    async with mem._db.session() as session:
+        await session.execute(
+            text("UPDATE nmem_commitments SET sym_obligation_id = 1 "
+                 "WHERE id IN (:a, :b)"), {"a": older.id, "b": newer.id})
+
+    # The live obligation #1 breaches — must not blow up on the duplicate rows.
+    await mem.record_obligation_event("breached", 1, {"foo": 1})
+
+    # Only the newest matching commitment is resolved; the orphan stays open.
+    assert await _count(mem, "breached") == 1
+    assert await _count(mem, "open") == 1
+    (still_open,) = await mem.commitments.list("open")
+    assert still_open.id == older.id
+    assert events and events[0]["id"] == newer.id
