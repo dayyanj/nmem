@@ -337,19 +337,22 @@ class PromptConfig(BaseModel):
     """Proportional weights for token budget distribution across sections.
     Weights are normalized at runtime."""
 
-    focus_expansion: bool = False
-    """Deep-recall / focus expansion. When True, the briefing spends its Known-
-    Facts budget non-uniformly: the top few most-relevant KNOWN memories are
-    resolved to a query-relevant passage of their verbatim `raw_content` (deep),
-    while the rest stay one-line stubs (breadth). Reallocation is WITHIN the
-    existing Known budget — it never inflates the prompt. Off by default
-    (byte-identical legacy briefing); flip on to A/B-eval it. Requires a query."""
+    focus_expansion: bool = True
+    """Deep-recall / focus expansion. When True, query-driven LTM recall
+    (`LTMTier.build_prompt`, used by `PromptBuilder` for in-process cognition
+    and the `memory_context` MCP tool) resolves the top-k most-relevant entries
+    to a query-relevant passage of their verbatim `raw_content`, reallocating
+    WITHIN the section budget — depth for the focus items, breadth traded from
+    the tail. It never inflates the prompt, degrades to the compact summary if a
+    deep line won't fit, and is a no-op when nothing richer than the stored
+    summary exists (so it's safe when `raw_content` is absent). On by default;
+    set False to restore the flat renderer. Requires a query."""
 
     focus_expansion_top_k: int = 2
-    """How many top-ranked KNOWN memories get deep passage expansion."""
+    """How many top relevance-ranked LTM entries get deep passage expansion."""
 
     focus_expansion_max_chars: int = 800
-    """Per-item char ceiling for an expanded focus memory's passage."""
+    """Per-item char ceiling for an expanded focus entry's passage."""
 
 
 class ImportanceConfig(BaseModel):

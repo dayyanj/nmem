@@ -68,6 +68,15 @@ async def _seed_ltm(system: MemorySystem, key: str = "quantum_pumpkins") -> None
     )
 
 
+# ── default ──────────────────────────────────────────────────────────────────
+
+
+def test_focus_expansion_on_by_default():
+    """Focus expansion ships ON as of the default flip; guards against silent
+    revert. (Set NMEM_PROMPT__FOCUS_EXPANSION=false to opt out.)"""
+    assert NmemConfig().prompt.focus_expansion is True
+
+
 # ── frozen-mutation fix ──────────────────────────────────────────────────────
 
 
