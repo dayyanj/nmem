@@ -252,8 +252,9 @@ _CAPS = [
        summary="Recognise who's speaking: resolve a self-declared name and carry the interlocutor "
                "across the session (per-person accountability)."),
     _c("NMEM_CHAT_TEXT_IDENTITY_ENABLED", "chat", requires=["NMEM_CHAT_SPEAKER_ENABLED"],
-       substrate="the LUAR identity sidecars — NMEM_IDENTITY_TEXT_EMBED_URL + NMEM_IDENTITY_MATCHER_URL "
-                 "(bundled in the appliance's identity profile)",
+       substrate="the LUAR identity sidecars (appliance `identity` profile) AND a FITTED text_style "
+                 "calibration — an uncalibrated channel abstains, so recognition stays inert until you "
+                 "fit one (nmem-identity fit_calibration over a labeled sample)",
        summary="Writing-style (LUAR) fusion: recognise a returning person by how they write, not just "
                "by a declared name."),
     _c("NMEM_CHAT_PERSON_ALIAS_ENABLED", "chat", requires=["NMEM_CHAT_SPEAKER_ENABLED"],

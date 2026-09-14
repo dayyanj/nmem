@@ -80,6 +80,13 @@ profile when you want them. The matching wizard pills tell you when a capability
   ```bash
   docker compose --profile identity up
   ```
+  > **One-time calibration required.** Writing-style fusion is inert until you fit a `text_style`
+  > calibration for the active model — an *uncalibrated channel abstains* (contributes zero), by
+  > design ("trust follows the eval"). The sidecars run and stay healthy without it (speaker
+  > recognition, person-alias, obligations, and tool-calling chat all work regardless), but LUAR
+  > recognition only starts scoring once you fit + load a calibration over a labeled sample
+  > (`nmem-identity` `fit_calibration`). Treat writing-style ID as an advanced, calibrate-then-enable
+  > capability, not turnkey.
 
 - **Embodied perception** (`--profile perception`) — the bundled **nmem-sandbox**: a headless
   browser/desktop the agent drives over an HTTP action API (watch it work at

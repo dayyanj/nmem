@@ -144,7 +144,8 @@ services:
   # The bundled nmem-sandbox — a browser/desktop the agent drives over an HTTP action API. Opt-in
   # (perception profile). A perception/research agent's wizard `computer_use.url` points at it
   # (http://sandbox:8080). The sandbox has its OWN vision model — set SANDBOX_VLM_URL / _MODEL (its
-  # brain, separate from the agent's). noVNC (6080) stays on loopback for watching it work.
+  # brain, separate from the agent's). The agent reaches the harness API over the compose network
+  # (http://sandbox:8080) — that port is NOT published to the host.
   #   SANDBOX_VLM_URL=http://host.docker.internal:8003/v1/chat/completions \
   #   SANDBOX_VLM_MODEL=your-vlm docker compose --profile perception up
   sandbox:
@@ -155,12 +156,16 @@ services:
     image: registry.spwig.com/nmem-sandbox:latest
     restart: unless-stopped
     ports:
-      - "${STUDIO_BIND:-127.0.0.1}:${SANDBOX_NOVNC_PORT:-6080}:6080"   # watch it work (loopback)
+      # noVNC (watch it work) is PINNED to loopback — NOT ${STUDIO_BIND} — because x11vnc runs with
+      # -nopw and studio's session auth does not cover this port; inheriting 0.0.0.0 would expose an
+      # unauthenticated desktop. Reach it locally at http://localhost:6080/vnc.html or via an SSH tunnel.
+      - "127.0.0.1:${SANDBOX_NOVNC_PORT:-6080}:6080"
     environment:
       VLM_URL: ${SANDBOX_VLM_URL:-}       # REQUIRED for the sandbox to act (its own vision model)
       VLM_MODEL: ${SANDBOX_VLM_MODEL:-}
       VLM_BACKEND: ${SANDBOX_VLM_BACKEND:-openai}
       VLM_API_KEY: ${SANDBOX_VLM_API_KEY:-}
+      SANDBOX_CAPTURE_FRAMES: "1"         # capture keyframes so visual memory has frames to ingest
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
