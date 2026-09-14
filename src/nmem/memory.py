@@ -253,6 +253,13 @@ class MemorySystem:
 
     # ── Cognitive backend (subconscious, e.g. nmem-sym) ─────────────────────
 
+    @property
+    def cognitive_backend(self):
+        """The attached cognitive backend (nmem-sym's SymbolBridge), or None. Read-only accessor so
+        library code (e.g. session-summary person-alias seeding) can reach the backend's PUBLIC
+        relational seams without reaching into privates. Duck-typed; None when none is attached."""
+        return self._commitments.backend if self._commitments is not None else None
+
     def register_cognitive_backend(self, backend) -> None:
         """Attach a subconscious cognitive backend (nmem-sym's SymbolBridge).
 

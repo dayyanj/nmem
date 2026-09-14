@@ -141,6 +141,15 @@ def text_identity_enabled() -> bool:
     return val in ("1", "true", "yes", "on")
 
 
+def person_alias_enabled() -> bool:
+    """Flag gate for the Phase-6-A dossier convergence (person-alias layer). Default OFF. Governs
+    BOTH ends of the additive alias: the session-summary SEED (record a name↔id alias) and the
+    obligation gate's READ union (expand a requester's deference lookup over its aliases). While
+    off, no alias is written and the deference read uses only the literal ref — Phase 6-B intact."""
+    val = os.getenv("NMEM_CHAT_PERSON_ALIAS_ENABLED", "").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
 # The author signal is gathered on a CADENCE, not every turn (design open-Q §11.5 recommendation):
 # accumulate authored chat text per session and only embed+resolve once enough has built up — LUAR
 # is episodic and unreliable on one short turn, and a per-turn HTTP round-trip would tax the path.

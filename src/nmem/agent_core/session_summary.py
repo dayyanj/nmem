@@ -112,4 +112,34 @@ async def summarize_and_remember(mem, backend, agent_id: str, transcript, *,
             result["dossier"] = str(interlocutor_id)
         except Exception as e:  # noqa: BLE001
             log.warning("[session-summary] dossier write failed (non-fatal): %s", e, exc_info=True)
+        # Phase 6-A dossier convergence: record that this interlocutor's id and display name name
+        # the SAME person (additive + reversible), so deference/obligation standing accrued under
+        # one (e.g. a declared name) converges with the other (e.g. a voice-resolved person:{id})
+        # in the obligation gate's alias-union read. Seeded only with a stable id AND a distinct
+        # name — the same trust the dossier write beside it already places in the host-supplied
+        # identity. Reaches the relational graph via the registered cognitive backend's PUBLIC
+        # seam (no host code, no private reach); flag-gated + fail-open.
+        await _maybe_seed_person_alias(mem, interlocutor_id, interlocutor_name, result)
     return result
+
+
+async def _maybe_seed_person_alias(mem, interlocutor_id, interlocutor_name, result: dict) -> None:
+    """Record a name↔id person-alias for the interlocutor when the Phase-6-A flag is on and both a
+    stable id and a distinct display name are in hand. Fail-open — an alias hiccup never disturbs
+    the summary result."""
+    from nmem.agent_core.speaker import person_alias_enabled
+    if not person_alias_enabled():
+        return
+    name = (interlocutor_name or "").strip()
+    ident = str(interlocutor_id or "").strip()
+    if not ident or not name or ident == name:
+        return
+    backend = getattr(mem, "cognitive_backend", None)
+    seam = getattr(backend, "record_person_alias", None)
+    if seam is None:
+        return
+    try:
+        if await seam(person_ref=ident, alias_ref=name, source="session_summary"):
+            result["alias"] = [ident, name]
+    except Exception as e:  # noqa: BLE001
+        log.warning("[session-summary] alias seed failed (non-fatal): %s", e, exc_info=True)

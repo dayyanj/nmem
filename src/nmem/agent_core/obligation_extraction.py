@@ -48,7 +48,8 @@ from typing import Awaitable, Callable, Protocol
 # The Speaker value object now lives in agent_core.speaker (its home once speaker RESOLUTION —
 # not just attribution — became a first-class per-turn concern, Phase 2). Re-exported here so
 # existing ``obligation_extraction.Speaker`` callers and tests keep working unchanged.
-from nmem.agent_core.speaker import SPEAKER_SOURCES, Speaker  # noqa: F401
+from nmem.agent_core.speaker import (  # noqa: F401
+    SPEAKER_SOURCES, Speaker, person_alias_enabled)
 
 log = logging.getLogger(__name__)
 
@@ -166,9 +167,9 @@ def _deference_span() -> float:
 
 def _candidate_refs(who: str) -> list[str]:
     """The nmem-sym counterpart refs that could carry deference toward this requester. Deference
-    is produced under `authority:{id}` (the approval producer), so a bare resolved id maps to
-    that ref. Phase 6-A extends this with person-aliases so voice/face/text converge; Phase 6-B
-    reads the single authority ref."""
+    is produced under `authority:{id}` (the approval producer), so a bare resolved id maps to that
+    ref. This is the literal, alias-free base; the Phase 6-A alias UNION lives in the nmem-sym read
+    (`relational_surface.deference_with_aliases`), selected below when the alias flag is on."""
     who = (who or "").strip()
     return [f"authority:{who}"] if who else []
 
@@ -192,13 +193,21 @@ async def deference_gate(requester: str, description: str, runtime) -> tuple[boo
         else:                               # bridge not wired — fall back to the isolated owner key
             from nmem_sym import config as _sym_cfg
             owner = getattr(_sym_cfg.settings, "recall_agent_id", "") or ""
-        from nmem_sym.relational_surface import deference_for
-        # Bound the lookup: this gate is awaited by _finalize_turn BEFORE converse returns the
-        # already-generated reply, so a stalled query / exhausted pool must not withhold it —
-        # on timeout, degrade to the stranger base (same discipline as extract_commitment).
-        d = await asyncio.wait_for(
-            deference_for(pool, owner_agent=owner, counterpart_refs=_candidate_refs(requester)),
-            timeout=_DEFERENCE_TIMEOUT_S)
+        # The read: when the Phase 6-A alias flag is on, union deference over the requester's
+        # person-aliases (dossier convergence — the union lives in nmem-sym so any consumer
+        # converges identically); otherwise the literal authority ref. `deference_with_aliases` is
+        # imported ONLY inside the enabled branch so a Phase-6-B-only nmem-sym (which lacks it)
+        # still serves the base read — the alias flag off must never regress B (codex). Bound the
+        # lookup: this gate is awaited by _finalize_turn BEFORE converse returns the already-
+        # generated reply, so a stalled query must not withhold it — on timeout, degrade to base.
+        if person_alias_enabled():
+            from nmem_sym.relational_surface import deference_with_aliases
+            read = deference_with_aliases(pool, owner_agent=owner, ref=requester)
+        else:
+            from nmem_sym.relational_surface import deference_for
+            read = deference_for(pool, owner_agent=owner,
+                                 counterpart_refs=_candidate_refs(requester))
+        d = await asyncio.wait_for(read, timeout=_DEFERENCE_TIMEOUT_S)
         if not d.grounded:
             return True, base
         lift = _deference_span() * (d.strength * max(0.0, d.valence))

@@ -181,3 +181,24 @@ async def test_impose_explicit_gate_still_wins(monkeypatch):
     out = await oe.maybe_impose_from_chat(
         _impose_rt(_Backend(_COMMIT), c, []), _ASK, now=NOW, gate=explicit)
     assert out is not None and c.imposed[0]["authority"] == pytest.approx(0.11)
+
+
+# ── Phase 6-A: person-alias union in the deference read ──────────────────────
+
+@pytest.mark.asyncio
+async def test_gate_converges_via_alias(monkeypatch):
+    import nmem_sym.person_alias as pa
+
+    async def _fake(pool, *, owner_agent, ref):
+        return {"Dayyan"} if ref == "person:7" else set()
+    monkeypatch.setattr(pa, "aliases_of", _fake)
+    # deference lives under the declared name; the speaker is addressed by the voice id
+    named = [_edge("authority:Dayyan", 4.0, 3.0)]
+
+    monkeypatch.setenv("NMEM_CHAT_PERSON_ALIAS_ENABLED", "0")
+    _ok, auth = await oe.deference_gate("person:7", "do X", _rt(named))
+    assert auth == pytest.approx(0.5)                     # no union → not found → stranger
+
+    monkeypatch.setenv("NMEM_CHAT_PERSON_ALIAS_ENABLED", "1")
+    _ok, auth = await oe.deference_gate("person:7", "do X", _rt(named))
+    assert auth == pytest.approx(0.875)                  # union finds it → converged

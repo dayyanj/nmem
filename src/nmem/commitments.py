@@ -84,6 +84,13 @@ class CommitmentManager:
     def has_backend(self) -> bool:
         return self._backend is not None
 
+    @property
+    def backend(self):
+        """The attached cognitive backend (nmem-sym's SymbolBridge), or None. Read-only accessor
+        so library code can reach the backend's PUBLIC seams (e.g. record_person_alias) without a
+        private-attr reach — surfaced further up as ``MemorySystem.cognitive_backend``."""
+        return self._backend
+
     def _scope(self) -> str | None:
         """The instance's project scope — read live so it tracks config."""
         return getattr(self._config, "project_scope", None)
