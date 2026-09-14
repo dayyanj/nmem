@@ -95,9 +95,11 @@ class _Commitments:
         self._open = list(open_infos or [])
     async def list(self, status="open"):
         return self._open
-    async def impose(self, requester, description, deadline, *, authority=0.5, **kw):
+    async def impose(self, requester, description, deadline, *, authority=0.5,
+                     importance=1.0, **kw):
         self.imposed.append(dict(requester=requester, description=description,
-                                 deadline=deadline, authority=authority, kw=kw))
+                                 deadline=deadline, authority=authority,
+                                 importance=importance, kw=kw))
         return SimpleNamespace(id=1, requester=requester, description=description)
 
 
@@ -190,3 +192,87 @@ async def test_extract_commitment_times_out(monkeypatch):
             return "{}"
     ex = await oe.extract_commitment(_Stall(), "…", now=NOW, timeout=0.05)
     assert ex is None
+
+
+# ── speaker slot (nmem-identity chat-style, Phase 1) ─────────────────────────────
+
+_COMMIT = json.dumps({"is_commitment": True, "description": "research pgvector and reply",
+                      "deadline": "2026-09-18T17:00:00Z", "confidence": 0.9})
+_ASK = "Michelle, can you research pgvector and answer by Friday?"
+
+
+def test_speaker_from_dict_variants():
+    assert oe.Speaker.from_dict(None) is None
+    assert oe.Speaker.from_dict("nope") is None                 # non-dict
+    assert oe.Speaker.from_dict({"id": "   "}) is None           # blank id
+    s = oe.Speaker.from_dict({"id": "dayyan", "confidence": 5, "source": "principal"})
+    assert s.id == "dayyan" and s.confidence == 1.0 and s.source == "principal"   # clamped
+    bad = oe.Speaker.from_dict({"id": "dayyan", "confidence": "x"})
+    assert bad.confidence == 0.0 and bad.source == "unknown"     # bad conf → floor, default source
+
+
+@pytest.mark.asyncio
+async def test_speaker_id_becomes_requester(monkeypatch):
+    monkeypatch.setenv("NMEM_CHAT_OBLIGATIONS_ENABLED", "1")
+    c = _Commitments()
+    spk = oe.Speaker(id="dayyan", confidence=1.0, source="principal")
+    out = await oe.maybe_impose_from_chat(
+        _runtime(_Backend(_COMMIT), c), _ASK, now=NOW, speaker=spk)
+    assert out is not None and c.imposed[0]["requester"] == "dayyan"
+    # confidence 1.0 → importance 1.0 (full weight); authority is the gate's, untouched
+    assert c.imposed[0]["authority"] == 0.5
+    assert c.imposed[0]["importance"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_speaker_confidence_modulates_importance(monkeypatch):
+    # Identity confidence attenuates per-obligation IMPORTANCE (the pressure mirrored to the
+    # ledger every impose), NOT the per-requester authority (gate-owned, cached).
+    monkeypatch.setenv("NMEM_CHAT_OBLIGATIONS_ENABLED", "1")
+    c = _Commitments()
+    spk = oe.Speaker(id="dayyan", confidence=0.0, source="text_style")   # weakest identity
+    await oe.maybe_impose_from_chat(_runtime(_Backend(_COMMIT), c), _ASK, now=NOW, speaker=spk)
+    # 0.5 + 0.5*0.0 = 0.5 — attenuated but non-zero; authority stays the gate's 0.5
+    assert c.imposed[0]["importance"] == pytest.approx(0.5)
+    assert c.imposed[0]["authority"] == 0.5
+
+
+@pytest.mark.asyncio
+async def test_same_speaker_distinct_confidences_each_modulate(monkeypatch):
+    # codex P2: two obligations from the SAME requester with different confidence must each
+    # carry their own pressure. importance is per-obligation (not requester-cached), so both
+    # values land — unlike authority, which register_requestor caches after the first impose.
+    monkeypatch.setenv("NMEM_CHAT_OBLIGATIONS_ENABLED", "1")
+    c = _Commitments()
+    rt = _runtime(_Backend(_COMMIT), c)
+    await oe.maybe_impose_from_chat(rt, _ASK, now=NOW,
+                                    speaker=oe.Speaker(id="dayyan", confidence=0.2))
+    # different description so the open-commitment dedup doesn't suppress the second impose
+    other = json.dumps({"is_commitment": True, "description": "draft the launch note",
+                        "deadline": "2026-09-19T17:00:00Z", "confidence": 0.9})
+    await oe.maybe_impose_from_chat(_runtime(_Backend(other), c),
+                                    "can you draft the launch note by Saturday?", now=NOW,
+                                    speaker=oe.Speaker(id="dayyan", confidence=1.0))
+    assert [round(i["importance"], 3) for i in c.imposed] == [0.6, 1.0]   # 0.5+0.5*0.2, 0.5+0.5*1.0
+
+
+@pytest.mark.asyncio
+async def test_no_speaker_is_byte_identical(monkeypatch):
+    # The pre-identity default: no speaker → DEFAULT_REQUESTER, gate authority + default
+    # importance verbatim.
+    monkeypatch.setenv("NMEM_CHAT_OBLIGATIONS_ENABLED", "1")
+    c = _Commitments()
+    await oe.maybe_impose_from_chat(_runtime(_Backend(_COMMIT), c), _ASK, now=NOW)
+    assert c.imposed[0]["requester"] == oe.DEFAULT_REQUESTER
+    assert c.imposed[0]["authority"] == 0.5
+    assert c.imposed[0]["importance"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_speaker_wins_over_requester_string(monkeypatch):
+    monkeypatch.setenv("NMEM_CHAT_OBLIGATIONS_ENABLED", "1")
+    c = _Commitments()
+    spk = oe.Speaker(id="dayyan", confidence=1.0)
+    await oe.maybe_impose_from_chat(
+        _runtime(_Backend(_COMMIT), c), _ASK, now=NOW, speaker=spk, requester="someone-else")
+    assert c.imposed[0]["requester"] == "dayyan"

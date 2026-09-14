@@ -165,14 +165,20 @@ def create_agent_app(
     else:
         @app.post("/chat")
         async def chat(req: dict):
-            """One grounded turn via `runtime.converse` (message + optional history)."""
+            """One grounded turn via `runtime.converse`. Body: `{message, history?, speaker?}`
+            where `speaker` is an optional soft identity `{id, confidence?, source?}` (design
+            note `nmem-identity-chat-style-modality`) used to attribute conversational
+            obligations to a real requester. Absent/blank → the anonymous default."""
             msg = (req or {}).get("message", "").strip()
             if not msg:
                 return {"ok": False, "error": "message required"}
             if ctx.runtime is None:
                 return {"ok": False, "error": "runtime not ready"}
             try:
-                reply = await ctx.runtime.converse(msg, history=(req or {}).get("history") or [])
+                from nmem.agent_core.obligation_extraction import Speaker
+                speaker = Speaker.from_dict((req or {}).get("speaker"))
+                reply = await ctx.runtime.converse(
+                    msg, history=(req or {}).get("history") or [], speaker=speaker)
                 return {"ok": True, "reply": reply}
             except Exception as e:  # noqa: BLE001
                 log.warning("[host] chat failed: %s", e, exc_info=True)

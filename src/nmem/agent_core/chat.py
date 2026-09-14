@@ -33,6 +33,10 @@ from __future__ import annotations
 
 import hashlib as _hashlib
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # annotation only — avoids importing the obligation path at module load
+    from nmem.agent_core.obligation_extraction import Speaker
 
 # The continuity read/write helpers are shared across all turn-taking seams (chat, peer,
 # comms) — re-exported here so existing ``chat.continuity_block`` / ``chat.record_turn_checkpoint``
@@ -151,6 +155,7 @@ async def converse(runtime, message: str, *, history: list[dict] | None = None,
                    session_id: str | None = None, temperature: float = 0.4,
                    max_tokens: int = 700, continuity: bool = True,
                    continuity_tokens: int = 1200,
+                   speaker: Speaker | None = None,
                    metacog_arm: str | None = None,
                    metacog_competence_override: dict | None = None,
                    metacog_audit: dict | None = None) -> str:
@@ -165,6 +170,11 @@ async def converse(runtime, message: str, *, history: list[dict] | None = None,
 
     `continuity` (default on) gates both the wake-snapshot read and the checkpoint write; set
     it False for a pure query-grounded turn with no reorientation overhead.
+
+    `speaker` (optional, design note `nmem-identity-chat-style-modality`) is the soft identity of
+    the interlocutor. When supplied, a conversational obligation lifted from this turn is
+    attributed to `speaker.id` (per-person accountability) and its authority is modulated by
+    `speaker.confidence`. Default None → the anonymous, byte-identical pre-identity path.
 
     `metacog_arm` / `metacog_competence_override` / `metacog_audit` are EVAL-ONLY (the RCT
     rig, design §16.7) and default to None → this function is byte-identical to production.
@@ -236,12 +246,13 @@ async def converse(runtime, message: str, *, history: list[dict] | None = None,
         else:
             reply = await runtime.backend.chat(messages, **kw)
     await _finalize_turn(runtime, message, reply, session_id=session_id,
-                         continuity=continuity, surf_turn_id=_surf_turn_id)
+                         continuity=continuity, surf_turn_id=_surf_turn_id, speaker=speaker)
     return reply
 
 
 async def _finalize_turn(runtime, message: str, reply: str, *, session_id: str | None,
-                         continuity: bool, surf_turn_id: str | None) -> None:
+                         continuity: bool, surf_turn_id: str | None,
+                         speaker: Speaker | None = None) -> None:
     """Advance the living state after a reply: continuity checkpoint, session working-memory
     task, surfacing-ledger answer attribution, and conversational-obligation extraction. Every
     step is fail-open bookkeeping. Shared by ``converse`` and ``converse_stream``."""
@@ -269,7 +280,7 @@ async def _finalize_turn(runtime, message: str, reply: str, *, session_id: str |
     # it is inert and free on ordinary chat. Bookkeeping — runs after the reply is produced.
     try:
         from nmem.agent_core.obligation_extraction import maybe_impose_from_chat
-        await maybe_impose_from_chat(runtime, message)
+        await maybe_impose_from_chat(runtime, message, speaker=speaker)
     except Exception:  # noqa: BLE001 — additive, never blocks the conversation
         log.warning("[chat] conversational-obligation extraction failed (non-fatal)", exc_info=True)
 
@@ -277,7 +288,8 @@ async def _finalize_turn(runtime, message: str, reply: str, *, session_id: str |
 async def converse_stream(runtime, message: str, *, history: list[dict] | None = None,
                           session_id: str | None = None, temperature: float = 0.4,
                           max_tokens: int = 700, continuity: bool = True,
-                          continuity_tokens: int = 1200):
+                          continuity_tokens: int = 1200,
+                          speaker: Speaker | None = None):
     """Streaming, tool-calling counterpart to ``converse`` — the interactive/voice path.
 
     Assembles the SAME grounded system prompt as ``converse`` (via ``_assemble_grounded_system``),
@@ -321,7 +333,7 @@ async def converse_stream(runtime, message: str, *, history: list[dict] | None =
             fb = "Sorry — I couldn't put an answer together just now. Could you say it again?"
         yield {"delta": fb}
         await _finalize_turn(runtime, message, fb.strip(), session_id=session_id,
-                             continuity=continuity, surf_turn_id=surf_turn_id)
+                             continuity=continuity, surf_turn_id=surf_turn_id, speaker=speaker)
         yield {"done": True}
         return
 
@@ -363,7 +375,7 @@ async def converse_stream(runtime, message: str, *, history: list[dict] | None =
         yield {"delta": fb}
     reply = "".join(parts).strip()
     await _finalize_turn(runtime, message, reply, session_id=session_id,
-                         continuity=continuity, surf_turn_id=surf_turn_id)
+                         continuity=continuity, surf_turn_id=surf_turn_id, speaker=speaker)
     yield {"done": True}
 
 

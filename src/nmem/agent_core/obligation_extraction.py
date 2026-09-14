@@ -52,6 +52,48 @@ log = logging.getLogger(__name__)
 # collapses to per-person accountability with no change here.
 DEFAULT_REQUESTER = "interlocutor"
 
+# Speaker sources ordered weakest→strongest by trust. A later fusion step (design:
+# nmem-identity-chat-style, Phase 5) prefers the strongest signal when more than one fills the
+# slot for a turn. Plain strings (not an Enum) so a host may pass any label; an unknown label
+# is treated as weakest.
+SPEAKER_SOURCES = (
+    "unknown", "text_style", "session_continuity", "voice_session", "declared_name", "principal",
+)
+
+
+@dataclass(frozen=True)
+class Speaker:
+    """A soft, optional identity for the interlocutor of a chat turn (design note
+    ``nmem-identity-chat-style-modality``). ``id`` is the stable person key used as the
+    obligation ``requester``; ``confidence`` (0..1) is how sure we are it is really them;
+    ``source`` records which signal filled the slot (see ``SPEAKER_SOURCES``).
+
+    Phase 1 uses ``id`` (attribution) and ``confidence`` (authority modulation) only. A ``None``
+    Speaker is the pre-identity default and keeps the chat path byte-identical to before —
+    identity is *soft*: it may modulate an obligation's pressure but never authorizes anything.
+    """
+    id: str
+    confidence: float = 0.0
+    source: str = "unknown"
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> Speaker | None:
+        """Build from a chat-request payload ``{id, confidence?, source?}``. A missing/blank
+        ``id`` (or a non-dict) → ``None`` (no speaker), so a malformed or absent field degrades
+        cleanly to the anonymous default rather than raising on the request path."""
+        if not isinstance(d, dict):
+            return None
+        sid = str(d.get("id") or "").strip()
+        if not sid:
+            return None
+        try:
+            conf = float(d.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            conf = 0.0
+        conf = max(0.0, min(1.0, conf))
+        src = str(d.get("source") or "unknown").strip() or "unknown"
+        return cls(id=sid, confidence=conf, source=src)
+
 # Cheap pre-filter: a request cue AND a deadline cue in the same turn. Deliberately broad
 # (recall over precision — the LLM is the real decision) but not so broad it fires on every
 # turn. Case-insensitive.
@@ -201,6 +243,7 @@ async def extract_commitment(backend, message: str, *, now: datetime,
 
 async def maybe_impose_from_chat(
     runtime, message: str, *,
+    speaker: Speaker | None = None,
     requester: str | None = None,
     now: datetime | None = None,
     gate: AuthorityGate = open_gate,
@@ -211,6 +254,16 @@ async def maybe_impose_from_chat(
     commitment, no future deadline, unauthorized, or error).
 
     Called from converse AFTER the reply is produced (bookkeeping, like the checkpoint write).
+
+    ``speaker`` (design note ``nmem-identity-chat-style-modality``) is the optional soft
+    identity of the interlocutor. When supplied its ``id`` becomes the obligation ``requester``
+    (per-person accountability) and its ``confidence`` modulates the obligation's per-turn
+    ``importance`` — a weakly-identified ask binds the agent more loosely. (Confidence is
+    deliberately NOT applied to ``authority``: that is the requester's standing trust weight,
+    which the gate owns and the ledger caches per requester.) ``requester`` is the pre-Speaker
+    string form, kept for callers/tests that pass only an id; ``speaker`` wins when both given.
+    With neither (the default), attribution falls back to ``DEFAULT_REQUESTER`` exactly as
+    before.
     """
     if not enabled():
         return None
@@ -227,11 +280,22 @@ async def maybe_impose_from_chat(
             return None
         if extracted.deadline is None or extracted.confidence < min_confidence:
             return None                        # obligations need a real future deadline
-        who = requester or DEFAULT_REQUESTER
+        who = (speaker.id if speaker is not None else None) or requester or DEFAULT_REQUESTER
         authorized, authority = gate(who, extracted.description, runtime)
         if not authorized:
             log.info("[chat-obl] extracted commitment from %r NOT authorized — skipped", who)
             return None
+        # Identity confidence modulates THIS obligation's pressure — graded, never a gate
+        # (design §3.1): a turn from a weakly-identified speaker binds the agent more loosely
+        # than one from a confidently-known or explicit principal. Confidence is per-TURN (how
+        # sure we are who asked), so it attenuates the per-obligation `importance` (mirrored to
+        # the nmem-sym ledger on EVERY impose) — NOT the per-requester `authority`, which the
+        # gate owns and `CommitmentManager._mirror` registers once per requester then caches
+        # (modulating it would only ever 'stick' for a requester's first obligation; codex).
+        # No speaker → importance 1.0, byte-identical. confidence∈[0,1] → importance∈[0.5,1.0]:
+        # a weak identity binds loosely, a confident/explicit principal binds full-weight.
+        authority = float(authority)
+        importance = 1.0 if speaker is None else (0.5 + 0.5 * speaker.confidence)
         # Dedup vs currently-open commitments in this scope (codex): a repeated/retried
         # "do X by Friday" must not spawn a second live obligation with its own lifecycle.
         # Matches the nightly detector's (requester, description) key. Best-effort — a list
@@ -245,9 +309,11 @@ async def maybe_impose_from_chat(
             log.warning("[chat-obl] open-commitment dedup check failed (non-fatal)", exc_info=True)
         info = await commitments.impose(
             who, extracted.description, extracted.deadline,
-            authority=float(authority), source="chat")
-        log.info("[chat-obl] imposed commitment from %r due %s: %r",
-                 who, extracted.deadline.isoformat(), extracted.description)
+            authority=float(authority), importance=importance, source="chat")
+        log.info("[chat-obl] imposed from %r (src=%s conf=%.2f imp=%.2f) due %s: %r",
+                 who, (speaker.source if speaker is not None else "none"),
+                 (speaker.confidence if speaker is not None else 0.0),
+                 importance, extracted.deadline.isoformat(), extracted.description)
         return info
     except Exception:  # noqa: BLE001 — additive; never blocks the conversation
         log.warning("[chat-obl] maybe_impose_from_chat failed (non-fatal)", exc_info=True)
