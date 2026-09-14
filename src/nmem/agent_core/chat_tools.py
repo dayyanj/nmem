@@ -280,6 +280,11 @@ async def stream_tool_loop(runtime, messages: list[dict], *, registry, gate,
         for tc in valid:
             yield ("progress", {"tool": tc.name, "phase": "start"})
             result = await _dispatch(gate, registry.get(tc.name), tc.name, tc.arguments)
+            # Observability: the tool loop is otherwise silent on success. One info line per
+            # chat-initiated tool call makes it visible in the journal that a conversation
+            # reached for a tool (and whether it landed) — not just when something breaks.
+            log.info("[chat_tools] chat tool call: %s → %s", tc.name,
+                     "error" if result.get("error") else "ok")
             if result.get("error"):
                 yield ("progress", {"tool": tc.name, "phase": "error"})
             messages.append({"role": "tool", "tool_call_id": tc.id,
