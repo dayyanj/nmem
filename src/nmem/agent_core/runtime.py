@@ -220,39 +220,53 @@ class AgentRuntime:
         return self.status
 
     def _wire_usage_recorder(self) -> None:
-        """Attach a real-token-usage hook to the backend (Tier B, viz token stats).
+        """Attach real-token-usage recording (Tier B, viz token stats).
 
-        Every real LLM call then persists its true provider token counts to
-        ``nmem_metadata`` (daily + lifetime keys) and emits a ``llm.usage`` viz
-        event for the overlay's live session counter. Both are fire-and-forget +
-        fail-open. No-op — byte-identical to today — when the backend predates the
-        ``on_usage`` hook (a custom backend) or memory exposes no DB handle."""
-        be = self.backend
-        if be is None or not hasattr(be, "on_usage"):
-            return
+        Persists true provider token counts to ``nmem_metadata`` (daily +
+        lifetime keys) for every real LLM call — from BOTH nmem core's backend
+        (conversation / comms / chat tools) AND nmem-sym's cognition (which uses
+        its own client and reports usage via ``viz_record_usage`` → the recorder
+        we register here). The backend path also emits ``llm.usage`` for the
+        overlay's live counter; the nmem-sym path emits it itself, so the
+        registered recorder only persists (no double emit). All fire-and-forget +
+        fail-open. No-op when the backend predates the hook or memory has no DB."""
         db = getattr(self.mem, "_db", None)
         if db is None:
             return
         agent_id = self.agent_id
 
-        def _record(inp: int, out: int, model: str | None = None) -> None:
+        def _persist(inp: int, out: int, model: str | None = None) -> None:
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
-                return  # no loop (shouldn't happen from an async backend) — skip silently
+                return  # no running loop — skip silently
             from nmem.token_stats import record_real_usage
             loop.create_task(record_real_usage(db, agent_id, inp, out, model=model))
-            try:
-                from nmem_sym.viz_events import viz_emit
-                loop.create_task(viz_emit("llm.usage", {
-                    "agent_id": agent_id, "input": inp, "output": out,
-                    "total": inp + out, "model": model,
-                }))
-            except Exception:  # noqa: BLE001 — viz is optional/absent on some installs
-                pass
 
-        be.on_usage = _record
-        log.info("[runtime] real token-usage recorder wired to backend")
+        # nmem-sym cognition path: persist only (it emits llm.usage on its own).
+        try:
+            from nmem_sym.viz_events import viz_set_usage_recorder
+            viz_set_usage_recorder(_persist)
+        except Exception:  # noqa: BLE001 — nmem-sym viz is optional/absent on some installs
+            pass
+
+        # nmem core backend path: persist + emit the live counter event.
+        be = self.backend
+        if be is not None and hasattr(be, "on_usage"):
+            def _record(inp: int, out: int, model: str | None = None) -> None:
+                _persist(inp, out, model)
+                try:
+                    loop = asyncio.get_running_loop()
+                    from nmem_sym.viz_events import viz_emit
+                    loop.create_task(viz_emit("llm.usage", {
+                        "agent_id": agent_id, "input": inp, "output": out,
+                        "total": inp + out, "model": model,
+                    }))
+                except Exception:  # noqa: BLE001 — viz optional/absent
+                    pass
+            be.on_usage = _record
+
+        log.info("[runtime] real token-usage recorder wired (backend + nmem-sym cognition)")
 
     async def _elect_keeper(self) -> None:
         """Shared-world graph-keeper election (§4.2). A process willing to keep (``graph_role:
