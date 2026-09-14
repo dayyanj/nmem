@@ -387,9 +387,11 @@ async def build_visual_memory(sandbox_client, *, enabled: bool | None = None, **
     ``kw`` forwards to :class:`VisualMemory` (``db_dsn``, ``sym_dsn``, ``novelty_hamming``,
     ``max_frames_per_outcome``, ``phash_cache``, ``consolidate_every``, ``readback_enabled``).
 
-    ``NMEM_VISUAL_MEMORY_ENABLED`` gates the whole feature (ingest + read-back). To A/B the
-    behavioral advantage, keep that ON and toggle ``NMEM_VISUAL_READBACK_ENABLED`` (default on):
-    OFF keeps ingest + link-recording running (same measurement data) but suppresses the warning."""
+    ``NMEM_VISUAL_MEMORY_ENABLED`` gates the whole feature (ingest + read-back). Read-back is an
+    OPT-IN intervention: ``NMEM_VISUAL_READBACK_ENABLED`` defaults OFF, matching the enable-only
+    capabilities model (a wizard omits a deselected flag) and the graduation rule (default-off until
+    proven). To A/B the behavioral advantage, keep the feature ON and toggle read-back ON/OFF: ON
+    warns on revisited failures; OFF keeps ingest + link-recording (same data), just no warning."""
     if enabled is None:
         enabled = _env_on("NMEM_VISUAL_MEMORY_ENABLED")
     if not enabled:
@@ -397,7 +399,7 @@ async def build_visual_memory(sandbox_client, *, enabled: bool | None = None, **
     if sandbox_client is None or not sandbox_client.is_enabled():
         log.info("[visual-memory] sandbox disabled — visual memory inert")
         return None
-    kw.setdefault("readback_enabled", _env_on("NMEM_VISUAL_READBACK_ENABLED", "true"))
+    kw.setdefault("readback_enabled", _env_on("NMEM_VISUAL_READBACK_ENABLED", "false"))
     # P5: periodic consolidation (iconic→nodes→clusters, fills occipital + enables symbol grounding).
     # Default 0 = off (heavy); a modest N runs it every Nth stored outcome on the pursuit path.
     if "consolidate_every" not in kw:

@@ -325,6 +325,7 @@ def build_agent_app():
                 action_name=_cu_action, tool_tag=pcfg.get("tool_tag"),
                 verify_judge=_env_on("ACTUATOR_VERIFY_JUDGE_ENABLED"),
                 reflect_enabled=_env_on("ACT_LLM_REFLECT_ENABLED", "true"),
+                visual_memory=ctx.state.get("visual_memory"),  # SEE→REMEMBER: wrap the outcome sink
                 gate=_build_gate(config.get("autonomy")))
         reg = ctx.state.get("reg")                     # a disabled sandbox falls through to here → None
         if reg is None or len(reg) == 0:
