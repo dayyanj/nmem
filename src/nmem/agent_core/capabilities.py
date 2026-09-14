@@ -37,10 +37,13 @@ class Capability:
     requires: tuple[str, ...] = ()    # hard flag→flag deps (validated)
     substrate: str = ""               # non-flag prerequisites (advisory; not validated)
     summary: str = ""                 # one-line UI help
+    values: tuple[str, ...] = ()      # non-boolean choices: if set, "enabled" carries one of these
+                                      # (e.g. POSTMORTEM_MODE = canary|active). The UI renders a
+                                      # picker; config_writer emits the chosen value, not `true`.
 
 
-def _c(flag, group, requires=(), substrate="", summary=""):
-    return Capability(flag, group, tuple(requires), substrate, summary)
+def _c(flag, group, requires=(), substrate="", summary="", values=()):
+    return Capability(flag, group, tuple(requires), substrate, summary, tuple(values))
 
 
 # ── The map ────────────────────────────────────────────────────────────────────
@@ -70,6 +73,24 @@ _CAPS = [
        summary="CSV of drive actions the host actuates outward (e.g. explore)."),
     _c("NMEM_SYM_EMOTION_ENABLED", "drives", requires=["NMEM_SYM_DRIVES_ENABLED"],
        summary="Emotional modulation; ticks alongside the drive loop."),
+    _c("NMEM_SYM_DRIVES_RELIEF_ENGINE", "drives",
+       requires=["NMEM_SYM_DRIVES_ENABLED", "NMEM_SYM_DRIVES_HONEST_DISCHARGE"],
+       summary="A6: route a fired drive through the deliberative relief-action selector "
+               "(two-stage discharge) instead of the static drive→action map."),
+    _c("NMEM_SYM_DRIVES_AFFECTIVE_INTEGRITY", "drives",
+       requires=["NMEM_SYM_DRIVES_RELIEF_ENGINE", "NMEM_SYM_CONCERNS_ENABLED",
+                 "NMEM_SYM_CONCERN_PERSISTENCE_ENABLED"],
+       summary="A7: guilt/shame/pride + self-deception fork + honest reckoning."),
+    _c("NMEM_SYM_DRIVES_OMISSION_GUILT", "drives", requires=["NMEM_SYM_DRIVES_AFFECTIVE_INTEGRITY"],
+       summary="Loop 2e: conscience-gated intake damping + omission guilt (willful blindness)."),
+    _c("NMEM_SYM_DRIVES_CONTRACT_RECALL", "drives", requires=["NMEM_SYM_DRIVES_ENABLED"],
+       substrate="the recall drive firing recall intents (NMEM_SYM_RECALL_DRIVE_ENABLED)",
+       summary="§10/R1: don't spawn a durable goal for a recall intent (the internal handler is "
+               "recall's real path) — stops the ~65% recall-goal abandonment; adds no_match backoff."),
+    _c("NMEM_SYM_DRIVES_CONTRACT_UNCERTAINTY", "drives", requires=["NMEM_SYM_DRIVES_ENABLED"],
+       substrate="prediction/hypothesis verify targets (the uncertainty drive)",
+       summary="Phase-1: back off a verify that keeps producing no grounding verdict (an "
+               "ungroundable prediction/hypothesis stops re-firing every cooldown)."),
     # concerns
     _c("NMEM_SYM_CONCERNS_ENABLED", "concerns", requires=["NMEM_SYM_DRIVES_ENABLED"],
        summary="Per-problem (object-bound) pressure instead of a diffuse scalar."),
@@ -78,6 +99,10 @@ _CAPS = [
        summary="Mirror nmem curiosity signals into concerns."),
     _c("NMEM_SYM_CONCERN_PERSISTENCE_ENABLED", "concerns", requires=["NMEM_SYM_CONCERNS_ENABLED"],
        summary="Persist native concerns across restart (rumination)."),
+    _c("NMEM_SYM_UNCERTAINTY_SPECULATION_BACKLOG", "concerns", requires=["NMEM_SYM_CONCERNS_ENABLED"],
+       substrate="the temporal tick + a standing speculative-hypothesis reservoir",
+       summary="Phase-1: convert the speculative-hypothesis reservoir into targeted `speculation` "
+               "concerns so diffuse verify becomes targeted verify."),
     # goals
     _c("NMEM_SYM_GOALS_ENABLED", "goals",
        summary="Goal plugin: durable goals, progress, impasse detect/resolve."),
@@ -88,6 +113,15 @@ _CAPS = [
     _c("NMEM_SYM_DRIVES_GOAL_LLM_ENRICH", "goals", requires=["NMEM_SYM_DRIVES_CREATE_GOALS"],
        substrate="vllm_backends + bridge.set_goal_enrichment_context(objectives/entities/findings)",
        summary="LLM-write concrete, world-directed goal objectives instead of the template."),
+    _c("NMEM_SYM_GOAL_PLANNING_ENABLED", "goals", requires=["NMEM_SYM_GOALS_ENABLED"],
+       summary="G1: the plan_state machine — assess-before-abandon, throughput dominance, "
+               "impasse→resolve (stops loop-age-abandon churn)."),
+    _c("NMEM_SYM_GOAL_REGISTRY_ENABLED", "goals", requires=["NMEM_SYM_GOAL_PLANNING_ENABLED"],
+       summary="G2a: consult the capability registry during feasibility and bind a goal's "
+               "requirements to LIVE registered actuators (plan_state='planned')."),
+    _c("NMEM_SYM_GOAL_PLANNER_LLM_ENABLED", "goals", requires=["NMEM_SYM_GOAL_REGISTRY_ENABLED"],
+       substrate="vllm_backends",
+       summary="G2a: LLM planner — extract a goal's requirements and bind them to actuators."),
     # experiential learning
     _c("NMEM_SYM_FAILURE_MEMORY_ENABLED", "learning",
        substrate="record_action_outcome flowing (the nmem-act actuation loop)",
@@ -106,6 +140,34 @@ _CAPS = [
        requires=["NMEM_SYM_UTILITY_PLASTICITY_ENABLED"],
        substrate="multi-edge procedures must exist (dormant until they do)",
        summary="Induce reusable strategies from rewarded procedures."),
+    _c("NMEM_SYM_POSTMORTEM_MODE", "learning", values=("canary", "active"),
+       requires=["NMEM_SYM_FAILURE_MEMORY_ENABLED"],
+       substrate="failing episodes + a dreamstate cycle + vllm_backends",
+       summary="Stage A failure post-mortem: an LLM distils root cause / recovery / preventative "
+               "rule over failing episodes. canary = distil + log, write nothing; active = write."),
+    _c("NMEM_SYM_POSTMORTEM_REMEDY_GOALS", "learning",
+       requires=["NMEM_SYM_POSTMORTEM_MODE", "NMEM_SYM_GOALS_ENABLED"],
+       summary="Phase B.2: act on a classified remedy by mutating goals (abandon ill-posed, "
+               "re-plan wrong-strategy, emit a workaround sub-goal)."),
+    _c("NMEM_SYM_CAPABILITY_ACQUISITION_ENABLED", "learning",
+       requires=["NMEM_SYM_POSTMORTEM_REMEDY_GOALS"],
+       summary="Phase C: reason a missing capability's prerequisite chain into acquisition "
+               "sub-goals (surfaced for approval; never auto-runs unless allowlisted)."),
+    _c("NMEM_SYM_SURFACING_LEDGER_ENABLED", "learning",
+       substrate="the host supplies a per-turn turn_id",
+       summary="Representational self-improvement: log which edges/hypotheses were surfaced per turn."),
+    _c("NMEM_SYM_SURFACING_CREDIT_ENABLED", "learning",
+       requires=["NMEM_SYM_SURFACING_LEDGER_ENABLED"],
+       substrate="a wired turn-outcome source",
+       summary="Reinforce/depress surfaced edges by resolved turn outcome (the graph re-weights "
+               "its own retrieval utility)."),
+    _c("NMEM_SYM_SURFACING_ECHO_ENABLED", "learning",
+       requires=["NMEM_SYM_SURFACING_LEDGER_ENABLED"], substrate="vllm_backends",
+       summary="Post-hoc LLM attribution: credit lands on the edges the answer actually used."),
+    # metacognition
+    _c("NMEM_SYM_METACOG_ENABLED", "metacognition",
+       summary="Level-4 metacognitive control: treat the agent's own cognitive state as a bounded "
+               "causal controller (self-directed mode/effort). Off = no directive is ever applied."),
     # surprise → communication
     _c("NMEM_SYM_OUTCOME_SURPRISE_ENABLED", "comms",
        substrate="record_action_outcome with `source` set (actuation loop)",
@@ -160,6 +222,9 @@ _CAPS = [
     _c("NMEM_SYM_OBLIGATION_PERSISTENCE_ENABLED", "obligations",
        requires=["NMEM_SYM_OBLIGATIONS_ENABLED"], summary="Persist obligations + requestors across restart."),
     # nmem meta layer (nested settings; `__` delimiter)
+    _c("NMEM_WORKING__ENABLED", "meta",
+       summary="Wire the working-memory tier into cognition: the pursuit loop writes focus/outcome "
+               "and reads it back; chat records the current task. Foundational for identity + tools."),
     _c("NMEM_AUTONOMY__ENABLED", "meta",
        summary="Autonomous memorize/retrieve layer (proactive surface + optional skill capture)."),
     _c("NMEM_AUTONOMY__PROACTIVE_RETRIEVE", "meta", requires=["NMEM_AUTONOMY__ENABLED"],
@@ -177,6 +242,28 @@ _CAPS = [
     _c("NMEM_COMMITMENT_DETECTION__ENABLED", "meta",
        substrate="commitment-language journal entries + the nightly consolidation path",
        summary="Detect commitments in journal content and impose them as obligations."),
+    # chat / conversational identity (agent_core chat path; env `NMEM_CHAT_*`, no settings class)
+    _c("NMEM_CHAT_TOOLS_ENABLED", "chat",
+       substrate="tools worth calling — memory_search is always available; add actors (webhook/MCP/…) "
+                 "for more",
+       summary="Tool-calling chat: the agent can call memory_search and any configured tools "
+               "mid-conversation, in a bounded loop, then answer."),
+    _c("NMEM_CHAT_SPEAKER_ENABLED", "chat", requires=["NMEM_WORKING__ENABLED"],
+       summary="Recognise who's speaking: resolve a self-declared name and carry the interlocutor "
+               "across the session (per-person accountability)."),
+    _c("NMEM_CHAT_TEXT_IDENTITY_ENABLED", "chat", requires=["NMEM_CHAT_SPEAKER_ENABLED"],
+       substrate="the LUAR identity sidecars — NMEM_IDENTITY_TEXT_EMBED_URL + NMEM_IDENTITY_MATCHER_URL "
+                 "(bundled in the appliance's identity profile)",
+       summary="Writing-style (LUAR) fusion: recognise a returning person by how they write, not just "
+               "by a declared name."),
+    _c("NMEM_CHAT_PERSON_ALIAS_ENABLED", "chat", requires=["NMEM_CHAT_SPEAKER_ENABLED"],
+       summary="Converge names↔ids into one person dossier over time (alias resolution)."),
+    _c("NMEM_CHAT_OBLIGATIONS_ENABLED", "chat",
+       substrate="commitment-language chat turns + the nightly consolidation path",
+       summary="Lift a commitment made in conversation into a tracked obligation."),
+    _c("NMEM_CHAT_DEFERENCE_AUTHORITY_ENABLED", "chat", requires=["NMEM_CHAT_OBLIGATIONS_ENABLED"],
+       summary="Weight how much authority a request carries by the learned standing of who's asking "
+               "(relationship-weighted obligations)."),
     # perception — embodied visual memory (agent_core.build_visual_memory over a sandbox)
     _c("NMEM_VISUAL_MEMORY_ENABLED", "perception",
        substrate="a computer-use sandbox (ctx.state['sandbox']) + a sensory Postgres "
@@ -189,6 +276,10 @@ _CAPS = [
 ]
 
 CAPABILITIES: dict[str, Capability] = {c.flag: c for c in _CAPS}
+
+# Non-boolean capability flags: {flag: (choices…)}. "Enabled" means the flag carries one of these
+# values (config_writer emits the chosen value, the UI renders a picker) rather than plain `true`.
+VALUE_FLAGS: dict[str, tuple[str, ...]] = {c.flag: c.values for c in _CAPS if c.values}
 
 
 @dataclass(frozen=True)
@@ -276,6 +367,14 @@ PRESETS: dict[str, dict] = {
                   "NMEM_AUTONOMY__ENABLED", "NMEM_SYM_RECALL_DRIVE_ENABLED",
                   "NMEM_SELF_ENGINEERING__ENABLED", "NMEM_SELF_ENGINEERING__INCLUDE_IN_PROMPT"],
     },
+    "conversational": {
+        "label": "Conversational",
+        "blurb": "A grounded chat agent that recognises who it's talking to, calls tools mid-turn, "
+                 "and honours commitments. Identity + tool-calling on top of memory.",
+        "flags": ["NMEM_SYM_CONSOLIDATION_ENABLED", "NMEM_WORKING__ENABLED",
+                  "NMEM_CHAT_TOOLS_ENABLED", "NMEM_CHAT_SPEAKER_ENABLED",
+                  "NMEM_CHAT_PERSON_ALIAS_ENABLED", "NMEM_CHAT_OBLIGATIONS_ENABLED"],
+    },
     "perception": {
         "label": "Perception (embodied)",
         "blurb": "Visual memory over a computer-use sandbox: remember screens seen, warn on "
@@ -314,6 +413,7 @@ def catalog(*, env=None) -> list[dict]:
             "substrate": c.substrate,
             "default": bool(default),
             "enabled": c.flag in on,
+            "values": list(c.values),              # non-empty ⇒ a value-flag; UI renders a picker
         })
     return out
 

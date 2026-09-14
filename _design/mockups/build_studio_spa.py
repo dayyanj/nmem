@@ -22,10 +22,14 @@ OUT = REPO / "src" / "nmem" / "agent_core" / "studio_ui" / "index.html"
 SCRIPT = r"""<script>
 // ── state (catalog is fetched from the backend, never inlined — one source of truth) ──
 let CATALOG = null, CAPS = {}, enabled = new Set(), preset = null;
-let GROUP_ORDER = ["drives","concerns","goals","learning","comms","recall","graph","prediction","obligations","meta"];
+let GROUP_ORDER = ["drives","concerns","goals","learning","metacognition","comms","recall","graph","prediction","obligations","meta","chat","perception"];
 const GROUP_LABEL = {drives:"Drives", concerns:"Concerns", goals:"Goals", learning:"Experiential learning",
-  comms:"Surprise to communication", recall:"Recall", graph:"World-model graph",
-  prediction:"Prediction & hypotheses", obligations:"Obligations", meta:"Meta / self-improvement"};
+  metacognition:"Metacognition", comms:"Surprise to communication", recall:"Recall", graph:"World-model graph",
+  prediction:"Prediction & hypotheses", obligations:"Obligations", meta:"Meta / self-improvement",
+  chat:"Conversation & identity", perception:"Perception (embodied)"};
+// value-flag picks (flag → chosen value); mirrors config_writer's `values` arg. Only value-flags
+// (c.va non-empty) live here; a boolean flag is just present/absent in `enabled`.
+const VALUES = {};
 const TEMPLATES = {
   researcher:{nm:"Scout", aid:"scout", preset:"reflective",
     obj:"Continuously build an accurate model of your domain from primary sources.\nNever let an unknown drive a guessed answer. Seek it out and verify.",
@@ -66,7 +70,12 @@ function toggle(flag){
     if(el){el.classList.add('flash');setTimeout(()=>el.classList.remove('flash'),800);}});
 }
 function selectPreset(name){preset=name;const acc=new Set();(CATALOG.presets[name].flags||[]).forEach(f=>addWithDeps(f,acc));enabled=acc;render();}
-function render(){renderPresets();renderGroups();renderEnv();syncPresets();document.getElementById('ec').textContent=enabled.size+" on";}
+// value-flags: the default pick is the last (most-capable) choice; config_writer applies the same default.
+function defaultValue(f){const va=CAPS[f]?.va||[];return va.length?va[va.length-1]:'';}
+function syncValues(){for(const f of Object.keys(VALUES))if(!enabled.has(f))delete VALUES[f];
+  CATALOG.caps.forEach(c=>{if((c.va||[]).length&&enabled.has(c.f)&&!VALUES[c.f])VALUES[c.f]=defaultValue(c.f);});}
+function setValue(f,v){VALUES[f]=v;renderEnv();}
+function render(){syncValues();renderPresets();renderGroups();renderEnv();syncPresets();document.getElementById('ec').textContent=enabled.size+" on";}
 function syncPresets(){document.querySelectorAll('#presets .pick').forEach(b=>b.setAttribute('aria-pressed',b.dataset.p===preset));}
 function renderPresets(){const host=document.getElementById('presets');if(host.dataset.done)return;host.dataset.done=1;
   for(const[k,p]of Object.entries(CATALOG.presets)){const acc=new Set();(p.flags||[]).forEach(f=>addWithDeps(f,acc));
@@ -80,20 +89,33 @@ function renderGroups(){const host=document.getElementById('groups');host.innerH
     caps.forEach(c=>{const ison=enabled.has(c.f);const p=document.createElement('div');p.className='pill';p.dataset.flag=c.f;
       p.setAttribute('role','switch');p.setAttribute('aria-pressed',ison);p.tabIndex=0;p.onclick=()=>toggle(c.f);
       p.onkeydown=e=>{if(e.key===' '||e.key==='Enter'){e.preventDefault();toggle(c.f);}};
-      const short=c.f.replace(/^NMEM_(SYM_)?/,'');
+      const short=c.f.replace(/^NMEM_(SYM_)?/,'').replace(/^CHAT_/,'CHAT · ');
       const dep=ison&&(c.r||[]).length?`<span class="depmark" title="pulls in ${c.r.join(', ')}">+dep</span>`:'';
       const sub=c.sub?`<div class="sub"><b>needs:</b> ${c.sub}</div>`:'';
-      p.innerHTML=`${dep}<div class="fl">${short}</div><div class="ds">${c.s}</div>${sub}`;pills.appendChild(p);});
+      // value-flag (e.g. POSTMORTEM_MODE): once on, a picker chooses which value is written (click
+      // doesn't toggle the pill — stopPropagation). config_writer emits the chosen value, not `true`.
+      let valsel='';
+      if((c.va||[]).length&&ison){valsel=`<select class="valsel" onclick="event.stopPropagation()" `+
+        `onkeydown="event.stopPropagation()" onchange="setValue('${c.f}',this.value)" `+
+        `style="margin-top:8px;font-family:var(--mono);font-size:12px;padding:2px 6px;border-radius:6px">`+
+        (c.va).map(v=>`<option value="${v}"${VALUES[c.f]===v?' selected':''}>${v}</option>`).join('')+`</select>`;}
+      p.innerHTML=`${dep}<div class="fl">${short}</div><div class="ds">${c.s}</div>${valsel}${sub}`;pills.appendChild(p);});
     wrap.appendChild(pills);host.appendChild(wrap);}}
-// env preview mirrors config_writer.render_capabilities_env exactly: booleans 'true',
-// DRIVES_OUTWARD_ACTIONS carries its CSV value, and RECALL_DRIVE auto-writes RECALL_AGENT_ID.
+// env preview mirrors config_writer.render_capabilities_env exactly: booleans 'true', value-flags
+// carry their chosen value (DRIVES_OUTWARD_ACTIONS=explore, POSTMORTEM_MODE=canary|active), and
+// RECALL_DRIVE auto-writes RECALL_AGENT_ID. Remedy-goals coerces POSTMORTEM_MODE=active (as the writer does).
+function envValue(f){
+  if(f==='NMEM_SYM_DRIVES_OUTWARD_ACTIONS')return 'explore';
+  if(f==='NMEM_SYM_POSTMORTEM_MODE'&&enabled.has('NMEM_SYM_POSTMORTEM_REMEDY_GOALS'))return 'active';
+  const va=CAPS[f]?.va||[];
+  if(va.length)return VALUES[f]||va[va.length-1];
+  return 'true';}
 function renderEnv(){const on=[...enabled].sort();
   let html=`<span class="c"># capabilities.env, generated by nmem.agent_core.config_writer\n# dependency-complete · booleans only · defaults omitted\n</span>`;
   if(!on.length)html+=`<span class="c"># (nothing on yet: a blank mind)</span>`;
   let lastG=null;
   on.forEach(f=>{const g=CAPS[f]?.g;if(g!==lastG){html+=`<span class="c">\n# ${GROUP_LABEL[g]||g}\n</span>`;lastG=g;}
-    const val=f==='NMEM_SYM_DRIVES_OUTWARD_ACTIONS'?'explore':'true';
-    html+=`<span class="k">${f}</span>=<span class="v">${val}</span>\n`;});
+    html+=`<span class="k">${f}</span>=<span class="v">${envValue(f)}</span>\n`;});
   if(enabled.has('NMEM_SYM_RECALL_DRIVE_ENABLED')){const aid=(document.getElementById('aid').value||'agent').trim();
     html+=`<span class="c">\n# values\n</span><span class="k">NMEM_SYM_RECALL_AGENT_ID</span>=<span class="v">${aid}</span>\n`;}
   document.getElementById('env').innerHTML=html;}
@@ -257,7 +279,7 @@ async function create(){const aid=document.getElementById('aid').value.trim();co
     objectives:document.getElementById('obj').value.split('\n').map(s=>s.trim()).filter(Boolean),
     world_entities:document.getElementById('ent').value.trim()};
   const body={agent_id:aid,enabled:[...enabled],persona,llm:llmSpec(),embedding:embeddingSpec(),
-    outward_actions:'explore',autonomy:{level:document.getElementById('autonomy').value}};
+    outward_actions:'explore',values:{...VALUES},autonomy:{level:document.getElementById('autonomy').value}};
   const cu=collectComputerUse();
   if(cu){body.computer_use=cu;}                 // research agent: the sandbox is its one actuator (§33.3)
   else{const actors=collectActors(); if(actors)body.actors=actors;}  // else selector tools (if any)
@@ -272,7 +294,7 @@ async function create(){const aid=document.getElementById('aid').value.trim();co
 async function initApp(){
   try{
     const data=await (await fetch('/studio/catalog')).json();
-    CATALOG={caps:data.capabilities.map(c=>({f:c.flag,g:c.group,s:c.summary,r:c.requires||[],sub:c.substrate||''})),
+    CATALOG={caps:data.capabilities.map(c=>({f:c.flag,g:c.group,s:c.summary,r:c.requires||[],sub:c.substrate||'',va:c.values||[]})),
              presets:data.presets};
     CATALOG.caps.forEach(c=>CAPS[c.f]=c);
     if(Array.isArray(data.groups)&&data.groups.length)GROUP_ORDER=data.groups;

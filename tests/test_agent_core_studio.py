@@ -71,14 +71,18 @@ def test_catalog_exposes_map_presets_and_groups():
     body = r.json()
     flags = {c["flag"] for c in body["capabilities"]}
     assert "NMEM_SYM_DRIVES_ENABLED" in flags
-    # every capability carries what the pills need to enforce dependencies
+    # every capability carries what the pills need to enforce dependencies (incl. the value-flag choices)
     sample = body["capabilities"][0]
-    assert {"flag", "group", "summary", "requires", "default", "enabled"} <= set(sample)
-    assert set(body["presets"]) == {"memory", "reflective", "full_cognition", "perception"}
+    assert {"flag", "group", "summary", "requires", "default", "enabled", "values"} <= set(sample)
+    assert set(body["presets"]) == {"memory", "reflective", "full_cognition", "conversational", "perception"}
     # presets are dependency-complete as served (recall pulls in drives/concerns/autonomy)
     full = set(body["presets"]["full_cognition"]["flags"])
     assert {"NMEM_SYM_CONCERNS_ENABLED", "NMEM_AUTONOMY__ENABLED"} <= full
-    assert "drives" in body["groups"]
+    assert {"drives", "chat", "metacognition"} <= set(body["groups"])
+    # the chat/identity family + the postmortem value-flag are surfaced
+    by_flag = {c["flag"]: c for c in body["capabilities"]}
+    assert {"NMEM_CHAT_SPEAKER_ENABLED", "NMEM_CHAT_TEXT_IDENTITY_ENABLED"} <= set(by_flag)
+    assert by_flag["NMEM_SYM_POSTMORTEM_MODE"]["values"] == ["canary", "active"]
 
 
 def test_create_auto_completes_dependency_closure(tmp_path):
