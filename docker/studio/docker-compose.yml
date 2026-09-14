@@ -38,6 +38,16 @@ services:
       NMEM_SYM_VIZ_ENABLED: "1"
       NMEM_VIZ_INGEST_URL: http://viz:5174/ingest
       NMEM_VIZ_PUBLIC_URL: "http://localhost:${VIZ_HOST_PORT:-5174}/"
+      # Chat-style (writing-style) identity — the LUAR sidecars (compose `identity` profile). The
+      # agent only calls these when NMEM_CHAT_TEXT_IDENTITY_ENABLED is on (wizard pill); the client
+      # fails OPEN (identity off) if the sidecars aren't running, so setting the URLs is harmless when
+      # the profile is down. Bring identity up: `docker compose --profile identity up`.
+      NMEM_IDENTITY_MATCHER_URL: http://identity-matcher:9404
+      NMEM_IDENTITY_TEXT_EMBED_URL: http://identity-text-embed:9406
+      # Embodied visual memory (perception profile + a computer_use agent): the sensory store. Reuses
+      # the agent DB; SensorGraph.connect() self-applies its migrations. Only touched when
+      # NMEM_VISUAL_MEMORY_ENABLED is on AND a sandbox is attached.
+      NMEM_SENSOR_DB_DSN: postgresql://nmem:nmem@postgres:5432/agent_nmem
       # network access to a HOST-run LLM (e.g. local vLLM/Ollama) from inside the container:
       # point the wizard at http://host.docker.internal:PORT/v1
     extra_hosts:
@@ -89,7 +99,80 @@ services:
     volumes:
       - redis_data:/data
 
+  # ── identity sidecars (profile: identity) ──────────────────────────────────────────
+  # Writing-style (LUAR) identity for the chat path. Opt-in — they run only under the
+  # `identity` profile — but the LUAR checkpoint is baked into the image (offline first boot).
+  # One image, two roles (IDENTITY_ROLE). Enable in the wizard with the CHAT · TEXT_IDENTITY pill.
+  #   docker compose --profile identity up
+  identity-matcher:
+    profiles: ["identity"]
+    build:
+      context: ../../..
+      dockerfile: nmem/docker/studio/Dockerfile.identity
+    image: registry.spwig.com/nmem-identity:latest
+    restart: unless-stopped
+    environment:
+      IDENTITY_ROLE: matcher
+      # Its own DB in the shared Postgres; the entrypoint creates it + applies the schema (idempotent).
+      NMEM_IDENTITY_DSN: postgresql://nmem:nmem@postgres:5432/nmem_identity
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9404/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  identity-text-embed:
+    profiles: ["identity"]
+    build:
+      context: ../../..
+      dockerfile: nmem/docker/studio/Dockerfile.identity
+    image: registry.spwig.com/nmem-identity:latest
+    restart: unless-stopped
+    environment:
+      IDENTITY_ROLE: text-embed          # loads rrivera1849/LUAR-MUD (baked in), serves /embed on 9406
+    healthcheck:
+      # /health.ok flips true only once the LUAR model has finished loading → doubles as readiness.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9406/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 40
+
+  # ── computer-use sandbox (profile: perception) ─────────────────────────────────────
+  # The bundled nmem-sandbox — a browser/desktop the agent drives over an HTTP action API. Opt-in
+  # (perception profile). A perception/research agent's wizard `computer_use.url` points at it
+  # (http://sandbox:8080). The sandbox has its OWN vision model — set SANDBOX_VLM_URL / _MODEL (its
+  # brain, separate from the agent's). noVNC (6080) stays on loopback for watching it work.
+  #   SANDBOX_VLM_URL=http://host.docker.internal:8003/v1/chat/completions \
+  #   SANDBOX_VLM_MODEL=your-vlm docker compose --profile perception up
+  sandbox:
+    profiles: ["perception"]
+    build:
+      context: ../../../nmem-sandbox
+      dockerfile: Dockerfile
+    image: registry.spwig.com/nmem-sandbox:latest
+    restart: unless-stopped
+    ports:
+      - "${STUDIO_BIND:-127.0.0.1}:${SANDBOX_NOVNC_PORT:-6080}:6080"   # watch it work (loopback)
+    environment:
+      VLM_URL: ${SANDBOX_VLM_URL:-}       # REQUIRED for the sandbox to act (its own vision model)
+      VLM_MODEL: ${SANDBOX_VLM_MODEL:-}
+      VLM_BACKEND: ${SANDBOX_VLM_BACKEND:-openai}
+      VLM_API_KEY: ${SANDBOX_VLM_API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - sandbox_artifacts:/home/sandbox/artifacts
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
 volumes:
   agent_data:
   pg_data:
   redis_data:
+  sandbox_artifacts:

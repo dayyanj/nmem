@@ -1,0 +1,51 @@
+# nmem-identity sidecars for the studio appliance (chat-style / writing-style identity).
+#
+# One image, two roles (set IDENTITY_ROLE): the `matcher` (/resolve, Postgres-backed, 9404) and the
+# `text-embed` LUAR sidecar (/embed, 9406). Both are optional — they run only under the compose
+# `identity` profile — but the LUAR checkpoint is baked in so first boot is fast and fully offline.
+#
+# Build context is the apps/ monorepo root (to reach the sibling nmem-identity source):
+#   docker build -f nmem/docker/studio/Dockerfile.identity -t nmem-identity .
+FROM python:3.12-slim
+
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="nmem-identity" \
+      org.opencontainers.image.description="Chat-style (LUAR) identity sidecars for the nmem-studio appliance" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.source="https://spwig.com" \
+      org.opencontainers.image.licenses="BUSL-1.1 AND MIT"
+
+# Offline at RUNTIME (the model is baked in below); the preload RUN flips these off for its one fetch.
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HF_HOME=/opt/hf \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends build-essential curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# CPU torch FIRST (the [text] extra pulls torch+transformers; without the CPU index it grabs the
+# multi-GB CUDA build). [serve] adds fastapi/uvicorn; the matcher's asyncpg comes in via the core deps.
+COPY nmem-identity /src/nmem-identity
+RUN pip install --upgrade pip \
+ && pip install torch --index-url https://download.pytorch.org/whl/cpu \
+ && pip install "/src/nmem-identity[serve,text]" einops
+ # einops is required by the LUAR trust_remote_code modeling file but isn't declared by the [text]
+ # extra — install it explicitly so the offline model preload below (and the sidecar) can import it.
+
+# Bake the LUAR checkpoint (weights + the trust_remote_code modeling files) into the HF cache so the
+# text-embed sidecar loads offline. Keep the model name at the store-bound default (rrivera1849/
+# LUAR-MUD) or the sidecar's model_id↔store desync guard refuses to start.
+RUN HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python -c "\
+from transformers import AutoModel, AutoTokenizer; \
+AutoTokenizer.from_pretrained('rrivera1849/LUAR-MUD', trust_remote_code=True); \
+AutoModel.from_pretrained('rrivera1849/LUAR-MUD', trust_remote_code=True)"
+
+COPY nmem/docker/studio/identity-entrypoint.sh /identity-entrypoint.sh
+RUN chmod +x /identity-entrypoint.sh
+
+# 9404 matcher · 9406 text-embed (the entrypoint picks by IDENTITY_ROLE)
+EXPOSE 9404 9406
+ENTRYPOINT ["/identity-entrypoint.sh"]

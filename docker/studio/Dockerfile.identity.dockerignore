@@ -1,0 +1,17 @@
+# Build-context filter for the identity sidecar image (BuildKit reads <dockerfile>.dockerignore).
+# Context is the apps/ monorepo root; ship only the nmem-identity source + the entrypoint.
+*
+!nmem-identity
+!nmem/docker/studio/identity-entrypoint.sh
+
+# prune heavy / irrelevant bits
+**/.git
+**/.venv
+**/venv
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/node_modules
+**/.pytest_cache
+**/.mypy_cache
+nmem-identity/tests

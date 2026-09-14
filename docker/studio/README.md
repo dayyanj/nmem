@@ -36,10 +36,11 @@ docker compose up --build
 
 Then open <http://localhost:8080>. (If 8080 is taken: `STUDIO_HOST_PORT=18080 docker compose up`.)
 
-> **Releasing (maintainers):** `./docker/publish.sh --push` builds both images from the monorepo,
-> version-stamps them (`VERSION` → the `org.opencontainers.image.version` label), and pushes
-> `:<version>` + `:latest` to `$REGISTRY` (default `registry.spwig.com`). CI does this on a `v*` tag
-> (`.github/workflows/publish-images.yml`).
+> **Releasing (maintainers):** `./docker/publish.sh --push` builds all four appliance images from the
+> monorepo — `nmem-studio`, `nmem-viz`, and (for the optional profiles) `nmem-identity` +
+> `nmem-sandbox` — version-stamps them (`VERSION` → the `org.opencontainers.image.version` label), and
+> pushes `:<version>` + `:latest` to `$REGISTRY` (default `registry.spwig.com`). CI does this on a `v*`
+> tag (`.github/workflows/publish-images.yml`).
 
 > **Security — the admin surface can create + run agents and register container-executing tools.**
 > By default it is **unauthenticated** and the compose binds the studio + viz ports to **loopback
@@ -65,13 +66,45 @@ Everything else runs in the compose stack: the studio, **Postgres + pgvector**, 
 **all-MiniLM-L6-v2** embedder (in-process, CPU), and Redis (only used if you later enable
 peering/comms).
 
+## Optional capabilities (compose profiles)
+
+Two heavier capabilities ship in the box but stay **off by default** — bring them up with a compose
+profile when you want them. The matching wizard pills tell you when a capability needs one.
+
+- **Writing-style identity** (`--profile identity`) — two LUAR sidecars (a Postgres-backed matcher +
+  the text-embed service; the `rrivera1849/LUAR-MUD` model is baked into the image for offline boot).
+  They let a conversational agent recognise a *returning* person by how they write, not just by a
+  declared name. Turn it on in the wizard with the **CHAT · TEXT_IDENTITY** pill (which also needs
+  **CHAT · SPEAKER**). The client fails **open** — identity just stays off — if the sidecars aren't
+  running, so it's safe to leave the pill off and the profile down.
+  ```bash
+  docker compose --profile identity up
+  ```
+
+- **Embodied perception** (`--profile perception`) — the bundled **nmem-sandbox**: a headless
+  browser/desktop the agent drives over an HTTP action API (watch it work at
+  `http://localhost:6080/vnc.html`). Point a **research/perception** agent's *Research sandbox* step
+  at `http://sandbox:8080`. The sandbox has its **own vision model** (separate from the agent's brain)
+  — you must give it one:
+  ```bash
+  SANDBOX_VLM_URL=http://host.docker.internal:8003/v1/chat/completions \
+  SANDBOX_VLM_MODEL=your-vlm docker compose --profile perception up
+  ```
+  With the sandbox attached, the **Perception (embodied)** preset / visual-memory pills become live
+  (the agent remembers screens it has seen and warns when it revisits one a past attempt failed on;
+  the sensory store reuses the agent DB and self-migrates).
+
+Combine them: `docker compose --profile identity --profile perception up`.
+
 ## What persists
 
 Named volumes survive `docker compose down`:
 
 - `agent_data` → `/data/<agent_id>/` — the agent's config + secrets. Delete it to start the wizard over.
-- `pg_data` — the agent's memory + symbol graph.
+- `pg_data` — the agent's memory + symbol graph (and, if you use them, the `nmem_identity` DB and the
+  reused sensory store — all in the one Postgres volume).
 - `redis_data` — reserved for comms.
+- `sandbox_artifacts` — files the perception sandbox produces (only with `--profile perception`).
 
 ## Backup, restore & upgrade
 
@@ -108,6 +141,10 @@ restoring the pre-upgrade archive against the previous image tag. Pin a version
   (default `read_only`, so a fresh agent still can't act), which the appliance wires into a gated
   executor — no derived image needed. Drive it from the dashboard's **Act** panel or `POST /act`.
 - **Chat + memory-viz** ship in agent mode: a grounded `/chat` panel on the dashboard and a live
-  3D "brain" (the bundled nmem-viz service) alongside `/health` + `/admin/*`.
+  3D "brain" (the bundled nmem-viz service) alongside `/health` + `/admin/*`. The wizard's
+  **Conversation & identity** pills add tool-calling in chat (the agent can call `memory_search` +
+  your tools mid-turn), speaker recognition, person-alias convergence, chat-lifted obligations, and
+  (with the `identity` profile) writing-style identity. The **Conversational** preset bundles a safe
+  default set.
 - **Build context** is the `apps/` monorepo root so the image can install the sibling `nmem-*`
   libraries from local source (they are not yet on PyPI).

@@ -20,11 +20,13 @@ VERSION="${VERSION:-dev}"
 PUSH=""
 [ "${1:-}" = "--push" ] && PUSH=1
 
-if [ ! -d "$CONTEXT/nmem-sym" ] || [ ! -d "$CONTEXT/nmem-viz" ]; then
-  echo "ERROR: expected sibling repos under $CONTEXT (nmem-sym, nmem-act, nmem-exchange, nmem-viz)." >&2
-  echo "       Check out all of them side-by-side, or build where the monorepo lives." >&2
-  exit 1
-fi
+for repo in nmem-sym nmem-viz nmem-identity nmem-sym-sensor nmem-sandbox; do
+  if [ ! -d "$CONTEXT/$repo" ]; then
+    echo "ERROR: expected sibling repo '$repo' under $CONTEXT." >&2
+    echo "       Check out all nmem-* repos side-by-side, or build where the monorepo lives." >&2
+    exit 1
+  fi
+done
 
 _build () {   # display-name  dockerfile  build-context
   local name="$1" dockerfile="$2" ctx="$3"
@@ -37,7 +39,11 @@ _build () {   # display-name  dockerfile  build-context
   fi
 }
 
-_build nmem-studio "$HERE/docker/studio/Dockerfile" "$CONTEXT"
-_build nmem-viz    "$CONTEXT/nmem-viz/Dockerfile"   "$CONTEXT/nmem-viz"
+# Core appliance (always pulled). nmem-identity + nmem-sandbox back the optional identity /
+# perception compose profiles — published too so `docker compose --profile … pull` finds them.
+_build nmem-studio   "$HERE/docker/studio/Dockerfile"          "$CONTEXT"
+_build nmem-viz      "$CONTEXT/nmem-viz/Dockerfile"            "$CONTEXT/nmem-viz"
+_build nmem-identity "$HERE/docker/studio/Dockerfile.identity" "$CONTEXT"
+_build nmem-sandbox  "$CONTEXT/nmem-sandbox/Dockerfile"        "$CONTEXT/nmem-sandbox"
 
-echo "done: nmem-studio:$VERSION + nmem-viz:$VERSION @ $REGISTRY${PUSH:+  (pushed :$VERSION and :latest)}"
+echo "done: nmem-studio + nmem-viz + nmem-identity + nmem-sandbox :$VERSION @ $REGISTRY${PUSH:+  (pushed :$VERSION and :latest)}"

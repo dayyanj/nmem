@@ -1,11 +1,13 @@
 # Build + push the nmem appliance images on a version tag (open, free pull-and-run distribution).
 #
-#   git tag v1.0.0 && git push origin v1.0.0   → builds nmem-studio:1.0.0 + nmem-viz:1.0.0 (+ :latest)
+#   git tag v1.0.0 && git push origin v1.0.0   → builds nmem-studio + nmem-viz + nmem-identity +
+#                                                 nmem-sandbox :1.0.0 (+ :latest)
 #
 # REQUIRES three repo/org secrets to be wired (Settings → Secrets):
 #   REGISTRY_USERNAME / REGISTRY_PASSWORD  — a push credential for registry.spwig.com
 #   REPO_TOKEN                             — read access to the sibling repos (cross-repo checkout)
-# and confirmation that the sibling repos (nmem-sym / nmem-act / nmem-exchange / nmem-viz) live under
+# and confirmation that the sibling repos (nmem-sym / nmem-act / nmem-exchange / nmem-viz /
+# nmem-sym-sensor / nmem-identity / nmem-sandbox) live under
 # the SAME owner as this repo. If instead you publish the libs to a package index, drop the sibling
 # checkouts and have the Dockerfile pip-install them — then this only needs the registry secrets.
 name: Publish appliance images
@@ -46,6 +48,23 @@ jobs:
         with:
           repository: "${{ github.repository_owner }}/nmem-viz"
           path: nmem-viz
+          token: "${{ secrets.REPO_TOKEN }}"
+      # nmem-sym-sensor → visual-memory bits in the studio image; nmem-identity → the LUAR sidecar
+      # image; nmem-sandbox → the perception sandbox image (all built by publish.sh).
+      - uses: actions/checkout@v4
+        with:
+          repository: "${{ github.repository_owner }}/nmem-sym-sensor"
+          path: nmem-sym-sensor
+          token: "${{ secrets.REPO_TOKEN }}"
+      - uses: actions/checkout@v4
+        with:
+          repository: "${{ github.repository_owner }}/nmem-identity"
+          path: nmem-identity
+          token: "${{ secrets.REPO_TOKEN }}"
+      - uses: actions/checkout@v4
+        with:
+          repository: "${{ github.repository_owner }}/nmem-sandbox"
+          path: nmem-sandbox
           token: "${{ secrets.REPO_TOKEN }}"
 
       - name: Log in to registry.spwig.com

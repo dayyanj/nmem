@@ -26,18 +26,23 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential curl \
  && rm -rf /var/lib/apt/lists/*
 
-# The four libraries this appliance needs. nmem[openai] = OpenAI-compatible endpoints (no CUDA);
+# The libraries this appliance needs. nmem[openai] = OpenAI-compatible endpoints (no CUDA);
 # nmem-sym embeds locally, so install the CPU torch wheel FIRST (else sentence-transformers pulls
 # the multi-GB CUDA build). nmem-exchange is imported only if peering is enabled, installed so it
-# never crashes a fresh env.
+# never crashes a fresh env. nmem-sym-sensor[visual,inference] powers the EMBODIED visual-memory
+# path (perception profile); it runs in-process in the agent, so it's in the studio image (opencv +
+# onnxruntime; torch + sentence-transformers are already here). computer-use = httpx for the
+# SandboxClient that drives the bundled sandbox.
 COPY nmem /src/nmem
 COPY nmem-sym /src/nmem-sym
 COPY nmem-act /src/nmem-act
 COPY nmem-exchange /src/nmem-exchange
+COPY nmem-sym-sensor /src/nmem-sym-sensor
 
 RUN pip install --upgrade pip \
  && pip install torch --index-url https://download.pytorch.org/whl/cpu \
- && pip install "/src/nmem[openai,anthropic]" /src/nmem-sym /src/nmem-act /src/nmem-exchange \
+ && pip install "/src/nmem[openai,anthropic,computer-use]" /src/nmem-sym /src/nmem-act /src/nmem-exchange \
+ && pip install "/src/nmem-sym-sensor[visual,inference]" \
  && pip install "uvicorn[standard]" fastapi asyncpg pyyaml \
  && pip install mcp    # actor layer: MCP client (webhook/a2a/plugins need no extra deps)
 
