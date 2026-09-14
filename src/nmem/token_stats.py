@@ -120,6 +120,70 @@ async def record_llm_usage(
         logger.debug("Failed to record LLM usage: %s", e)
 
 
+_REAL_PREFIX = "token_usage_real"
+_REAL_LIFETIME_PREFIX = "token_usage_real_lifetime"
+
+
+async def record_real_usage(
+    db: "DatabaseManager",
+    agent_id: str,
+    input_tokens: int,
+    output_tokens: int,
+    *,
+    model: str | None = None,
+) -> None:
+    """Record REAL provider token usage for one LLM call (Tier B).
+
+    Unlike ``record_prompt_stats`` (which estimates prompt-injection sizes) this
+    persists the actual ``input``/``output`` token counts the provider reported,
+    so the viz can show true spend and a real lifetime total. Writes two keys:
+
+      * daily   ``token_usage_real:{agent_id}:{YYYY-MM-DD}``
+      * lifetime ``token_usage_real_lifetime:{agent_id}`` (no date; monotonic)
+
+    Each value is JSON ``{calls, input_tokens, output_tokens, total_tokens,
+    models{model: total_tokens}}``. Best-effort + fail-open — a stats hiccup must
+    never disturb the LLM call that produced it.
+    """
+    inp = int(input_tokens or 0)
+    out = int(output_tokens or 0)
+    if inp <= 0 and out <= 0:
+        return
+    total = inp + out
+    day_key = f"{_REAL_PREFIX}:{agent_id}:{datetime.utcnow().strftime('%Y-%m-%d')}"
+    life_key = f"{_REAL_LIFETIME_PREFIX}:{agent_id}"
+
+    def _merge(existing: dict | None) -> dict:
+        data = existing or {"calls": 0, "input_tokens": 0, "output_tokens": 0,
+                            "total_tokens": 0, "models": {}}
+        data["calls"] = data.get("calls", 0) + 1
+        data["input_tokens"] = data.get("input_tokens", 0) + inp
+        data["output_tokens"] = data.get("output_tokens", 0) + out
+        data["total_tokens"] = data.get("total_tokens", 0) + total
+        if model:
+            models = data.get("models", {})
+            models[model] = models.get(model, 0) + total
+            data["models"] = models
+        return data
+
+    try:
+        async with db.session() as session:
+            for key in (day_key, life_key):
+                row = (await session.execute(
+                    select(NmemMetadata).where(NmemMetadata.key == key)
+                )).scalar_one_or_none()
+                if row is None:
+                    session.add(NmemMetadata(
+                        key=key,
+                        value=json.dumps(_merge(None)),
+                    ))
+                else:
+                    session.add(row)
+                    row.value = json.dumps(_merge(json.loads(row.value)))
+    except Exception as e:
+        logger.debug("Failed to record real token usage: %s", e)
+
+
 async def query_token_trends(
     db: "DatabaseManager",
     *,

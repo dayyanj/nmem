@@ -213,10 +213,46 @@ class AgentRuntime:
         if self.backend is None:
             from nmem.agent_core.backend import build_backend
             self.backend = build_backend(self._config)
+        self._wire_usage_recorder()
         await seed_persona(self.mem, self.graph, self._persona, owner_agent=self.hive.agent_id)
         await self._elect_keeper()
         await self._wire_cognition()
         return self.status
+
+    def _wire_usage_recorder(self) -> None:
+        """Attach a real-token-usage hook to the backend (Tier B, viz token stats).
+
+        Every real LLM call then persists its true provider token counts to
+        ``nmem_metadata`` (daily + lifetime keys) and emits a ``llm.usage`` viz
+        event for the overlay's live session counter. Both are fire-and-forget +
+        fail-open. No-op — byte-identical to today — when the backend predates the
+        ``on_usage`` hook (a custom backend) or memory exposes no DB handle."""
+        be = self.backend
+        if be is None or not hasattr(be, "on_usage"):
+            return
+        db = getattr(self.mem, "_db", None)
+        if db is None:
+            return
+        agent_id = self.agent_id
+
+        def _record(inp: int, out: int, model: str | None = None) -> None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return  # no loop (shouldn't happen from an async backend) — skip silently
+            from nmem.token_stats import record_real_usage
+            loop.create_task(record_real_usage(db, agent_id, inp, out, model=model))
+            try:
+                from nmem_sym.viz_events import viz_emit
+                loop.create_task(viz_emit("llm.usage", {
+                    "agent_id": agent_id, "input": inp, "output": out,
+                    "total": inp + out, "model": model,
+                }))
+            except Exception:  # noqa: BLE001 — viz is optional/absent on some installs
+                pass
+
+        be.on_usage = _record
+        log.info("[runtime] real token-usage recorder wired to backend")
 
     async def _elect_keeper(self) -> None:
         """Shared-world graph-keeper election (§4.2). A process willing to keep (``graph_role:

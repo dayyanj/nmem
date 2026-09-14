@@ -35,6 +35,44 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 _QWEN_THINK_MIN_TOKENS = 1024
 
 
+def _normalize_usage(usage: dict | None) -> tuple[int, int]:
+    """Normalize a provider ``usage`` block to ``(input_tokens, output_tokens)``.
+
+    OpenAI-shape: ``prompt_tokens`` / ``completion_tokens``. Anthropic-shape:
+    ``input_tokens`` / ``output_tokens`` (+ prompt-cache reads/writes, which are
+    real billed input, so they're folded into the input count). Missing keys → 0.
+    """
+    if not usage:
+        return 0, 0
+    inp = usage.get("input_tokens")
+    if inp is None:
+        inp = usage.get("prompt_tokens", 0)
+    inp = (inp or 0) + (usage.get("cache_creation_input_tokens") or 0) \
+        + (usage.get("cache_read_input_tokens") or 0)
+    out = usage.get("output_tokens")
+    if out is None:
+        out = usage.get("completion_tokens", 0)
+    return int(inp or 0), int(out or 0)
+
+
+def _fire_usage(backend, j: dict) -> None:
+    """Invoke ``backend.on_usage(input, output, model)`` if a hook is attached.
+
+    Byte-identical no-op when ``on_usage`` is unset (production default). The hook
+    is a sync callback (it schedules its own persistence/emit); guarded so a stats
+    failure never disturbs the LLM call that produced it.
+    """
+    cb = getattr(backend, "on_usage", None)
+    if cb is None:
+        return
+    try:
+        inp, out = _normalize_usage(j.get("usage"))
+        if inp or out:
+            cb(inp, out, getattr(backend, "model", None))
+    except Exception as e:  # noqa: BLE001 — usage accounting is never load-bearing
+        log.debug("usage hook failed: %s", e)
+
+
 @dataclass
 class ToolCall:
     id: str
@@ -66,6 +104,9 @@ class OpenAICompatibleBackend:
         self.api_key = api_key
         self.family = family
         self.timeout = timeout
+        # Optional real-token-usage hook: on_usage(input, output, model) — set by the
+        # runtime to persist true provider spend + feed the viz live counter. None = off.
+        self.on_usage = None
 
     def _headers(self) -> dict:
         h = {"Content-Type": "application/json"}
@@ -131,6 +172,7 @@ class OpenAICompatibleBackend:
         choice = j["choices"][0]
         content = _THINK_RE.sub("", choice["message"].get("content") or "").strip()
         self._record_usage(usage_sink, 1, body, choice, j)
+        _fire_usage(self, j)
         # Qwen thinking can consume the ENTIRE completion budget (the token floor reduces
         # but does not eliminate this) → empty content + finish_reason='length'. The floor
         # is not a real guard; recover with a bounded SINGLE retry with thinking OFF so the
@@ -144,6 +186,7 @@ class OpenAICompatibleBackend:
             choice = j["choices"][0]
             content = _THINK_RE.sub("", choice["message"].get("content") or "").strip()
             self._record_usage(usage_sink, 2, body, choice, j)
+            _fire_usage(self, j)
         return content
 
     async def chat_with_tools(self, messages: list[dict], tools: list[dict], *,
@@ -153,6 +196,7 @@ class OpenAICompatibleBackend:
                 "tool_choice": tool_choice, "temperature": temperature, "max_tokens": max_tokens}
         self._apply_family(body, extra)
         j = await self._post(body)
+        _fire_usage(self, j)
         choice = j["choices"][0]
         msg = choice.get("message", {})
         calls = []
@@ -190,6 +234,8 @@ class AnthropicBackend:
         self.family = family
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        # Optional real-token-usage hook (see OpenAICompatibleBackend). None = off.
+        self.on_usage = None
 
     def _headers(self) -> dict:
         return {"Content-Type": "application/json", "x-api-key": self.api_key,
@@ -243,6 +289,7 @@ class AnthropicBackend:
             body["system"] = system
         self._apply_thinking(body, extra)
         j = await self._post(body)
+        _fire_usage(self, j)
         if usage_sink is not None:   # eval-only cost accounting; no-op in production
             usage_sink.append({"attempt": 1, "usage": j.get("usage"),
                                "finish_reason": j.get("stop_reason"), "max_tokens": body["max_tokens"],
@@ -261,6 +308,7 @@ class AnthropicBackend:
             body["system"] = system
         self._apply_thinking(body, extra)
         j = await self._post(body)
+        _fire_usage(self, j)
         content, calls = "", []
         for b in j.get("content", []):
             if b.get("type") == "text":
