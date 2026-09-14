@@ -210,16 +210,33 @@ async def _probe_identity_readiness() -> dict | None:
     if not (matcher and embed):
         return {"configured": False}
 
-    async def _ok(base: str) -> bool:
+    async def _matcher_health() -> tuple[bool, bool]:
+        """(reachable, text_style_calibrated) — the matcher's /health reports the loaded fusion
+        curves, so we can tell recognition is actually LIVE, not merely that the sidecar is up."""
         try:
             import httpx
             async with httpx.AsyncClient(timeout=2.0) as c:
-                r = await c.get(base.rstrip("/") + "/health")
-                return r.status_code == 200 and bool((r.json() or {}).get("ok", True))
-        except Exception:  # noqa: BLE001 — unreachable/timeout is just "not ready"
-            return False
+                r = await c.get(matcher.rstrip("/") + "/health")
+                j = r.json() or {}
+                ok = r.status_code == 200 and bool(j.get("ok", True))
+                return ok, ("text_style" in (j.get("calibrations") or []))
+        except Exception:  # noqa: BLE001
+            return False, False
 
-    return {"configured": True, "matcher": await _ok(matcher), "text_embed": await _ok(embed)}
+    matcher_ok, calibrated = await _matcher_health()
+    return {"configured": True, "matcher": matcher_ok, "text_embed": await _probe_url_health(embed),
+            "calibrated": calibrated}
+
+
+async def _probe_url_health(url: str) -> bool:
+    """Best-effort GET {url}/health → True on a 200. Never raises."""
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=2.0) as c:
+            r = await c.get(url.rstrip("/") + "/health")
+            return r.status_code == 200
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _build_gate(cfg: dict | None):
@@ -358,13 +375,33 @@ def build_agent_app():
         return _mk(reg, backend=ctx.runtime.backend, mem=ctx.runtime.mem, agent_id=ctx.runtime.agent_id,
                    bridge=bridge, gate=ctx.state.get("gate"))
 
-    async def _on_started(ctx):
-        # Probe the writing-style identity sidecars once, so the dashboard can say plainly whether the
-        # feature is live (fail-open means a down profile is otherwise silent). Cached for _health_extras.
+    async def _refresh_readiness(ctx):
+        # Refresh the advisory readiness probes (identity sidecars + the sandbox). Cached for the sync
+        # _health_extras. Re-run on a timer so state that changes AFTER boot — bringing a profile up
+        # per the banner's instruction, or a later outage — is reflected instead of frozen at startup.
         try:
             ctx.state["readiness_identity"] = await _probe_identity_readiness()
         except Exception:  # noqa: BLE001 — readiness is advisory, never fatal
             ctx.state["readiness_identity"] = None
+        try:
+            sandbox = ctx.state.get("sandbox")
+            url = sandbox.cfg("url") if (sandbox is not None and sandbox.is_enabled()) else ""
+            ctx.state["readiness_sandbox"] = (
+                {"reachable": await _probe_url_health(url)} if url else None)
+        except Exception:  # noqa: BLE001
+            ctx.state["readiness_sandbox"] = None
+
+    async def _on_started(ctx):
+        # Start the readiness refresher (first pass now, then every 20s) so the dashboard's banners
+        # track the real sidecar/sandbox state over time, not just the boot snapshot.
+        import asyncio
+        await _refresh_readiness(ctx)
+
+        async def _loop():
+            while True:
+                await asyncio.sleep(20)
+                await _refresh_readiness(ctx)
+        ctx.state["readiness_task"] = asyncio.create_task(_loop())
         # Declare the sandbox to the nmem-sym capability registry as the catch-all knowledge actuator
         # so the feasibility planner can bind decomposition goals to it. Gated on goal_registry_enabled.
         # Runs whenever the client exists (present, enabled or not): a disabled client registers
@@ -386,6 +423,9 @@ def build_agent_app():
             log.warning("[studio] computer-use capability registration failed (non-fatal)", exc_info=True)
 
     async def _on_shutdown(ctx):
+        task = ctx.state.get("readiness_task")
+        if task is not None:
+            task.cancel()
         close = ctx.state.get("close")
         if close is not None:
             await close()                              # tear down live MCP/A2A sessions
@@ -425,18 +465,34 @@ def build_agent_app():
                               "message": "Writing-style identity is ON but the LUAR sidecars aren't "
                                          "reachable — recognition stays off until they're up. Start them: "
                                          "docker compose --profile identity up."})
+            elif not ri.get("calibrated"):                     # sidecars up, but no text_style curve loaded
+                items.append({"level": "warn", "capability": "writing-style identity",
+                              "message": "Writing-style identity is ON and its sidecars are up, but no "
+                                         "text_style calibration is loaded — recognition abstains. Seed a "
+                                         "default (nmem-identity seed-text-calibration) or fit one, then "
+                                         "restart the matcher."})
             else:
                 items.append({"level": "info", "capability": "writing-style identity",
                               "message": "Writing-style identity is live (using a default calibration — "
                                          "refit with nmem-identity fit_calibration for best accuracy)."})
+        # A computer-use sandbox (research OR perception) that's configured but unreachable means /act
+        # and visual capture can't run — warn regardless of visual memory.
+        sandbox = ctx.state.get("sandbox")
+        rs = ctx.state.get("readiness_sandbox")                # {reachable} from the probe, or None
+        sandbox_on = sandbox is not None and sandbox.is_enabled()
+        sandbox_reachable = bool(rs and rs.get("reachable"))
+        if sandbox_on and not sandbox_reachable:
+            items.append({"level": "warn", "capability": "computer-use sandbox",
+                          "message": "The computer-use sandbox is configured but isn't reachable — "
+                                     "acting/research can't run. Start it: docker compose "
+                                     "--profile perception up."})
         if _env_on("NMEM_VISUAL_MEMORY_ENABLED"):              # embodied visual memory is ON
-            sandbox = ctx.state.get("sandbox")
-            if sandbox is None or not sandbox.is_enabled():
+            if not sandbox_on:
                 items.append({"level": "warn", "capability": "visual memory",
                               "message": "Visual memory is ON but no computer-use sandbox is attached. "
                                          "Start it: docker compose --profile perception up, and set the "
                                          "Research sandbox to http://sandbox:8080."})
-            elif ctx.state.get("visual_memory") is None:
+            elif sandbox_reachable and ctx.state.get("visual_memory") is None:
                 items.append({"level": "warn", "capability": "visual memory",
                               "message": "Visual memory is ON and a sandbox is attached, but the sensory "
                                          "store isn't available (check NMEM_SENSOR_DB_DSN / nmem-sym-sensor)."})

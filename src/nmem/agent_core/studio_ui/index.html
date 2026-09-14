@@ -651,7 +651,13 @@ async function create(){const aid=document.getElementById('aid').value.trim();co
   const hive=collectHive(); if(hive)body.hive=hive;
   t.textContent='creating '+aid+'…';t.classList.add('on');
   const res=await api('/studio/create',body);
-  if(res.ok){ waitForAgent(aid); }              // hand off to the "building your agent" interstitial
+  if(res.ok){
+    // The appliance restarts into agent mode (started:true) → hold the "building…" interstitial and
+    // land on the dashboard. A config-only host (no restart, no /health) just confirms success.
+    if(res.started) waitForAgent(aid);
+    else{const dep=res.auto_enabled?.length?` (+${res.auto_enabled.length} deps)`:'';
+      flash(`✓ ${aid} created · ${res.written.length} files${dep}`);}
+  }
   else flash('✗ '+(res.error||'create failed'));}
 
 // ── post-Create interstitial: the container restarts into agent mode, so hold a friendly overlay
