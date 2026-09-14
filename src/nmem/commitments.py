@@ -308,6 +308,21 @@ class CommitmentManager:
         from sqlalchemy import update
         from nmem.db.models import CommitmentModel
         async with self._db.session() as session:
+            # A reused obligation id may still be linked to a STALE commitment:
+            # nmem-sym's ledger can hand out an id it hasn't reloaded yet (the
+            # transient load-failure window in _maybe_load_obligations), and the
+            # backend has just imposed a LIVE obligation under this id for the
+            # CURRENT commitment. So the id now belongs here — steal it: detach
+            # the previous holder before claiming it. This keeps the unique index
+            # satisfied (no IntegrityError to swallow), routes record_event to the
+            # right row, and leaves the stale commitment open+unlinked so
+            # flush_pending re-mirrors it a fresh obligation instead of stranding
+            # it under an id the ledger reassigned.
+            await session.execute(
+                update(CommitmentModel)
+                .where(CommitmentModel.sym_obligation_id == sym_id,
+                       CommitmentModel.id != commitment_id)
+                .values(sym_obligation_id=None))
             await session.execute(
                 update(CommitmentModel)
                 .where(CommitmentModel.id == commitment_id)

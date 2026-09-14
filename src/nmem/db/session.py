@@ -27,7 +27,7 @@ from nmem.db.models import Base, HAS_PGVECTOR
 logger = logging.getLogger(__name__)
 
 # Current schema version. Bump when adding migrations to _migrate_schema.
-CURRENT_SCHEMA_VERSION = 7
+CURRENT_SCHEMA_VERSION = 8
 
 
 class DatabaseManager:
@@ -345,6 +345,35 @@ class DatabaseManager:
                 "ALTER TABLE nmem_long_term_memory "
                 "ADD COLUMN IF NOT EXISTS raw_content TEXT",
                 "v7: add raw_content to nmem_long_term_memory",
+            )
+
+        if version < 8:
+            # sym_obligation_id is the 1:1 link to the nmem-sym ledger obligation.
+            # A ledger that restarted at id 1 before obligation persistence was on
+            # could hand the same obligation id to several commitments, fanning one
+            # sym_obligation_id across multiple rows — which made record_event's
+            # lookup raise MultipleResultsFound. Detach the stale duplicates first
+            # (keep the newest per id — the row the live obligation represents; the
+            # older ones are left open + unlinked, so flush_pending re-mirrors them
+            # a fresh id), THEN enforce uniqueness so it can't recur. The dedup runs
+            # at init, before any backend attaches or imposes, so there is no
+            # concurrent writer to race.
+            await _run(
+                "UPDATE nmem_commitments c SET sym_obligation_id = NULL "
+                "WHERE sym_obligation_id IS NOT NULL "
+                "AND id < (SELECT MAX(c2.id) FROM nmem_commitments c2 "
+                "          WHERE c2.sym_obligation_id = c.sym_obligation_id)",
+                "v8: detach stale duplicate sym_obligation_id links",
+            )
+            await _run(
+                "DROP INDEX IF EXISTS ix_nmem_commitments_sym",
+                "v8: drop old non-unique sym_obligation_id index",
+            )
+            await _run(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_nmem_commitments_sym_uniq "
+                "ON nmem_commitments (sym_obligation_id) "
+                "WHERE sym_obligation_id IS NOT NULL",
+                "v8: enforce unique sym_obligation_id (partial, non-null)",
             )
 
         # Bump schema version in its own session

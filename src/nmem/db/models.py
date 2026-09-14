@@ -18,6 +18,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
     types,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -509,7 +510,16 @@ class CommitmentModel(Base):
 
     __table_args__ = (
         Index("ix_nmem_commitments_status", "status"),
-        Index("ix_nmem_commitments_sym", "sym_obligation_id"),
+        # sym_obligation_id is the 1:1 link to the nmem-sym ledger's live
+        # obligation. UNIQUE (partial, non-null) so a backend that reused an
+        # obligation id — e.g. a ledger that restarted at id 1 before
+        # persistence was on — can no longer fan one id across several
+        # commitment rows, the collision that made record_event raise
+        # MultipleResultsFound. Postgres treats NULLs as distinct, so any
+        # number of unmirrored/queued commitments (sym_obligation_id IS NULL)
+        # coexist freely.
+        Index("ix_nmem_commitments_sym_uniq", "sym_obligation_id",
+              unique=True, postgresql_where=text("sym_obligation_id IS NOT NULL")),
     )
 
 
