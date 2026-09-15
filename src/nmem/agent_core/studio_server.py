@@ -372,8 +372,14 @@ def build_agent_app():
         if reg is None or len(reg) == 0:
             return None                                # nothing to act with → stays a pure thinker
         from nmem.agent_core.actors import build_executor as _mk
+        # Thread the brain's reasoning_effort into the tool selector: a thinking-capable model
+        # (e.g. Qwen, family: qwen) needs reasoning ON in the loop or it never concludes and
+        # thrashes tools to max_steps (the query-db gotcha; see actors.build_executor). Read it
+        # from backends.brain.reasoning_effort; None → unchanged (thinking off).
+        brain = (config.get("backends", {}) or {}).get("brain", {}) or {}
         return _mk(reg, backend=ctx.runtime.backend, mem=ctx.runtime.mem, agent_id=ctx.runtime.agent_id,
-                   bridge=bridge, gate=ctx.state.get("gate"))
+                   bridge=bridge, gate=ctx.state.get("gate"),
+                   reasoning_effort=brain.get("reasoning_effort"))
 
     async def _refresh_readiness(ctx):
         # Refresh the advisory readiness probes (identity sidecars + the sandbox). Cached for the sync
