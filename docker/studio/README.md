@@ -12,6 +12,13 @@ hand. One image, one process, two modes:
   its settings from env at import), so the runtime boots the mind you designed. Inspect it at
   `/health` and drive cycles via the `/admin/*` ops endpoints.
 
+## Download
+
+**Home / released image: [huggingface.co/dayyanj/nmem-studio](https://huggingface.co/dayyanj/nmem-studio).**
+That is the canonical public download for the appliance — grab the `docker-compose.yml` and pull the
+image from there. (The `registry.spwig.com` references below are the internal build registry; the
+public image is mirrored to Hugging Face.)
+
 ## Run
 
 **Run the released images** (open, free — no login to pull). The compose file references

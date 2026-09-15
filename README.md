@@ -134,9 +134,23 @@ Your Agent (LangChain / CrewAI / Plain Python)
 - **Framework adapters**: LangChain (`BaseMemory` compatible), CrewAI, or plain Python — `pip install nmem[langchain]`
 - **Pluggable providers**: bring your own LLM (OpenAI-compatible, Anthropic) and embedding model (sentence-transformers, OpenAI). Storage is PostgreSQL + pgvector.
 
-## Companion packages
+## The nmem suite
 
-- **[nmem-sym](https://github.com/dayyanj/nmem-sym)** — Symbolic cognition layer (Layer 3). Extracts a typed knowledge graph from nmem memory entries, then uses spreading activation to surface multi-hop connections the LLM cannot find from unstructured context. Features neural gating, graph plasticity (LTP/LTD), autonomous dreamstate exploration, and a crash-safe bridge to nmem's consolidation lifecycle. Improves cross-agent synthesis by +7% on the healthcare benchmark.
+nmem is one library in a family of composable, framework-agnostic cognitive layers for AI agents. Each is standalone — mix in only the ones you need.
+
+| Repo | Layer | What it does |
+|------|-------|--------------|
+| [nmem](https://github.com/dayyanj/nmem) | Memory | Hierarchical, self-refining cognitive memory — 6 tiers + a consolidation engine |
+| [nmem-sym](https://github.com/dayyanj/nmem-sym) | Reasoning | Symbolic cognition — typed knowledge graph, spreading activation, drives, prediction |
+| [nmem-sym-sensor](https://github.com/dayyanj/nmem-sym-sensor) | Perception | Sensory memory — unlabeled visual/audio primitives clustered into grounded concepts |
+| [nmem-identity](https://github.com/dayyanj/nmem-identity) | Perception | Self-supervised person identity (voice + face) — learns who it's talking to, no manual tagging |
+| [nmem-act](https://github.com/dayyanj/nmem-act) | Action | Typed action/outcome contract + tiered autonomy gate — act to learn, safely |
+| [nmem-sandbox](https://github.com/dayyanj/nmem-sandbox) | Action | LLM-agnostic computer-use sandbox — a headless desktop a vision model drives |
+| [nmem-exchange](https://github.com/dayyanj/nmem-exchange) | Comms | End-to-end-secured message bus — agents talk without sharing memory |
+| [nmem-immune](https://github.com/dayyanj/nmem-immune) | Integrity | Memory immune system — poisoning detection, drift, quarantine |
+| [nmem-viz](https://github.com/dayyanj/nmem-viz) | Tooling | Real-time 3D "brain" visualization of any nmem agent |
+
+**Just want to run one?** [**nmem-studio**](https://huggingface.co/dayyanj/nmem-studio) is the pull-and-run appliance — a single Docker image that stands up one fully-configured agent from a web wizard (memory + reasoning, plus optional identity and embodied perception), no config files by hand.
 
 ## Benchmarked
 
