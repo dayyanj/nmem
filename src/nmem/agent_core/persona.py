@@ -131,35 +131,49 @@ async def _seed_objectives(graph, persona: Persona, owner_agent: str | None = No
             await pool.execute(GOALS_TABLE_SQL)
         except Exception as e:  # noqa: BLE001 — a real problem surfaces on the create below
             log.debug("seed_persona: goals-schema ensure skipped: %s", e)
-        seeded = 0
+        # DECLARATIVE reconciliation (OPT-IN): treat the persona's objectives as the authoritative set
+        # of external standing goals — so editing an objective in the wizard actually adds/retires the
+        # matching goal. OFF by default because `create_goal` defaults source_type='external', so a host
+        # that mints external goals outside its persona (some do) must not have them reaped. The
+        # nmem-studio appliance sets NMEM_PERSONA_RECONCILE_OBJECTIVES=1 (its external goals come only
+        # from the persona). The empty-objectives early-return above means it can never reap everything.
+        reconcile = os.environ.get("NMEM_PERSONA_RECONCILE_OBJECTIVES", "").strip().lower() in ("1", "true", "yes", "on")
+        active = ["pending", "active", "decomposed", "pursuing"]
+        seeded = reactivated = 0
         for label, text in persona.objectives:
-            exists = await pool.fetchval(
-                "SELECT 1 FROM symbol_goals WHERE source_type='external' AND objective=$1 "
-                "AND ($2::text IS NULL OR owner_agent=$2) LIMIT 1", text, owner_agent)
-            if not exists:
+            row = await pool.fetchrow(
+                "SELECT id, status FROM symbol_goals WHERE source_type='external' AND objective=$1 "
+                "AND ($2::text IS NULL OR owner_agent=$2) ORDER BY id LIMIT 1", text, owner_agent)
+            if row is None:
                 await create_goal(pool, embedder, text,
                                   priority=persona.goal_priorities.get(label, 0.5),
                                   source_type="external", owner_agent=owner_agent)
                 seeded += 1
-        # DECLARATIVE reconciliation (OPT-IN): treat the persona's objectives as the authoritative set
-        # of external standing goals and retire (abandon) any external goal whose objective the persona
-        # no longer lists — so editing/removing an objective actually drops its goal. This is OFF by
-        # default because `create_goal` defaults source_type='external', so a host that mints external
-        # goals outside its persona (some agents do) must not have them reaped. The nmem-studio
-        # appliance sets NMEM_PERSONA_RECONCILE_OBJECTIVES=1 (its external goals come only from the
-        # persona). Scoped to external + this owner + active statuses; the empty-objectives early-return
-        # above means it can never abandon everything.
+            elif reconcile and row["status"] == "abandoned":
+                # a RE-ADDED objective (dedup matches regardless of status): reactivate its retired
+                # goal instead of leaving it dead. 'pending' so pursuit re-plans it from a clean state.
+                await pool.execute("UPDATE symbol_goals SET status='pending' WHERE id=$1", row["id"])
+                reactivated += 1
         retired = 0
-        if os.environ.get("NMEM_PERSONA_RECONCILE_OBJECTIVES", "").strip().lower() in ("1", "true", "yes", "on"):
+        if reconcile:
             desired = [text for _l, text in persona.objectives]
+            # Abandon every external goal the persona no longer lists AND its owned decomposition
+            # SUBTREE — else planned pursuit keeps executing the children of a removed objective
+            # (actionable() doesn't re-check a child's parent status).
             retired = await pool.fetchval(
-                "WITH r AS (UPDATE symbol_goals SET status='abandoned' "
-                "  WHERE source_type='external' AND ($1::text IS NULL OR owner_agent=$1) "
-                "  AND status IN ('pending','active','decomposed','pursuing') "
-                "  AND objective <> ALL($2::text[]) RETURNING 1) SELECT count(*) FROM r",
-                owner_agent, desired)
-        log.info("seed_persona: %d new objective(s), %d retired (of %d)",
-                 seeded, retired or 0, len(persona.objectives))
+                "WITH RECURSIVE removed AS ("
+                "    SELECT id FROM symbol_goals WHERE source_type='external' "
+                "      AND ($1::text IS NULL OR owner_agent=$1) AND status = ANY($3::text[]) "
+                "      AND objective <> ALL($2::text[]) "
+                "  UNION ALL "
+                "    SELECT g.id FROM symbol_goals g JOIN removed r ON g.parent_id = r.id "
+                "      WHERE g.status = ANY($3::text[])) "
+                "  , u AS (UPDATE symbol_goals SET status='abandoned' "
+                "      WHERE id IN (SELECT id FROM removed) RETURNING 1) "
+                "SELECT count(*) FROM u",
+                owner_agent, desired, active)
+        log.info("seed_persona: %d new, %d reactivated, %d retired (of %d objective(s))",
+                 seeded, reactivated, retired or 0, len(persona.objectives))
     except Exception as e:  # noqa: BLE001
         log.warning("seed_persona objectives failed: %s", e)
 
