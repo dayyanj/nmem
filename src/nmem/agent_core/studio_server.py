@@ -564,6 +564,76 @@ def build_agent_app():
         extra_health=_health_extras, extra_routes=_studio_routes,
         title=f"nmem agent · {persona.agent_id}")
 
+    # ── EDIT support: rehydrate the wizard from the running config + reconfigure IN PLACE ──
+    def _parse_env_file(path: str) -> dict:
+        """Read a KEY=VALUE env file back to a dict (undo the shell-quoting _merge_env_file wrote)."""
+        import shlex
+        env: dict = {}
+        if os.path.exists(path):
+            for line in open(path):
+                line = line.rstrip("\n")
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                try:
+                    parts = shlex.split(v)
+                except ValueError:
+                    parts = [v]
+                env[k.strip()] = parts[0] if parts else ""
+        return env
+
+    def _current_spec() -> dict:
+        """The running agent's config as a wizard spec — NO secrets (the LLM key is referenced only by
+        its env-var name). Capabilities come from the on-disk capabilities.env, structure from agent.yaml."""
+        from nmem.agent_core import capabilities as caps
+        cap_env = _parse_env_file(os.path.join(agent_dir, "capabilities.env"))
+        brain = (config.get("backends") or {}).get("brain") or {}
+        llm = {"provider": brain.get("provider", "openai"), "base_url": brain.get("url", ""),
+               "model": brain.get("model", ""), "family": brain.get("family", "generic")}
+        if brain.get("api_key_env"):
+            llm["api_key_env"] = brain["api_key_env"]
+        return {
+            "agent_id": persona.agent_id,
+            "enabled": sorted(caps.enabled_flags(env=cap_env)),
+            "values": {f: cap_env[f] for f in caps.VALUE_FLAGS if cap_env.get(f)},
+            "outward_actions": cap_env.get("NMEM_SYM_DRIVES_OUTWARD_ACTIONS", "explore"),
+            "persona": {"agent_id": persona.agent_id,
+                        "objectives": [s for _l, s in persona.objectives],
+                        "world_entities": persona.world_entities},
+            "llm": llm,
+            "embedding": (config.get("nmem") or {}).get("embedding"),
+            "actors": config.get("actors"),
+            "autonomy": config.get("autonomy"),
+            "hive": config.get("hive"),
+            "computer_use": config.get("computer_use"),
+        }
+
+    async def _reconfigure(spec: dict) -> None:
+        """Overwrite the running agent's config in place and restart into it — MEMORY PRESERVED (the
+        DB is untouched). The agent id is immutable (it keys the DB + dir); write_agent doesn't touch
+        secrets.env, so the stored LLM key + DB DSN survive, and a new key is merged only if entered."""
+        import asyncio
+
+        from nmem.agent_core.config_writer import write_agent
+        if (spec or {}).get("agent_id", "").strip() != persona.agent_id:
+            raise ValueError(f"cannot change the agent id (this appliance runs '{persona.agent_id}') — "
+                             "reset the data volume to start a different agent")
+        files = write_agent(agent_dir, spec)          # overwrites agent.yaml/capabilities.env/persona.yaml
+        secrets = files.get("secrets") or {}
+        if secrets:                                    # only when a NEW key was entered — merges, keeps DSN
+            store_secrets(secrets)
+        log.info("[studio] reconfigured %s in place (memory preserved); scheduling restart", persona.agent_id)
+        asyncio.get_event_loop().call_later(1.5, _request_restart)
+
+    from nmem.agent_core.studio import make_studio_router, studio_index_html
+    app.include_router(make_studio_router(
+        get_runtime=lambda: ctx.runtime, config_dir=DATA_DIR, store_secrets=store_secrets,
+        allow_create=False, get_current_spec=_current_spec, reconfigure=_reconfigure))
+
+    @app.get("/edit", response_class=HTMLResponse)
+    async def edit_page():
+        return studio_index_html()
+
     from nmem.agent_core.auth import SessionAuth, install_session_auth, make_auth_router
     auth = SessionAuth()
     app.include_router(make_auth_router(auth))

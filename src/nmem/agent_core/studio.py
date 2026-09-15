@@ -64,7 +64,9 @@ def _build_test_backend(spec: dict):
 
 def make_studio_router(get_runtime: Callable | None = None, *, config_dir: str = ".",
                        store_secrets: Callable[[dict], None] | None = None,
-                       start_agent: Callable | None = None):
+                       start_agent: Callable | None = None, allow_create: bool = True,
+                       get_current_spec: Callable | None = None,
+                       reconfigure: Callable | None = None):
     """Build an APIRouter of /studio/* wizard endpoints.
 
     Args:
@@ -75,6 +77,13 @@ def make_studio_router(get_runtime: Callable | None = None, *, config_dir: str =
             must place secrets itself — the response still lists only key NAMES.
         start_agent: optional callable(spec, config_dir) (awaitable) to boot the new agent
             in-process after create. If absent, create only writes the config.
+        allow_create: when False, /studio/create is refused (the appliance already runs an agent —
+            it exposes EDIT instead). catalog/test-llm/list-models still work (the edit UI needs them).
+        get_current_spec: optional () -> spec dict of the running agent, so the wizard can rehydrate
+            for editing (GET /studio/current). Mounted only when provided.
+        reconfigure: optional (spec) -> awaitable that OVERWRITES the running agent's config in place
+            (keeping its memory/DB) and restarts into it (POST /studio/reconfigure). Mounted only
+            when provided. Distinct from create — it targets the existing agent, never a new one.
     """
     from fastapi import APIRouter   # lazy — keeps the headless core framework-free
     router = APIRouter()
@@ -162,6 +171,9 @@ def make_studio_router(get_runtime: Callable | None = None, *, config_dir: str =
         from nmem.agent_core import capabilities as caps
         from nmem.agent_core.config_writer import write_agent
 
+        if not allow_create:
+            return {"ok": False, "error": "this appliance already runs an agent — use Edit "
+                                          "(/studio/reconfigure) to change its settings, not Create"}
         agent_id = (spec or {}).get("agent_id", "").strip()
         if not agent_id:
             return {"ok": False, "error": "agent_id required"}
@@ -246,6 +258,53 @@ def make_studio_router(get_runtime: Callable | None = None, *, config_dir: str =
                 "auto_enabled": auto_enabled, "unknown_flags": unknown,
                 "secret_keys": sorted(secrets),            # NAMES only, never values
                 "secrets_stored": stored, "started": started}
+
+    if get_current_spec is not None:
+        @router.get("/studio/current")
+        async def studio_current():
+            """The running agent's config as a wizard spec, so the SPA can rehydrate it for editing.
+            NEVER includes secrets — the LLM key is returned only as its env-var NAME (api_key_env);
+            an edit that doesn't re-enter the key keeps the stored one."""
+            try:
+                return {"ok": True, "spec": get_current_spec()}
+            except Exception as e:  # noqa: BLE001
+                log.warning("[studio] current-spec failed: %s", e, exc_info=True)
+                return {"ok": False, "error": str(e)}
+
+    if reconfigure is not None:
+        @router.post("/studio/reconfigure")
+        async def studio_reconfigure(spec: dict):
+            """Overwrite the RUNNING agent's config in place (persona, capabilities, model, tools,
+            autonomy, hive) and restart into it — memory/DB preserved. Same validation + dependency
+            auto-completion as create, but it targets the existing agent (never creates a new one).
+            Body = the config_writer spec. Returns {ok, agent_id, auto_enabled, restarting}."""
+            from nmem.agent_core import capabilities as caps
+
+            agent_id = (spec or {}).get("agent_id", "").strip()
+            if not agent_id or not _AGENT_ID_RE.match(agent_id):
+                return {"ok": False, "error": "a valid agent_id is required"}
+            llm = (spec or {}).get("llm") or {}
+            if not llm.get("model"):
+                return {"ok": False, "error": "llm.model is required (the reasoning brain)"}
+            if (llm.get("provider") or "openai").lower() != "anthropic" and not llm.get("base_url"):
+                return {"ok": False, "error": "llm.base_url is required for an OpenAI-compatible brain"}
+            enabled = {f for f in (spec.get("enabled") or []) if f in caps.CAPABILITIES}
+            unknown = sorted(set(spec.get("enabled") or []) - enabled)
+            closure = set(enabled)
+            for f in list(enabled):
+                closure |= caps.requires_closure(f)
+            auto_enabled = sorted(closure - enabled)
+            try:
+                res = reconfigure(spec)
+                if hasattr(res, "__await__"):
+                    await res
+            except ValueError as e:                # a rejected reconfigure (e.g. id mismatch)
+                return {"ok": False, "error": str(e)}
+            except Exception as e:  # noqa: BLE001
+                log.warning("[studio] reconfigure failed for %s: %s", agent_id, e, exc_info=True)
+                return {"ok": False, "error": str(e)}
+            return {"ok": True, "agent_id": agent_id, "auto_enabled": auto_enabled,
+                    "unknown_flags": unknown, "restarting": True}
 
     return router
 

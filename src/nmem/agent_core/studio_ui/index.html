@@ -387,7 +387,7 @@
         </select></label>
 
       <div class="create" style="margin-top:20px;border-top:1px solid var(--line);padding-top:18px">
-        <button class="go" onclick="create()">Create agent →</button>
+        <button class="go" id="createbtn" onclick="create()">Create agent →</button>
         <span class="note">writes <code>agent.yaml</code> + <code>capabilities.env</code> + persona, bootstraps the DB, starts the runtime.</span>
         <p class="sub" style="margin-top:10px">This appliance runs <b>one</b> agent — Create configures it, then the container
           restarts into it (you'll see a short “building your agent…” screen, then its dashboard). To run a different
@@ -410,6 +410,7 @@
 <script>
 // ── state (catalog is fetched from the backend, never inlined — one source of truth) ──
 let CATALOG = null, CAPS = {}, enabled = new Set(), preset = null;
+const EDIT = location.pathname.replace(/\/+$/,'') === '/edit';   // served at /edit ⇒ reconfigure mode
 let GROUP_ORDER = ["drives","concerns","goals","learning","metacognition","comms","recall","graph","prediction","obligations","meta","chat","perception"];
 const GROUP_LABEL = {drives:"Drives", concerns:"Concerns", goals:"Goals", learning:"Experiential learning",
   metacognition:"Metacognition", comms:"Surprise to communication", recall:"Recall", graph:"World-model graph",
@@ -443,7 +444,7 @@ const TEMPLATES = {
   companion:{nm:"Companion", aid:"companion", preset:"reflective",
     obj:"Be a thoughtful companion who remembers our conversations.\nListen first, and pick up where we left off.\nNotice how things are going for me over time.",
     ent:"our conversations, what matters to you, how things change over time"},
-  everything:{nm:"Everything", aid:"everything", preset:"everything", autonomy:"tiered",
+  everything:{nm:"Everything", aid:"everything", preset:"everything", autonomy:"read_only",
     obj:"Exercise the full stack: learn a domain from primary sources, form drives and goals, predict and reflect, and act with the tools you're given.\nSeek and verify rather than guess; remember what works and why it failed.",
     ent:"your domain, its sources, the tools and people you work with",
     tool:{name:"get_weather", method:"GET", url:"https://api.example.com/weather?city={city}", params:"city"}},
@@ -580,7 +581,63 @@ function applyTemplate(k){const t=TEMPLATES[k];
   if(t.tool)setToolType('webhook');
   const hm=document.getElementById('hive_mode'); if(hm){hm.value=t.hive||'isolated';onHiveMode();}
   if(CATALOG)renderEnv();}
-function onName(){document.getElementById('aid').value=document.getElementById('nm').value.trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');if(CATALOG)renderEnv();}
+// ── edit mode: rehydrate the wizard from the running agent's config, then Save → reconfigure ──
+async function loadCurrent(){
+  let spec=null;
+  try{const j=await (await fetch('/studio/current')).json(); if(j.ok) spec=j.spec;}catch(e){}
+  if(!spec){document.getElementById('env').textContent='could not load the current agent config';return;}
+  applyCurrent(spec);
+}
+function setupEditMode(aid){
+  const btn=document.getElementById('createbtn'); if(btn) btn.textContent='Save changes →';
+  const aidEl=document.getElementById('aid'); if(aidEl){aidEl.readOnly=true;aidEl.style.opacity='.6';}
+  const nmEl=document.getElementById('nm'); if(nmEl) nmEl.readOnly=true;
+  const tmpl=document.getElementById('tmpl'); if(tmpl) tmpl.style.display='none';
+  if(!document.getElementById('editbanner')){
+    const b=document.createElement('div');b.id='editbanner';
+    b.style.cssText='margin:0 0 16px;padding:11px 14px;border-radius:10px;border:1px solid var(--accent);'
+      +'background:var(--accent-soft,var(--surface-2));color:var(--ink);font-size:14px;line-height:1.5';
+    b.innerHTML=`Editing <b style="font-family:var(--mono)">${aid}</b> — change anything below and Save. Its `
+      +`<b>memory is preserved</b>; the agent restarts into the new settings. The id can't change.`;
+    const host=document.querySelector('main>div')||document.querySelector('main');
+    if(host) host.insertBefore(b, host.firstChild);
+  }
+}
+function applyCurrent(spec){
+  const aid=spec.agent_id||(spec.persona&&spec.persona.agent_id)||'agent';
+  document.getElementById('nm').value=aid; document.getElementById('aid').value=aid;
+  const p=spec.persona||{};
+  document.getElementById('obj').value=(p.objectives||[]).join('\n');
+  document.getElementById('ent').value=p.world_entities||'';
+  const fam=(spec.llm&&spec.llm.family)||'generic';
+  document.getElementById('provider2').value=(fam==='anthropic')?'anthropic':(fam==='openai'?'openai':'custom');
+  onProvider();                                          // set provider defaults, then override with the real values
+  if(spec.llm){document.getElementById('llm').value=spec.llm.base_url||'';
+    document.getElementById('prov').value=fam; document.getElementById('mdl').value=spec.llm.model||'';}
+  const tr=document.getElementById('testres'); if(tr){tr.className='tres';tr.textContent='key kept — re-enter only to change it';}
+  const emb=spec.embedding;
+  if(emb&&emb.provider&&emb.provider!=='sentence-transformers'){
+    document.getElementById('emb').value='remote'; onEmb();
+    document.getElementById('emburl').value=emb.base_url||''; document.getElementById('embmdl').value=emb.model||'';
+    if(emb.dimensions) document.getElementById('embdim').value=emb.dimensions;}
+  enabled=new Set(spec.enabled||[]); Object.keys(VALUES).forEach(k=>delete VALUES[k]);
+  Object.assign(VALUES, spec.values||{}); preset=null; render(); setView('advanced');
+  if(spec.autonomy&&spec.autonomy.level) document.getElementById('autonomy').value=spec.autonomy.level;
+  TOOLS=[]; const a=spec.actors||{};
+  (a.webhooks||[]).forEach(w=>TOOLS.push(Object.assign({_type:'webhook'},w)));
+  (a.mcp||[]).forEach(m=>TOOLS.push(Object.assign({_type:'mcp'},m)));
+  (a.a2a||[]).forEach(g=>TOOLS.push(Object.assign({_type:'a2a'},g)));
+  renderToolChips();
+  const cu=spec.computer_use;
+  if(cu&&cu.enabled){document.getElementById('cu_mode').value='on';onCuMode();
+    if(cu.url)document.getElementById('cu_url').value=cu.url;
+    if(cu.max_steps)document.getElementById('cu_steps').value=cu.max_steps;}
+  const hv=spec.hive;
+  if(hv&&hv.mode==='shared_world'){document.getElementById('hive_mode').value='shared_world';onHiveMode();
+    if(hv.graph_role)document.getElementById('hive_role').value=hv.graph_role;}
+  setupEditMode(aid);
+}
+function onName(){if(EDIT)return;document.getElementById('aid').value=document.getElementById('nm').value.trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');if(CATALOG)renderEnv();}
 function onEmb(){document.getElementById('embremote').hidden=document.getElementById('emb').value!=='remote';}
 function setView(v){document.getElementById('basic').hidden=v!=='basic';document.getElementById('advanced').hidden=v!=='advanced';
   document.getElementById('tabBasic').setAttribute('aria-pressed',v==='basic');document.getElementById('tabAdv').setAttribute('aria-pressed',v==='advanced');}
@@ -717,16 +774,16 @@ async function create(){const aid=document.getElementById('aid').value.trim();co
   if(cu){body.computer_use=cu;}                 // research agent: the sandbox is its one actuator (§33.3)
   else{const actors=collectActors(); if(actors)body.actors=actors;}  // else selector tools (if any)
   const hive=collectHive(); if(hive)body.hive=hive;
-  t.textContent='creating '+aid+'…';t.classList.add('on');
-  const res=await api('/studio/create',body);
+  t.textContent=(EDIT?'saving ':'creating ')+aid+'…';t.classList.add('on');
+  const res=await api(EDIT?'/studio/reconfigure':'/studio/create',body);
   if(res.ok){
-    // The appliance restarts into agent mode (started:true) → hold the "building…" interstitial and
-    // land on the dashboard. A config-only host (no restart, no /health) just confirms success.
-    if(res.started) waitForAgent(aid);
+    // Both create (started:true) and reconfigure (restarting:true) restart the container → hold the
+    // "building…" interstitial and land back on the dashboard. A config-only create just confirms.
+    if(EDIT||res.started||res.restarting) waitForAgent(aid);
     else{const dep=res.auto_enabled?.length?` (+${res.auto_enabled.length} deps)`:'';
       flash(`✓ ${aid} created · ${res.written.length} files${dep}`);}
   }
-  else flash('✗ '+(res.error||'create failed'));}
+  else flash('✗ '+(res.error||(EDIT?'save failed':'create failed')));}
 
 // ── post-Create interstitial: the container restarts into agent mode, so hold a friendly overlay
 // and poll /health until the agent is up, then land on its dashboard. No "what just happened?". ──
@@ -738,9 +795,11 @@ function waitForAgent(aid){
     ov.innerHTML='<div style="max-width:460px">'
       +'<div class="bootspin" style="width:38px;height:38px;margin:0 auto 18px;border:3px solid var(--line-2,#333);'
       +'border-top-color:var(--accent,#6ea8fe);border-radius:50%;animation:bootspin 0.9s linear infinite"></div>'
-      +'<h2 style="margin:0 0 8px">Building <span style="font-family:var(--mono,monospace)">'+aid+'</span>…</h2>'
-      +'<p id="bootmsg" style="margin:0;color:var(--muted,#9aa)">Provisioning its memory and waking it up. '
-      +'The appliance restarts into your agent — this takes ~15 seconds.</p></div>';
+      +'<h2 style="margin:0 0 8px">'+(EDIT?'Applying changes to ':'Building ')+'<span style="font-family:var(--mono,monospace)">'+aid+'</span>…</h2>'
+      +'<p id="bootmsg" style="margin:0;color:var(--muted,#9aa)">'
+      +(EDIT?'Saving the new settings and restarting into them — your agent’s memory is kept. This takes ~15 seconds.'
+            :'Provisioning its memory and waking it up. The appliance restarts into your agent — this takes ~15 seconds.')
+      +'</p></div>';
     const st=document.createElement('style');st.textContent='@keyframes bootspin{to{transform:rotate(360deg)}}';
     document.head.appendChild(st);document.body.appendChild(ov);}
   const msg=document.getElementById('bootmsg');
@@ -772,8 +831,10 @@ async function initApp(){
     return;
   }
   setToolType('webhook');initProviders();onProvider();     // init tool form + provider before a template seeds into them
-  renderTemplates();applyTemplate('researcher');           // applyTemplate now also sets the preset/autonomy/tools/hive
-  setView('basic');onHiveMode();
+  renderTemplates();
+  if(EDIT){ await loadCurrent(); }                          // rehydrate from the running agent (reconfigure mode)
+  else { applyTemplate('researcher'); setView('basic'); }   // fresh create: seed a starter template
+  onHiveMode();
   window.__INIT=true;                                        // one-time init done (guards re-auth re-runs)
 }
 (async function boot(){

@@ -381,7 +381,7 @@
         </select></label>
 
       <div class="create" style="margin-top:20px;border-top:1px solid var(--line);padding-top:18px">
-        <button class="go" onclick="create()">Create agent →</button>
+        <button class="go" id="createbtn" onclick="create()">Create agent →</button>
         <span class="note">writes <code>agent.yaml</code> + <code>capabilities.env</code> + persona, bootstraps the DB, starts the runtime.</span>
         <p class="sub" style="margin-top:10px">This appliance runs <b>one</b> agent — Create configures it, then the container
           restarts into it (you'll see a short “building your agent…” screen, then its dashboard). To run a different

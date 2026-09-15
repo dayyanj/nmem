@@ -41,7 +41,7 @@ log = logging.getLogger("nmem.studio.auth")
 
 # Open (no session required). The SPA shell must load so it can render its own login screen; /health
 # is the compose healthcheck; /auth/* is how you log in. Everything else is default-denied.
-_OPEN_PATHS = frozenset({"/", "/health", "/favicon.ico",
+_OPEN_PATHS = frozenset({"/", "/edit", "/health", "/favicon.ico",
                          "/auth/login", "/auth/logout", "/auth/status"})
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 

@@ -56,6 +56,49 @@ def test_wizard_offers_the_starter_templates_wired_to_presets():
     assert "selectPreset(t.preset)" in html      # a template also applies its capability preset
 
 
+def test_edit_endpoints_reconfigure_without_create(tmp_path):
+    # Agent mode exposes EDIT (current + reconfigure) with create REFUSED: reconfigure targets the
+    # existing agent, keeps its memory, and never mints a new one. The wizard SPA is served at /edit.
+    called = {}
+
+    def current_spec():
+        return {"agent_id": "scout", "enabled": ["NMEM_SYM_CONSOLIDATION_ENABLED"],
+                "persona": {"agent_id": "scout", "objectives": ["learn"], "world_entities": "x"},
+                "llm": {"provider": "openai", "base_url": "http://x/v1", "model": "m",
+                        "family": "generic", "api_key_env": "SCOUT_LLM_TOKEN"}}
+
+    async def reconfigure(spec):
+        if spec["agent_id"] != "scout":
+            raise ValueError("cannot change the agent id")
+        called["spec"] = spec
+
+    c = _client(config_dir=str(tmp_path), allow_create=False,
+                get_current_spec=current_spec, reconfigure=reconfigure)
+    # create is refused in edit mode
+    r = c.post("/studio/create", json={"agent_id": "new", "llm": {"model": "m", "base_url": "http://x/v1"}})
+    assert r.json()["ok"] is False and "reconfigure" in r.json()["error"].lower()
+    # current returns the running spec WITHOUT any secret (only the key's env-var name)
+    cur = c.get("/studio/current").json()
+    assert cur["ok"] and cur["spec"]["agent_id"] == "scout"
+    assert "api_key" not in cur["spec"]["llm"] and cur["spec"]["llm"]["api_key_env"] == "SCOUT_LLM_TOKEN"
+    # reconfigure rejects an id change, accepts the real id (and reports the dependency closure)
+    assert c.post("/studio/reconfigure", json={"agent_id": "other",
+                  "llm": {"model": "m", "base_url": "http://x/v1"}}).json()["ok"] is False
+    ok = c.post("/studio/reconfigure", json={"agent_id": "scout",
+                "enabled": ["NMEM_SYM_RECALL_DRIVE_ENABLED"],
+                "llm": {"model": "m", "base_url": "http://x/v1"}}).json()
+    assert ok["ok"] and ok["restarting"] is True
+    assert "NMEM_AUTONOMY__ENABLED" in ok["auto_enabled"]        # closure auto-completed
+    assert called["spec"]["agent_id"] == "scout"
+
+
+def test_create_only_router_has_no_edit_endpoints(tmp_path):
+    # Wizard mode (create allowed, no edit hooks) does NOT mount current/reconfigure.
+    c = _client(config_dir=str(tmp_path))
+    assert c.get("/studio/current").status_code == 404
+    assert c.post("/studio/reconfigure", json={}).status_code == 404
+
+
 def test_wizard_spa_has_no_internal_terminology():
     # the shipped wizard must not leak internal names/jargon (peer agents, fleet, our framing) — a
     # public user wouldn't parse them. Guard against regressions in the templates/copy.
