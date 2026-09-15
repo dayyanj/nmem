@@ -14,9 +14,9 @@ hand. One image, one process, two modes:
 
 ## Download
 
-**Home / landing page: [huggingface.co/dayyanj/nmem-studio](https://huggingface.co/dayyanj/nmem-studio)** —
-start here for what the appliance is and how to run it. The container images ship from **Docker Hub**
-(`docker.io/dayyanj`); see [Run](#run) below for the one-line `docker run` and the compose stack.
+**Home / image: [hub.docker.com/r/dayyanj/nmem-studio](https://hub.docker.com/r/dayyanj/nmem-studio)** —
+the appliance ships from **Docker Hub** (`docker pull docker.io/dayyanj/nmem-studio`); see [Run](#run)
+below for the one-line `docker run` and the compose stack.
 
 ## Run
 

@@ -150,7 +150,7 @@ nmem is one library in a family of composable, framework-agnostic cognitive laye
 | [nmem-immune](https://github.com/dayyanj/nmem-immune) | Integrity | Memory immune system — poisoning detection, drift, quarantine |
 | [nmem-viz](https://github.com/dayyanj/nmem-viz) | Tooling | Real-time 3D "brain" visualization of any nmem agent |
 
-**Just want to run one?** [**nmem-studio**](https://huggingface.co/dayyanj/nmem-studio) is the pull-and-run appliance — a single Docker image that stands up one fully-configured agent from a web wizard (memory + reasoning, plus optional identity and embodied perception), no config files by hand.
+**Just want to run one?** [**nmem-studio**](https://hub.docker.com/r/dayyanj/nmem-studio) is the pull-and-run appliance — a single Docker image that stands up one fully-configured agent from a web wizard (memory + reasoning, plus optional identity and embodied perception), no config files by hand.
 
 ## Benchmarked
 

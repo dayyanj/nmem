@@ -18,8 +18,8 @@ sweep, two additive schema steps, and the nmem-studio pull-and-run appliance.
   of a mind it has) — no config files by hand. Bundles Postgres+pgvector and the nmem-viz
   brain in one container with all state on one volume; optional `identity` (writing-style
   recognition) and `perception` (embodied nmem-sandbox) compose profiles. Published on
-  Docker Hub (`docker.io/dayyanj`), with a landing page at
-  [huggingface.co/dayyanj/nmem-studio](https://huggingface.co/dayyanj/nmem-studio).
+  Docker Hub — [hub.docker.com/r/dayyanj/nmem-studio](https://hub.docker.com/r/dayyanj/nmem-studio)
+  (`docker pull docker.io/dayyanj/nmem-studio`).
 
 - **`nmem.agent_core` — a headless cognitive runtime.** A new agent is now *config +
   persona + (executor) + host I/O*, with no hand-rolled cognition. `AgentRuntime` owns

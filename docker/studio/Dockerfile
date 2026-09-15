@@ -26,7 +26,7 @@ ARG VERSION=dev
 LABEL org.opencontainers.image.title="nmem-studio" \
       org.opencontainers.image.description="Pull-and-run appliance for an autonomous nmem agent (studio + Postgres + viz)" \
       org.opencontainers.image.version="${VERSION}" \
-      org.opencontainers.image.source="https://huggingface.co/dayyanj/nmem-studio" \
+      org.opencontainers.image.source="https://github.com/dayyanj/nmem" \
       org.opencontainers.image.licenses="BUSL-1.1 AND MIT"
 
 ENV PYTHONUNBUFFERED=1 \
