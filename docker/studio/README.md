@@ -27,13 +27,17 @@ public image is mirrored to Hugging Face.)
 studio, and the nmem-viz brain — with all state on one volume:
 
 ```bash
-docker run -p 8080:8080 -p 5174:5174 -v nmem:/data docker.io/dayyanj/nmem-studio-aio
+docker run -p 127.0.0.1:8080:8080 -p 127.0.0.1:5174:5174 -v nmem:/data docker.io/dayyanj/nmem-studio-aio
 # → open http://localhost:8080  (wizard)     http://localhost:5174  (brain viz)
 ```
 
 That's the whole appliance. State lives on the `nmem` volume, so it survives `docker rm` and comes
 back in agent mode. The LLM stays external — point the wizard at your endpoint. (For several agents,
 the writing-style-identity / perception profiles, or a hive, use compose below.)
+
+> **Ports are bound to `127.0.0.1`** — the admin surface (wizard / create / act) is unauthenticated by
+> default, so keep it on loopback. To reach it from another machine, tunnel over SSH, or set
+> `STUDIO_AUTH_PASSWORD` (login + CSRF) and bind `0.0.0.0` deliberately.
 
 ### Production / advanced — docker-compose
 

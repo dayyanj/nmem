@@ -14,7 +14,10 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"          # the nmem repo root
 CONTEXT="$(cd "$HERE/.." && pwd)"                 # apps/ monorepo root (sibling nmem-* reachable)
-REGISTRY="${REGISTRY:-registry.spwig.com}"
+# Default to the PUBLIC Docker Hub namespace the compose + AIO reference (docker.io/dayyanj), so a
+# plain `./publish.sh --push` publishes exactly the images a public `docker compose pull` / `docker run`
+# resolve. Internal builds override, e.g. `REGISTRY=registry.spwig.com ./publish.sh`.
+REGISTRY="${REGISTRY:-docker.io/dayyanj}"
 VERSION="${VERSION:-$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$HERE/src/nmem/_version.py" 2>/dev/null)}"
 VERSION="${VERSION:-dev}"
 PUSH=""
