@@ -44,6 +44,7 @@ if _on "$EMBED_PG"; then
 command=gosu postgres /usr/lib/postgresql/16/bin/postgres -D /data/pgdata
 priority=10
 autorestart=true
+startretries=1000000
 startsecs=3
 stdout_logfile=/dev/stdout
 stderr_logfile=/dev/stderr
@@ -53,15 +54,19 @@ PG
 fi
 
 if _on "$EMBED_VIZ"; then
-  # unquoted heredoc: expand the DB coords into the viz env line
-  cat >> "$CONF" <<VIZ
+  # EXPORT the viz env in the shell (the value is a plain string here — safe with any special char)
+  # so the program inherits it. Never interpolate the DB password into the supervisord config file:
+  # an unescaped %/"/newline would corrupt config parsing (codex).
+  export NMEM_VIZ_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${NMEM_AGENT_DB}"
+  export NMEM_VIZ_AGENT_ID="appliance" NMEM_VIZ_TITLE="nmem agent · brain" NMEM_VIZ_HTTP_PORT="5174"
+  cat >> "$CONF" <<'VIZ'
 
 [program:viz]
 command=/opt/venv/bin/python server/viz_server.py
 directory=/opt/viz
-environment=NMEM_VIZ_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${NMEM_AGENT_DB}",NMEM_VIZ_AGENT_ID="appliance",NMEM_VIZ_TITLE="nmem agent · brain",NMEM_VIZ_HTTP_PORT="5174"
 priority=20
 autorestart=true
+startretries=1000000
 startsecs=3
 stdout_logfile=/dev/stdout
 stderr_logfile=/dev/stderr
@@ -70,12 +75,16 @@ stderr_logfile_maxbytes=0
 VIZ
 fi
 
+# startretries very high so supervisord NEVER gives up (FATAL) on the studio — the create→boot seam
+# relies on it always relaunching, and a transiently-crashing agent must keep retrying like the
+# compose `restart: unless-stopped` would (codex). Same for postgres above via its own high retries.
 cat >> "$CONF" <<'STUDIO'
 
 [program:studio]
 command=/studio-service.sh
 priority=30
 autorestart=true
+startretries=1000000
 startsecs=3
 stdout_logfile=/dev/stdout
 stderr_logfile=/dev/stderr
