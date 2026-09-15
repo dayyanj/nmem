@@ -10,6 +10,7 @@ a new agent supplies a `Persona` value + its prompt files, and writes no seed co
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
@@ -120,8 +121,16 @@ async def _seed_objectives(graph, persona: Persona, owner_agent: str | None = No
     if graph is None or not persona.objectives:
         return
     try:
-        from nmem_sym.goals import create_goal
+        from nmem_sym.goals import GOALS_TABLE_SQL, create_goal
         pool, embedder = graph.pool, graph._embedder
+        # Ensure symbol_goals has the full shape create_goal needs — even when the goals PLUGIN is OFF
+        # (a memory-only agent still seeds its persona objectives as external goals). The plugin
+        # normally applies this on init; without it the table can lack columns like plan_state and the
+        # create below fails. Idempotent DDL (CREATE/ALTER/INDEX ... IF NOT EXISTS); best-effort.
+        try:
+            await pool.execute(GOALS_TABLE_SQL)
+        except Exception as e:  # noqa: BLE001 — a real problem surfaces on the create below
+            log.debug("seed_persona: goals-schema ensure skipped: %s", e)
         seeded = 0
         for label, text in persona.objectives:
             exists = await pool.fetchval(
@@ -132,7 +141,25 @@ async def _seed_objectives(graph, persona: Persona, owner_agent: str | None = No
                                   priority=persona.goal_priorities.get(label, 0.5),
                                   source_type="external", owner_agent=owner_agent)
                 seeded += 1
-        log.info("seed_persona: %d new objective(s) (of %d)", seeded, len(persona.objectives))
+        # DECLARATIVE reconciliation (OPT-IN): treat the persona's objectives as the authoritative set
+        # of external standing goals and retire (abandon) any external goal whose objective the persona
+        # no longer lists — so editing/removing an objective actually drops its goal. This is OFF by
+        # default because `create_goal` defaults source_type='external', so a host that mints external
+        # goals outside its persona (some agents do) must not have them reaped. The nmem-studio
+        # appliance sets NMEM_PERSONA_RECONCILE_OBJECTIVES=1 (its external goals come only from the
+        # persona). Scoped to external + this owner + active statuses; the empty-objectives early-return
+        # above means it can never abandon everything.
+        retired = 0
+        if os.environ.get("NMEM_PERSONA_RECONCILE_OBJECTIVES", "").strip().lower() in ("1", "true", "yes", "on"):
+            desired = [text for _l, text in persona.objectives]
+            retired = await pool.fetchval(
+                "WITH r AS (UPDATE symbol_goals SET status='abandoned' "
+                "  WHERE source_type='external' AND ($1::text IS NULL OR owner_agent=$1) "
+                "  AND status IN ('pending','active','decomposed','pursuing') "
+                "  AND objective <> ALL($2::text[]) RETURNING 1) SELECT count(*) FROM r",
+                owner_agent, desired)
+        log.info("seed_persona: %d new objective(s), %d retired (of %d)",
+                 seeded, retired or 0, len(persona.objectives))
     except Exception as e:  # noqa: BLE001
         log.warning("seed_persona objectives failed: %s", e)
 

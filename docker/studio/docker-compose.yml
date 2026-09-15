@@ -28,6 +28,9 @@ services:
       POSTGRES_USER: nmem
       POSTGRES_PASSWORD: nmem
       NMEM_AGENT_DB: agent_nmem            # fixed single-agent DB (so viz knows the URL up-front)
+      # The appliance's external standing goals come ONLY from the persona, so treat objectives as
+      # declarative: editing/removing one in the wizard retires its goal (seed_persona reconciles).
+      NMEM_PERSONA_RECONCILE_OBJECTIVES: "1"
       # AUTH: set STUDIO_AUTH_PASSWORD (your shell or a .env) to REQUIRE login on the whole admin
       # surface — do this before exposing the studio beyond loopback (then STUDIO_BIND=0.0.0.0 is safe).
       # Unset = unauthenticated (loopback only). STUDIO_COOKIE_SECURE=1 when serving over HTTPS.

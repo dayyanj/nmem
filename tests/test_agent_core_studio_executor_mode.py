@@ -34,6 +34,9 @@ def _capture_hooks(tmp_path, monkeypatch, agent_yaml: str):
         def include_router(self, *a, **k):
             return None
 
+        def get(self, *a, **k):                 # studio_server registers GET /edit on the app
+            return lambda fn: fn
+
     def _fake_create(config, persona, **kw):
         captured["config"] = config
         captured.update(kw)

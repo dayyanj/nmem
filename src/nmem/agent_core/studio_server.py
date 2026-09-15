@@ -618,6 +618,32 @@ def build_agent_app():
         if (spec or {}).get("agent_id", "").strip() != persona.agent_id:
             raise ValueError(f"cannot change the agent id (this appliance runs '{persona.agent_id}') — "
                              "reset the data volume to start a different agent")
+        # write_agent rebuilds agent.yaml from the spec alone, so MERGE the running config's fields the
+        # edit form can't represent — else an unrelated save silently drops them (a dropped autonomy
+        # deny-list would re-permit denied tools; symbol_graph/pursuit/policy/belief would reset).
+        cur_nmem = config.get("nmem") or {}
+        cur_auto = config.get("autonomy") or {}
+        new_auto = dict(spec.get("autonomy") or {})
+        if cur_auto or new_auto:                        # form supplies `level`; allow/deny survive
+            spec["autonomy"] = {**cur_auto, **new_auto}
+        for k, cur_val in (("belief", cur_nmem.get("belief")), ("policy", cur_nmem.get("policy")),
+                           ("pursuit", config.get("pursuit")), ("symbol_graph", config.get("symbol_graph")),
+                           ("goal_lifecycle", config.get("goal_lifecycle"))):
+            if k not in spec and cur_val is not None:
+                spec[k] = cur_val
+        # Preserve the LLM + embedding credential REFERENCES when no new key was entered: the form maps
+        # several providers to a generic family and would otherwise rewrite api_key_env to the wrong var,
+        # orphaning the stored secret. Keep the running config's env-var name unless a new key is given.
+        llm = dict(spec.get("llm") or {})
+        cur_brain = (config.get("backends") or {}).get("brain") or {}
+        if not llm.get("api_key") and cur_brain.get("api_key_env"):
+            llm["api_key_env"] = cur_brain["api_key_env"]
+            spec["llm"] = llm
+        emb = spec.get("embedding")
+        cur_emb = cur_nmem.get("embedding") or {}
+        if isinstance(emb, dict) and not emb.get("api_key") and cur_emb.get("api_key_env"):
+            emb["api_key_env"] = cur_emb["api_key_env"]
+            spec["embedding"] = emb
         files = write_agent(agent_dir, spec)          # overwrites agent.yaml/capabilities.env/persona.yaml
         secrets = files.get("secrets") or {}
         if secrets:                                    # only when a NEW key was entered — merges, keeps DSN
