@@ -150,16 +150,26 @@ async def _seed_objectives(graph, persona: Persona, owner_agent: str | None = No
                                   source_type="external", owner_agent=owner_agent)
                 seeded += 1
             elif reconcile and row["status"] == "abandoned":
-                # a RE-ADDED objective (dedup matches regardless of status): reactivate its retired
-                # goal instead of leaving it dead. 'pending' so pursuit re-plans it from a clean state.
-                await pool.execute("UPDATE symbol_goals SET status='pending' WHERE id=$1", row["id"])
-                reactivated += 1
+                # a RE-ADDED objective (dedup matches regardless of status): reactivate its retired goal
+                # AND its abandoned subtree (symmetric to the retire below, so the parent doesn't come
+                # back with a dead decomposition). 'pending' → pursuit re-plans from a clean state.
+                # Owner-scoped traversal so a shared-graph hive never reactivates another owner's goals.
+                reactivated += await pool.fetchval(
+                    "WITH RECURSIVE back AS ("
+                    "    SELECT id FROM symbol_goals WHERE id=$1 "
+                    "  UNION ALL "
+                    "    SELECT g.id FROM symbol_goals g JOIN back b ON g.parent_id = b.id "
+                    "      WHERE g.status='abandoned' AND ($2::text IS NULL OR g.owner_agent=$2)) "
+                    "  , u AS (UPDATE symbol_goals SET status='pending' "
+                    "      WHERE id IN (SELECT id FROM back) AND status='abandoned' RETURNING 1) "
+                    "SELECT count(*) FROM u", row["id"], owner_agent)
         retired = 0
         if reconcile:
             desired = [text for _l, text in persona.objectives]
             # Abandon every external goal the persona no longer lists AND its owned decomposition
             # SUBTREE — else planned pursuit keeps executing the children of a removed objective
-            # (actionable() doesn't re-check a child's parent status).
+            # (actionable() doesn't re-check a child's parent status). Owner-scoped at BOTH the root
+            # and every recursion step, so a hive never reaps a sibling owner's goals across a graph edge.
             retired = await pool.fetchval(
                 "WITH RECURSIVE removed AS ("
                 "    SELECT id FROM symbol_goals WHERE source_type='external' "
@@ -167,7 +177,7 @@ async def _seed_objectives(graph, persona: Persona, owner_agent: str | None = No
                 "      AND objective <> ALL($2::text[]) "
                 "  UNION ALL "
                 "    SELECT g.id FROM symbol_goals g JOIN removed r ON g.parent_id = r.id "
-                "      WHERE g.status = ANY($3::text[])) "
+                "      WHERE g.status = ANY($3::text[]) AND ($1::text IS NULL OR g.owner_agent=$1)) "
                 "  , u AS (UPDATE symbol_goals SET status='abandoned' "
                 "      WHERE id IN (SELECT id FROM removed) RETURNING 1) "
                 "SELECT count(*) FROM u",
