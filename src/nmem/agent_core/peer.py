@@ -74,6 +74,15 @@ class PeerExchange:
         # task.result) route their own message kinds over this ONE shared bus. Empty by
         # default → challenge/response behaviour is byte-identical.
         self._kind_handlers: dict[str, Callable] = {}
+        # Kinds treated as non-conversational: their messages are DROPPED (never journaled as peer
+        # chat) unless a handler is attached via register_kind. The agent_core delegation protocol
+        # kinds (task.request/result/progress) are reserved BY DEFAULT — from construction, before
+        # start() consumes from the bus — so a task.* retry that lands during startup (the host
+        # starts the bus before the runtime attaches the delegation handlers) can never leak its raw
+        # payload into cognitive memory as importance-6 evidence. Reservation persists across
+        # unregister_kind, so a late retry after teardown is also dropped, not journaled.
+        from nmem.agent_core.delegation import KIND_PROGRESS, KIND_REQUEST, KIND_RESULT
+        self._reserved_kinds: set[str] = {KIND_REQUEST, KIND_RESULT, KIND_PROGRESS}
 
     @staticmethod
     def _accepts_continuity(fn) -> bool:
@@ -98,6 +107,28 @@ class PeerExchange:
         this agent's single Exchange bus. Registered handlers run BEFORE the conversation
         path, so delegation traffic is never journaled as peer chat nor run as a challenge."""
         self._kind_handlers[kind] = handler
+        self._reserved_kinds.add(kind)
+
+    def reserve_kind(self, kind: str) -> None:
+        """Mark ``kind`` as non-conversational WITHOUT attaching a handler yet, so a message of it
+        that arrives before the real handler is attached — or if attachment never happens — is
+        DROPPED, not journaled as peer chat. ``register_kind`` reserves implicitly; call this to
+        reserve EARLY (e.g. at runtime construction, before the async provisioning that attaches the
+        delegation handlers), closing the window where a task.* retry could leak into memory."""
+        self._reserved_kinds.add(kind)
+
+    def unregister_kind(self, kind: str, handler: Callable | None = None) -> None:
+        """Remove a handler registered via :meth:`register_kind` (idempotent). Called on runtime
+        teardown so a stopped subsystem (e.g. the delegation inbox) can't keep handling traffic on
+        a peer bus that OUTLIVES it (the host owns the bus). The kind stays RESERVED, so a late
+        message of it is dropped rather than falling through to the conversation/journal path.
+
+        If ``handler`` is given, remove ONLY when the currently-registered handler IS that object —
+        so a stopping runtime never detaches a handler a REPLACEMENT runtime has since installed on
+        the same shared bus (identity-checked ownership)."""
+        if handler is not None and self._kind_handlers.get(kind) is not handler:
+            return
+        self._kind_handlers.pop(kind, None)
 
     @property
     def started(self) -> bool:
@@ -156,6 +187,12 @@ class PeerExchange:
                 await kh(meta, body)
             except Exception:  # noqa: BLE001 — a delegation handler error must not kill the bus loop
                 log.warning("[peer] kind handler %s failed", kind, exc_info=True)
+            return
+        # A reserved (non-conversational) kind whose handler has been detached (runtime stopped,
+        # bus still alive): DROP it. Never journal the raw payload as peer chat.
+        if kind in self._reserved_kinds:
+            log.debug("[peer] dropping %s on %s — handler detached (reserved, not journaled)",
+                      kind, channel)
             return
 
         if not ephemeral:

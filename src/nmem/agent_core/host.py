@@ -59,6 +59,7 @@ def create_agent_app(
     build_executor: Callable[[HostContext, Any], Any] | None = None,
     build_proposal: Callable | None = None,
     comms_factory: Callable[[HostContext], Awaitable[Any]] | None = None,
+    delegation_factory: Callable[[HostContext], Awaitable[dict]] | None = None,
     skill_chronic: Callable[[dict], Awaitable[None]] | None = None,
     on_resources_ready: Callable[[HostContext], Awaitable[None]] | None = None,
     pre_start: Callable[[HostContext], Awaitable[None]] | None = None,
@@ -76,6 +77,8 @@ def create_agent_app(
 
     Hooks (all optional): `build_executor(ctx, bridge)->executor` (the runtime's actuator — a bespoke
     agent's direct ReferenceRunner, studio's selector); `comms_factory(ctx)->comms_sink` (built with live mem);
+    `delegation_factory(ctx)->{peer,executor,registry,channel_for,approve,on_complete}` (the A2A delegation
+    seams, resolved after comms_factory so the peer bus is live; gated by config['delegation'].enabled);
     `build_proposal`/`skill_chronic` (passed through to AgentRuntime); the async lifecycle
     `on_resources_ready`→`pre_start`→`on_started` (startup) and `on_shutdown`→`on_stopped` (teardown,
     the latter running AFTER `runtime.stop()` for cleanup that must outlive the loops); `chat_handler(
@@ -102,11 +105,22 @@ def create_agent_app(
                 await on_resources_ready(ctx)
 
             comms_sink = await comms_factory(ctx) if comms_factory else None
+            # Delegation seams (P1d) — resolved AFTER comms_factory so the peer bus it built is live.
+            # Returns {peer, executor, registry, channel_for, approve, on_complete}; all optional.
+            # Gate on delegation.enabled so default-OFF also covers the factory's OWN dependency
+            # construction (connections/imports) — a supplied-but-disabled factory never runs (codex
+            # P2). Empty dict ⇒ runtime wires nothing.
+            deleg_on = bool((config.get("delegation", {}) or {}).get("enabled", False))
+            deleg = await delegation_factory(ctx) if (delegation_factory and deleg_on) else {}
 
             ctx.runtime = AgentRuntime(
                 config, persona, mem=ctx.mem, graph=ctx.graph, backend=ctx.backend,
                 build_executor=((lambda bridge: build_executor(ctx, bridge)) if build_executor else None),
-                build_proposal=build_proposal, comms_sink=comms_sink, skill_chronic=skill_chronic)
+                build_proposal=build_proposal, comms_sink=comms_sink, skill_chronic=skill_chronic,
+                peer=deleg.get("peer"), delegation_executor=deleg.get("executor"),
+                task_registry=deleg.get("registry"), channel_for=deleg.get("channel_for"),
+                delegation_approve=deleg.get("approve"),
+                on_delegation_complete=deleg.get("on_complete"))
 
             if pre_start:                              # e.g. async actor-registry assembly
                 await pre_start(ctx)

@@ -98,6 +98,67 @@ async def test_peer_two_arg_handler_unchanged_and_still_checkpoints():
     assert "legacy reply" in mem.checkpoints[0]["last_interaction_summary"]
 
 
+# ── register_kind / unregister_kind: reserved kinds never leak into the journal ─────
+
+
+@pytest.mark.asyncio
+async def test_registered_kind_routes_and_is_not_journaled():
+    """A registered non-conversation kind runs its handler and is NOT journaled as peer chat."""
+    got = []
+
+    async def on_challenge(sender, text):
+        return "unused"
+
+    async def task_handler(meta, body):
+        got.append(body)
+
+    mem = FakeMem()
+    px = PeerExchange({}, mem=mem, agent_id="agent-a", on_challenge=on_challenge)
+    px.register_kind("task.request", task_handler)
+    await px._handle(_meta(kind="task.request"), b'{"task_id":"1"}')
+
+    assert got == [b'{"task_id":"1"}']       # routed to the delegation handler
+    assert mem.journal.added == []           # never journaled as conversation
+    assert mem.checkpoints == []             # not a reasoning turn
+
+
+@pytest.mark.asyncio
+async def test_delegation_kinds_reserved_by_default_before_any_registration():
+    """The host starts the peer bus BEFORE the runtime attaches delegation handlers. A task.* that
+    lands in that window must be dropped, not journaled — so the protocol kinds are reserved from
+    construction, with no register_kind call yet."""
+    async def on_challenge(sender, text):
+        return "unused"
+
+    mem = FakeMem()
+    px = PeerExchange({}, mem=mem, agent_id="agent-a", on_challenge=on_challenge)
+    for kind in ("task.request", "task.result", "task.progress"):
+        await px._handle(_meta(kind=kind), b'{"task_id":"1","payload":{"secret":"x"}}')
+
+    assert mem.journal.added == []   # reserved-by-default → nothing journaled
+    assert mem.checkpoints == []
+
+
+@pytest.mark.asyncio
+async def test_detached_reserved_kind_is_dropped_not_journaled():
+    """After unregister_kind (runtime stopped, host bus still alive), a late message of that kind is
+    DROPPED — its raw payload must never fall through to the journal as importance-6 evidence."""
+    async def on_challenge(sender, text):
+        return "unused"
+
+    async def task_handler(meta, body):
+        raise AssertionError("detached handler must not run")
+
+    mem = FakeMem()
+    px = PeerExchange({}, mem=mem, agent_id="agent-a", on_challenge=on_challenge)
+    px.register_kind("task.request", task_handler)
+    px.unregister_kind("task.request")
+    await px._handle(_meta(kind="task.request"), b'{"task_id":"1","payload":{"secret":"x"}}')
+
+    assert mem.journal.added == []           # reserved → dropped, NOT journaled
+    assert mem.checkpoints == []
+
+
 @pytest.mark.asyncio
 async def test_peer_continuity_can_be_disabled():
     async def on_challenge(sender, text, continuity=""):

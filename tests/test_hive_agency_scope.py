@@ -41,10 +41,12 @@ async def _pool():
     dsn = os.environ["NMEM_TEST_PG_DSN"].replace("+asyncpg", "")   # asyncpg wants the bare scheme
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
     try:
-        if not await pool.fetchval("SELECT to_regclass('symbol_goals')"):
-            pytest.skip("symbol_goals absent — run nmem-sym migrations on the test DB first")
-        # Idempotent: mirrors migration 017 so the test is self-sufficient on a not-yet-migrated DB.
-        await pool.execute("ALTER TABLE symbol_goals ADD COLUMN IF NOT EXISTS owner_agent TEXT")
+        # Run nmem-sym's canonical, fully-idempotent goals DDL so the test is self-sufficient on a
+        # partially-migrated DB — it creates symbol_goals if absent and backfills every column the
+        # current create_goal writes (owner_agent, plan_state, attempts, …). Using the live constant
+        # (not a hand-mirrored ALTER) means the test never drifts behind a new goals column again.
+        from nmem_sym.goals import GOALS_TABLE_SQL
+        await pool.execute(GOALS_TABLE_SQL)
         await _clean(pool)
         yield pool
     finally:
@@ -108,7 +110,15 @@ def test_recover_orphaned_never_touches_another_agents_goals():
 
 
 class _FakeEmbedder:
-    """create_goal only needs `.encode(text).tolist()` — avoid loading a real model."""
+    """create_goal needs the embedding-seam contract `embed(text) -> list[float]` (nmem-sym
+    113842e; the result is json.dumps'd into the vector column, so it must be a plain list, not a
+    numpy array). `encode` is kept for any legacy caller. Avoids loading a real model."""
+    def embed(self, text) -> list[float]:
+        return [0.0] * 384
+
+    def embed_batch(self, texts) -> list[list[float]]:
+        return [[0.0] * 384 for _ in texts]
+
     def encode(self, text):
         import numpy as np
         return np.zeros(384, dtype="float32")
@@ -385,6 +395,11 @@ def test_lifecycle_parity_unscoped_equals_old_dreamstate_set(monkeypatch):
     monkeypatch.setattr(symconfig.settings, "utility_plasticity_enabled", False)
     monkeypatch.setattr(symconfig.settings, "goal_impasse_threshold", 3)
     monkeypatch.setattr(symconfig.settings, "goal_priority_abandon_threshold", 0.2)
+    # Pin goal-planning (§23) OFF: the doc defines off as "byte-identical to today", which IS the
+    # pre-cutover baseline this gate asserts. Both paths (_dreamstate_goals + run_goal_lifecycle)
+    # honor this flag symmetrically, so off keeps the legacy lifecycle parity the gate proves; the
+    # planning additions (assess_and_defer, the _bridge drives-nudge) are a later feature's concern.
+    monkeypatch.setattr(symconfig.settings, "goal_planning_enabled", False)
 
     async def go():
         dsn = os.environ["NMEM_TEST_PG_DSN"].replace("+asyncpg", "")
@@ -408,6 +423,9 @@ def test_lifecycle_parity_unscoped_equals_old_dreamstate_set(monkeypatch):
                     graph.pool = conn
                     plugin = g.GoalPlugin.__new__(g.GoalPlugin)   # skip __init__/graph wiring
                     plugin._graph = graph
+                    plugin._bridge = None   # real GoalPlugin.__init__ sets this; _dreamstate_goals
+                    # reads `self._bridge is not None` (left-to-right, before the planning flag can
+                    # short-circuit), so the attribute must exist even with planning pinned off.
 
                     tx = conn.transaction()
                     await tx.start()

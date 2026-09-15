@@ -25,6 +25,13 @@ Agent-specific seams (all optional except config+persona):
   * ``skill_chronic``  — handler for nmem's ``skill.chronic`` event (a recurring lesson). OPTIONAL:
                          defaults to ``agent_core.default_skill_chronic`` when omitted, so every agent
                          turns recurring lessons into stored memory for free. Pass one only to override.
+  * ``peer`` + delegation seams — plug the brokerless A2A delegation queue (P1d) onto the host-owned
+                         ``PeerExchange`` bus. ``peer`` is that exchange; ``delegation_executor`` +
+                         ``task_registry`` make this agent a WORKER (durable inbox); ``channel_for``
+                         makes it a REQUESTER (durable outbox); ``delegation_approve`` gates MUTATING
+                         task types; ``on_delegation_complete`` is the requester result callback. All
+                         optional, gated by ``config['delegation'].enabled`` (DEFAULT-OFF) — unset ⇒
+                         byte-identical to today. See ``nmem.agent_core.delegation``.
 """
 from __future__ import annotations
 
@@ -108,6 +115,12 @@ class AgentRuntime:
         mem: Any | None = None,
         graph: Any | None = None,
         strict_capabilities: bool = False,
+        peer: Any | None = None,
+        delegation_executor: Any | None = None,
+        task_registry: Any | None = None,
+        channel_for: Callable[[str], str] | None = None,
+        delegation_approve: Callable | None = None,
+        on_delegation_complete: Callable | None = None,
     ) -> None:
         self._config = config
         self._persona = persona
@@ -116,6 +129,28 @@ class AgentRuntime:
         self._build_proposal = build_proposal
         self._comms_sink = comms_sink
         self._skill_chronic = skill_chronic
+        # Delegation (P1d) — brokerless A2A work queue over the host-owned PeerExchange bus.
+        # All optional; wired only when config['delegation'].enabled AND a started peer is present
+        # (default-off → byte-identical when unset). ``delegation_executor``+``task_registry`` make
+        # this agent a WORKER (inbox); ``channel_for`` makes it a REQUESTER (client). Either, both,
+        # or neither. ``delegation_approve`` gates MUTATING task types before the executor runs.
+        self._peer = peer
+        self._delegation_executor = delegation_executor
+        self._task_registry = task_registry
+        self._channel_for = channel_for
+        self._delegation_approve = delegation_approve
+        self._on_delegation_complete = on_delegation_complete
+        self._deleg_inbox = None
+        self._deleg_client = None
+        self._deleg_inbox_task = None
+        self._deleg_client_task = None
+        self._deleg_registered: dict = {}   # kind -> the exact handler THIS runtime installed on the peer
+        self._deleg_drain_grace = 10.0   # bounded shutdown drain before cancel (set from config on wire)
+        # Reserve the delegation kinds on the (host-owned, already-started) bus at the EARLIEST point
+        # — construction — so a task.* retry that lands before/while we wire (or if wiring later bails
+        # on shared_world / provisioning failure) is DROPPED, never journaled as cognitive evidence
+        # (codex). Reserve only the roles we'd route, only when the operator enabled delegation.
+        self._reserve_delegation_kinds()
 
         # Accept pre-built mem/graph/backend (a host that already owns its boot passes
         # them; the runtime then does ONLY the cognition wiring and does NOT close them
@@ -321,8 +356,62 @@ class AgentRuntime:
                 log.warning("[runtime] keeper release: %s", e)
             self._keeper_lock = None
             self.is_keeper = False
+        # Delegation loops (P1d): DRAIN before cancel (codex P2). stop() only sets the loop's event,
+        # so a task mid-execution keeps running; give it a BOUNDED grace to finish the current task
+        # and durably record its result, then cancel as a backstop. Without the wait, a clean restart
+        # would interrupt an in-flight executor → the row sits 'executing' until lease recovery (up to
+        # ~lease seconds). Fail-open: a stopped/absent component never blocks teardown.
+        # Delegation teardown — STAGED so in-flight work can complete cleanly (codex). The host-owned
+        # bus OUTLIVES this runtime, so we must also detach handlers or a stray task.* would hit a dead
+        # inbox / closed pool. But ORDER matters: an executing worker may itself be awaiting a SUBTASK
+        # via the client (delegate_and_wait), so task.result MUST stay attached until the inbox drains.
+        # (1) stop NEW intake: detach task.request + stop the inbox loop claiming more.
+        grace = max(0.0, self._deleg_drain_grace)
+        _unreg = getattr(self._peer, "unregister_kind", None) if self._peer is not None else None
+
+        def _detach(*kinds):
+            """Detach ONLY the handlers this runtime installed, identity-checked, so we never remove a
+            handler the host pre-registered or a REPLACEMENT runtime has since installed on the shared
+            bus. The kind stays RESERVED → late retries are dropped, not journaled."""
+            if _unreg is None:
+                return
+            for k in kinds:
+                h = self._deleg_registered.pop(k, None)
+                if h is None:
+                    continue
+                try:
+                    _unreg(k, h)
+                except Exception:  # noqa: BLE001
+                    pass
+
+        from nmem.agent_core import delegation as _dg
+        _detach(_dg.KIND_REQUEST)
+        if self._deleg_inbox is not None:
+            try:
+                await self._deleg_inbox.stop()
+            except Exception:  # noqa: BLE001
+                pass
+        # (2) drain the inbox — its in-flight executor can finish, and any subtask it awaits is still
+        #     resolved because task.result remains attached.
+        if self._deleg_inbox_task is not None:
+            try:
+                await asyncio.wait([self._deleg_inbox_task], timeout=grace)
+            except Exception:  # noqa: BLE001
+                pass
+        # (3) NOW the requester side can go: detach result/progress + stop the client loop + drain it.
+        _detach(_dg.KIND_RESULT, _dg.KIND_PROGRESS)
+        if self._deleg_client is not None:
+            try:
+                await self._deleg_client.stop()
+            except Exception:  # noqa: BLE001
+                pass
+        if self._deleg_client_task is not None:
+            try:
+                await asyncio.wait([self._deleg_client_task], timeout=grace)
+            except Exception:  # noqa: BLE001
+                pass
         for t in (self._pursue_task, self._planned_pursue_task, self._drive_task,
-                  self._lifecycle_task):
+                  self._lifecycle_task, self._deleg_inbox_task, self._deleg_client_task):
             if t is not None:
                 t.cancel()
                 try:
@@ -331,6 +420,8 @@ class AgentRuntime:
                     pass
         self._drive_task = self._pursue_task = self._planned_pursue_task = None
         self._lifecycle_task = self._pursuit = self._planned_pursuit = None
+        self._deleg_inbox_task = self._deleg_client_task = None
+        self._deleg_inbox = self._deleg_client = None
         try:
             if self.mem is not None and hasattr(self.mem, "stop_consolidation"):
                 self.mem.stop_consolidation()
@@ -463,11 +554,16 @@ class AgentRuntime:
             self._keeper_watch_task = asyncio.create_task(self._keeper_watch_loop(retry))
             log.info("[runtime] keeper-watch loop started (willing process, every %ss)", retry)
 
+        # Loop #5/#6: delegation — the brokerless A2A work queue (P1d), gated delegation.enabled
+        # (DEFAULT-OFF, additive). Registers task.* on the host's peer bus + starts the inbox
+        # (worker) / client (requester) loops. No-op when off or no started peer.
+        deleg = await self._wire_delegation()
+
         self.status = {
             "enabled": True, "plugins": plugins, "prediction": pred_on,
             "drives": drives_on, "consolidation": self._consol_task is not None,
             "actuation": pursuit_on, "lifecycle": lifecycle_on,
-            "hive": self.hive.mode, "keeper": self.is_keeper,
+            "hive": self.hive.mode, "keeper": self.is_keeper, "delegation": deleg,
         }
 
     def _wire_goal_enrichment(self) -> None:
@@ -646,6 +742,151 @@ class AgentRuntime:
             log.info("[runtime] PLANNED pursuit loop started (cap %d/cycle, every %ss)",
                      p_cap, p_interval)
         return True
+
+    def _reserve_delegation_kinds(self) -> None:
+        """Reserve (don't-journal) the delegation kinds this agent would route, on the host-owned
+        peer bus, at construction — the earliest the runtime can act. Idempotent + fail-open; a peer
+        without ``reserve_kind`` (or delegation disabled) is a no-op. See __init__ for the why."""
+        try:
+            dcfg = (self._config.get("delegation", {}) or {})
+            if not dcfg.get("enabled", False) or self._peer is None:
+                return
+            if not hasattr(self._peer, "reserve_kind"):
+                return
+            from nmem.agent_core import delegation as dg
+            if self._delegation_executor is not None and self._task_registry is not None:
+                self._peer.reserve_kind(dg.KIND_REQUEST)
+            if self._channel_for is not None:
+                self._peer.reserve_kind(dg.KIND_RESULT)
+                self._peer.reserve_kind(dg.KIND_PROGRESS)
+        except Exception:  # noqa: BLE001 — reservation must never break construction
+            pass
+
+    async def _wire_delegation(self) -> dict:
+        """P1d: wire the brokerless A2A delegation queue onto the host's PeerExchange bus.
+
+        Additive + fail-open. Returns a small status dict (``{enabled, worker, requester}``).
+        Gated OFF unless ``config['delegation'].enabled`` AND a STARTED peer is present — so an
+        agent with no exchange, or the flag off, is byte-identical to today. This agent is a
+        WORKER when an executor+registry were injected (starts the inbox loop, routes
+        ``task.request``), and a REQUESTER when a ``channel_for`` was injected (starts the client
+        loop, routes ``task.result``/``task.progress``). Ledgers self-provision in the agent's OWN
+        graph DB (``graph.pool`` — the same pool the goal store uses), preserving isolation."""
+        off = {"enabled": False, "worker": False, "requester": False}
+        dcfg = (self._config.get("delegation", {}) or {})
+        if not dcfg.get("enabled", False):
+            return off
+        if self._peer is None:
+            log.warning("[runtime] delegation.enabled but no peer bus supplied — skipping")
+            return off
+        if not getattr(self._peer, "started", False):
+            log.warning("[runtime] delegation.enabled but exchange not started "
+                        "(needs exchange.enabled) — skipping")
+            return off
+        pool = getattr(self.graph, "pool", None)
+        if pool is None:
+            log.warning("[runtime] delegation.enabled but no graph DB pool — skipping")
+            return off
+        # Isolation invariant (codex P1): the two ledgers are UNSCOPED tables in the graph DB, so
+        # they are the agent's private queue ONLY when it owns that DB. Under shared_world hive mode
+        # the graph is shared across agents → a shared inbox would let one agent claim + run another
+        # agent's task with the wrong executor/approval. Delegation is for isolated-DB appliances
+        # (the fleet-migration end-state); fail CLOSED on a shared graph until owner-scoped ledgers
+        # exist (P1 non-goal). The michelle↔DJ-AI P1g pair are solo/isolated → unaffected.
+        if self.hive.is_shared_world:
+            log.warning("[runtime] delegation.enabled but hive=shared_world (graph DB is shared) — "
+                        "refusing: the delegation ledgers require an isolated DB. Skipping.")
+            return off
+        self._deleg_drain_grace = float(dcfg.get("drain_grace", 10.0))
+        # A WORKER MUST declare its accept-list + capability classes (codex P1): with no registry,
+        # an empty one would reject all NEW types but still CLAIM a task already queued from before a
+        # restart, and _gate() reads its now-missing spec as READ_ONLY → a MUTATING task runs without
+        # approval. Fail CLOSED: no registry ⇒ no worker role (a requester-only agent still wires).
+        has_executor = self._delegation_executor is not None
+        if has_executor and self._task_registry is None:
+            log.warning("[runtime] delegation worker needs a task_registry (accept-list + capability "
+                        "classes) — refusing the worker role (fail-closed; would bypass approval)")
+        is_worker = has_executor and self._task_registry is not None
+        is_requester = self._channel_for is not None
+        if not (is_worker or is_requester):
+            log.warning("[runtime] delegation.enabled but nothing wireable (worker needs "
+                        "executor+registry; requester needs channel_for) — skipping")
+            return off
+        try:
+            from nmem.agent_core import delegation as dg
+
+            async def _send(channel, kind, body, *, in_reply_to=None):
+                # PeerExchange.send(channel, kind, text, **kw) forwards in_reply_to to the exchange.
+                return await self._peer.send(channel, kind, body, in_reply_to=in_reply_to)
+
+            if is_worker:
+                self._deleg_inbox = dg.DelegationInbox(
+                    pool, self._delegation_executor, self._task_registry, send=_send,
+                    task_timeout=float(dcfg.get("task_timeout", 900.0)),
+                    max_attempts=int(dcfg.get("max_attempts", 3)),
+                    retry_backoff=float(dcfg.get("retry_backoff", 1.0)),
+                    retry_backoff_max=float(dcfg.get("retry_backoff_max", 300.0)),
+                    poll_interval=float(dcfg.get("poll_interval", 1.0)),
+                    approve=self._delegation_approve)
+            if is_requester:
+                self._deleg_client = dg.DelegationClient(
+                    pool, send=_send, channel_for=self._channel_for, agent_id=self.agent_id,
+                    resend_interval=float(dcfg.get("resend_interval", 30.0)),
+                    resend_backoff=float(dcfg.get("resend_backoff", 2.0)),
+                    resend_max_interval=float(dcfg.get("resend_max_interval", 600.0)),
+                    default_deadline=float(dcfg.get("default_deadline", 3600.0)),
+                    poll_interval=float(dcfg.get("client_poll_interval", 5.0)),
+                    on_complete=self._on_delegation_complete)
+        except Exception as e:  # noqa: BLE001 — wiring must never break startup
+            log.warning("[runtime] delegation wiring failed (non-fatal): %s", e, exc_info=True)
+            self._deleg_inbox = self._deleg_client = None
+            return off
+
+        # Provision BOTH ledgers FIRST (the only awaits → the only failure points), so a partial
+        # init is impossible (codex P2): if outbox setup fails after inbox setup, NOTHING has been
+        # registered or started yet, so we just drop the components and report OFF — never a live
+        # inbox with a dead client, nor a callable delegate() with no result handlers.
+        try:
+            if self._deleg_inbox is not None:
+                await self._deleg_inbox.setup()
+            if self._deleg_client is not None:
+                await self._deleg_client.setup()
+        except Exception as e:  # noqa: BLE001
+            log.warning("[runtime] delegation provisioning failed (non-fatal): %s", e, exc_info=True)
+            self._deleg_inbox = self._deleg_client = None
+            return off
+        # GO LIVE — atomically (no await between): start the loops then register the kinds. Provision
+        # happened above, so an inbound task.request the instant we register never hits a missing
+        # table (run_forever also calls setup(), idempotently).
+        # Capture each bound method ONCE — a fresh `x.method` access yields a new wrapper each time
+        # (== but not `is`), and teardown detaches by IDENTITY, so register + track must be the SAME
+        # object.
+        if self._deleg_inbox is not None:
+            self._deleg_inbox_task = asyncio.create_task(self._deleg_inbox.run_forever())
+            on_request = self._deleg_inbox.on_request
+            self._peer.register_kind(dg.KIND_REQUEST, on_request)
+            self._deleg_registered[dg.KIND_REQUEST] = on_request
+        if self._deleg_client is not None:
+            self._deleg_client_task = asyncio.create_task(self._deleg_client.run_forever())
+            on_result, on_progress = self._deleg_client.on_result, self._deleg_client.on_progress
+            self._peer.register_kind(dg.KIND_RESULT, on_result)
+            self._peer.register_kind(dg.KIND_PROGRESS, on_progress)
+            self._deleg_registered[dg.KIND_RESULT] = on_result
+            self._deleg_registered[dg.KIND_PROGRESS] = on_progress
+        log.info("[runtime] delegation wired (worker=%s, requester=%s)", is_worker, is_requester)
+        return {"enabled": True, "worker": is_worker, "requester": is_requester}
+
+    @property
+    def delegation_client(self):
+        """The requester-side client (or None if delegation is off / this agent isn't a requester)."""
+        return self._deleg_client
+
+    async def delegate(self, target: str, task_type: str, payload: dict, **kw) -> str:
+        """Durably delegate a task to ``target`` (returns the task_id). Requires delegation wired
+        as a requester (``channel_for`` injected + ``delegation.enabled``)."""
+        if self._deleg_client is None:
+            raise RuntimeError("delegation client not wired (delegation.enabled? channel_for supplied?)")
+        return await self._deleg_client.delegate(target, task_type, payload, **kw)
 
     # ── loops ─────────────────────────────────────────────────────
     async def _drive_loop(self, tick: float) -> None:
