@@ -384,6 +384,16 @@ PRESETS: dict[str, dict] = {
     },
 }
 
+# The full suite — every capability on. A showcase / stress-test (many need an optional profile or
+# host wiring; the dashboard's readiness banners say which), NOT a lean default. Built from the map so
+# it never drifts as capabilities are added.
+PRESETS["everything"] = {
+    "label": "Everything",
+    "blurb": "The whole suite — every capability enabled. A showcase / stress-test; several need an "
+             "optional profile or wiring (the dashboard tells you which). Not a lean default.",
+    "flags": [c.flag for c in _CAPS],
+}
+
 
 def preset_flags(name: str) -> set[str]:
     """A preset's flags expanded to include every transitive dependency (so a preset is

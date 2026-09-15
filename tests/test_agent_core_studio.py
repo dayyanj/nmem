@@ -74,7 +74,10 @@ def test_catalog_exposes_map_presets_and_groups():
     # every capability carries what the pills need to enforce dependencies (incl. the value-flag choices)
     sample = body["capabilities"][0]
     assert {"flag", "group", "summary", "requires", "default", "enabled", "values"} <= set(sample)
-    assert set(body["presets"]) == {"memory", "reflective", "full_cognition", "conversational", "perception"}
+    assert set(body["presets"]) == {"memory", "reflective", "full_cognition", "conversational",
+                                     "perception", "everything"}
+    # the full-suite preset enables every capability the map knows about
+    assert set(body["presets"]["everything"]["flags"]) >= {c["flag"] for c in body["capabilities"]}
     # presets are dependency-complete as served (recall pulls in drives/concerns/autonomy)
     full = set(body["presets"]["full_cognition"]["flags"])
     assert {"NMEM_SYM_CONCERNS_ENABLED", "NMEM_AUTONOMY__ENABLED"} <= full

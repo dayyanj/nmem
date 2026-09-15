@@ -55,7 +55,45 @@ const TEMPLATES = {
   companion:{nm:"Companion", aid:"companion", preset:"reflective",
     obj:"Be a thoughtful companion who remembers our conversations.\nListen first, and pick up where we left off.\nNotice how things are going for me over time.",
     ent:"our conversations, what matters to you, how things change over time"},
+  everything:{nm:"Everything", aid:"everything", preset:"everything", autonomy:"tiered",
+    obj:"Exercise the full stack: learn a domain from primary sources, form drives and goals, predict and reflect, and act with the tools you're given.\nSeek and verify rather than guess; remember what works and why it failed.",
+    ent:"your domain, its sources, the tools and people you work with",
+    tool:{name:"get_weather", method:"GET", url:"https://api.example.com/weather?city={city}", params:"city"}},
 };
+
+// ── contextual help (click a ⓘ to open a modal — the non-obvious concepts explained in place) ──
+const HELP = {
+  capabilities:{title:"Capabilities: presets vs. Advanced",html:`
+    <p><b>Presets</b> (the Basic tab) are ready-made, dependency-complete bundles — one click gives a coherent mind, from a plain remembering assistant up to the full cognitive suite.</p>
+    <p>Switch to the <b>Advanced</b> tab to see every capability as an individual toggle, grouped by area, and turn extras on or off. The wizard auto-pulls in whatever a capability depends on, so you can't build a broken config, and the live <code>capabilities.env</code> preview updates as you go.</p>
+    <p>Anything you enable that needs an optional service (writing-style identity, the perception sandbox…) is still created — the agent's dashboard then shows a clear banner telling you exactly what to start.</p>`},
+  autonomy:{title:"Autonomy — what it may do without asking",html:`
+    <p><b>read-only</b> (default, safe): the agent may only observe — call read-only tools, never change anything. A fresh agent can't act until you raise this.</p>
+    <p><b>tiered</b>: read-only is always allowed, plus an allowlist of actions you control; everything else is blocked.</p>
+    <p><b>full</b>: the agent may run any tool you configured here. Use deliberately.</p>
+    <p>Autonomy governs <i>acting</i> — separate from which thinking/memory <b>capabilities</b> you chose in Step 03.</p>`},
+  tools:{title:"Giving the agent hands",html:`
+    <p><b>Webhook</b> — expose any HTTP endpoint of yours as a tool: a name, a URL with <code>{placeholders}</code>, and the parameter names the agent may fill. Its LLM calls it like a function.</p>
+    <p><b>MCP server</b> — connect a Model Context Protocol tool-server (Streamable HTTP, or a local stdio process); all of its tools become available at once.</p>
+    <p><b>Agent (A2A)</b> — point at <i>another agent's</i> "agent card" URL and your agent can <b>delegate a task</b> to it, as if that whole agent were one tool. It's the loose "ask another agent" link — contrast the tight shared-graph coupling of a hive in Step 05.</p>
+    <p>Every call is governed by the <b>autonomy</b> level above and recorded so the agent learns what works.</p>`},
+  hive:{title:"Solo, or part of a hive",html:`
+    <p><b>Solo</b> (default): the agent owns its own private world-model (symbol graph).</p>
+    <p><b>Hive member</b>: several agents share ONE world-model and build on each other's knowledge, while each keeps its own goals, drives and pursuit (owner-scoped). Exactly one member is the <b>keeper</b> that runs the heavy graph-global maintenance (clustering, dreamstate).</p>
+    <p>To form a hive, point every member's <code>NMEM_AGENT_DB</code> at the same database. This is the <i>tight</i> coupling; for one agent to merely hand work to another, use an <b>A2A</b> tool in Step 04 instead.</p>`},
+};
+function openHelp(key){
+  const h=HELP[key]; if(!h) return;
+  let ov=document.getElementById('helpov');
+  if(!ov){ov=document.createElement('div');ov.id='helpov';ov.className='modalov';
+    ov.onclick=e=>{ if(e.target===ov) closeHelp(); };
+    ov.innerHTML='<div class="modal" role="dialog" aria-modal="true"><button class="x" onclick="closeHelp()" aria-label="Close">×</button><div id="helpbody"></div></div>';
+    document.body.appendChild(ov);
+    document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeHelp(); });}
+  document.getElementById('helpbody').innerHTML=`<h3>${h.title}</h3>${h.html}`;
+  ov.classList.add('on');
+}
+function closeHelp(){const ov=document.getElementById('helpov'); if(ov) ov.classList.remove('on');}
 
 // ── capability graph (dependency-safe toggling; mirrors config_writer's closure) ──
 function addWithDeps(f,acc){if(acc.has(f))return;acc.add(f);(CAPS[f]?.r||[]).forEach(r=>addWithDeps(r,acc));}
@@ -69,7 +107,13 @@ function toggle(flag){
   [...enabled].filter(f=>!before.has(f)&&f!==flag).forEach(f=>{const el=document.querySelector(`[data-flag="${f}"]`);
     if(el){el.classList.add('flash');setTimeout(()=>el.classList.remove('flash'),800);}});
 }
-function selectPreset(name){preset=name;const acc=new Set();(CATALOG.presets[name].flags||[]).forEach(f=>addWithDeps(f,acc));enabled=acc;render();}
+function selectPreset(name){preset=name;const acc=new Set();(CATALOG.presets[name].flags||[]).forEach(f=>addWithDeps(f,acc));enabled=acc;render();
+  const hint=document.getElementById('presethint');
+  if(hint){const lbl=CATALOG.presets[name]?.label||name;
+    hint.innerHTML=`<b>${lbl}</b> selected — ${acc.size} capabilities. Want more or fewer? Switch to the `
+      +`<a onclick="setView('advanced')">Advanced</a> tab to toggle any capability individually.`;
+    hint.hidden=false;}
+}
 // value-flags: the default pick is the last (most-capable) choice; config_writer applies the same default.
 function defaultValue(f){const va=CAPS[f]?.va||[];return va.length?va[va.length-1]:'';}
 function syncValues(){for(const f of Object.keys(VALUES))if(!enabled.has(f))delete VALUES[f];
@@ -127,7 +171,8 @@ function renderTemplates(){const host=document.getElementById('tmpl');
     assistant:["Assistant","Gets things done with the tools you give it — the hands-on agent."],
     analyst:["Analyst / watcher","Watches a domain and surfaces what changed and why it matters."],
     teammate:["Team member","Joins a shared world-model with other agents (a hive)."],
-    companion:["Companion","A reflective companion that remembers your context over time."]};
+    companion:["Companion","A reflective companion that remembers your context over time."],
+    everything:["Everything (full suite)","Every capability enabled — the whole cognitive stack. A showcase; some capabilities need an optional profile (the dashboard will say which)."]};
   for(const[k,[nm,bl]]of Object.entries(meta)){const b=document.createElement('button');b.className='pick';b.dataset.t=k;
     b.setAttribute('aria-pressed',k==='researcher');b.onclick=()=>applyTemplate(k);
     b.innerHTML=`<div class="nm">${nm}</div><div class="bl">${bl}</div>`;host.appendChild(b);}}

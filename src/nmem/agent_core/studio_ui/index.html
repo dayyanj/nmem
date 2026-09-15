@@ -79,6 +79,25 @@
   .seg button{font:600 12.5px/1 var(--sans);padding:7px 15px;border:0;background:var(--surface);color:var(--muted);cursor:pointer}
   .seg button[aria-pressed=true]{background:var(--accent);color:var(--accent-ink)}
   .advwrap{border-top:1px solid var(--line);margin-top:18px;padding-top:8px}
+  /* inline help affordance + modal (contextual "what is this?" for the non-obvious steps) */
+  .help{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;margin-left:7px;
+    border-radius:50%;border:1px solid var(--line-2);background:var(--surface-2);color:var(--muted);
+    font-size:11px;font-weight:700;cursor:pointer;vertical-align:middle;line-height:1;padding:0}
+  .help:hover{color:var(--accent);border-color:var(--accent)}
+  .modalov{position:fixed;inset:0;z-index:1500;display:none;align-items:center;justify-content:center;
+    background:rgba(0,0,0,.55);padding:20px}
+  .modalov.on{display:flex}
+  .modal{background:var(--surface);border:1px solid var(--line);border-radius:14px;max-width:540px;width:100%;
+    max-height:82vh;overflow:auto;padding:22px 24px;box-shadow:0 12px 40px rgba(0,0,0,.45)}
+  .modal h3{margin:0 4px 12px 0;color:var(--ink);font-size:18px}
+  .modal p{margin:0 0 11px;color:var(--muted);line-height:1.55;font-size:14px}
+  .modal p b{color:var(--ink)}
+  .modal code{font-family:var(--mono);font-size:12px;background:var(--surface-2);padding:1px 5px;border-radius:5px}
+  .modal .x{float:right;cursor:pointer;color:var(--muted);border:none;background:none;font-size:22px;line-height:1;padding:0 2px}
+  .modal .x:hover{color:var(--ink)}
+  .presethint{margin-top:14px;font-size:13px;color:var(--muted);line-height:1.5}
+  .presethint b{color:var(--ink)}
+  .presethint a{color:var(--accent);cursor:pointer;text-decoration:underline}
   details.adv summary{cursor:pointer;font-size:12.5px;font-weight:600;color:var(--accent);list-style:none;padding:8px 0}
   details.adv summary::-webkit-details-marker{display:none}
   details.adv summary::before{content:"▸ "}
@@ -247,14 +266,15 @@
 
     <section class="card">
       <span class="eyebrow">Step 03 · Capabilities</span>
-      <h2>How much of a mind?</h2>
+      <h2>How much of a mind?<button type="button" class="help" onclick="openHelp('capabilities')" aria-label="How capabilities work">?</button></h2>
       <p class="sub">Start with a preset. Toggling anything keeps the dependencies satisfied for you: switching a
         capability on quietly pulls in whatever it needs, so nothing here can write a broken config.</p>
       <div class="seg" role="tablist">
         <button id="tabBasic" aria-pressed="true" onclick="setView('basic')">Basic</button>
         <button id="tabAdv" aria-pressed="false" onclick="setView('advanced')">Advanced</button>
       </div>
-      <div id="basic"><div class="cards" id="presets" style="margin-top:12px"></div></div>
+      <div id="basic"><div class="cards" id="presets" style="margin-top:12px"></div>
+        <p class="presethint" id="presethint" hidden></p></div>
       <div id="advanced" hidden><div class="advwrap" id="groups"></div></div>
     </section>
 
@@ -265,17 +285,20 @@
         another agent over A2A. Every call is governed by the autonomy level below and recorded so the agent
         learns what works. Leave empty for a pure thinker.</p>
 
-      <label class="fld"><span class="lab">Autonomy <span class="keynote">(what it may run without asking)</span></span>
+      <label class="fld"><span class="lab">Autonomy <span class="keynote">(what it may run without asking)</span><button type="button" class="help" onclick="openHelp('autonomy')" aria-label="About autonomy levels">?</button></span>
         <select id="autonomy">
           <option value="read_only">read-only · only observe, never change the world (safe default)</option>
           <option value="tiered">tiered · read-only always, plus an allowlist you control</option>
           <option value="full">full · may run any tool you configure here</option>
         </select></label>
 
-      <div class="seg" role="tablist" style="margin-top:14px">
-        <button id="ttWebhook" aria-pressed="true" onclick="setToolType('webhook')">Webhook</button>
-        <button id="ttMcp" aria-pressed="false" onclick="setToolType('mcp')">MCP server</button>
-        <button id="ttA2a" aria-pressed="false" onclick="setToolType('a2a')">Agent (A2A)</button>
+      <div style="display:flex;align-items:center;margin-top:14px">
+        <div class="seg" role="tablist">
+          <button id="ttWebhook" aria-pressed="true" onclick="setToolType('webhook')">Webhook</button>
+          <button id="ttMcp" aria-pressed="false" onclick="setToolType('mcp')">MCP server</button>
+          <button id="ttA2a" aria-pressed="false" onclick="setToolType('a2a')">Agent (A2A)</button>
+        </div>
+        <button type="button" class="help" onclick="openHelp('tools')" aria-label="About tool types">?</button>
       </div>
 
       <div id="tfWebhook" class="toolform">
@@ -344,7 +367,7 @@
 
     <section class="card">
       <span class="eyebrow">Step 05 · Hive membership <span style="color:var(--muted);font-weight:400;font-size:13px">(optional)</span></span>
-      <h2>Solo, or part of a hive</h2>
+      <h2>Solo, or part of a hive<button type="button" class="help" onclick="openHelp('hive')" aria-label="About hives">?</button></h2>
       <p class="sub">A solo agent owns its own world-model. A <b>hive</b> member shares ONE symbol-graph
         world-model with other agents — each still keeps its own goals, drives and pursuit
         (owner-scoped) — and exactly one member is the <b>keeper</b> that runs the heavy graph-global
@@ -420,7 +443,45 @@ const TEMPLATES = {
   companion:{nm:"Companion", aid:"companion", preset:"reflective",
     obj:"Be a thoughtful companion who remembers our conversations.\nListen first, and pick up where we left off.\nNotice how things are going for me over time.",
     ent:"our conversations, what matters to you, how things change over time"},
+  everything:{nm:"Everything", aid:"everything", preset:"everything", autonomy:"tiered",
+    obj:"Exercise the full stack: learn a domain from primary sources, form drives and goals, predict and reflect, and act with the tools you're given.\nSeek and verify rather than guess; remember what works and why it failed.",
+    ent:"your domain, its sources, the tools and people you work with",
+    tool:{name:"get_weather", method:"GET", url:"https://api.example.com/weather?city={city}", params:"city"}},
 };
+
+// ── contextual help (click a ⓘ to open a modal — the non-obvious concepts explained in place) ──
+const HELP = {
+  capabilities:{title:"Capabilities: presets vs. Advanced",html:`
+    <p><b>Presets</b> (the Basic tab) are ready-made, dependency-complete bundles — one click gives a coherent mind, from a plain remembering assistant up to the full cognitive suite.</p>
+    <p>Switch to the <b>Advanced</b> tab to see every capability as an individual toggle, grouped by area, and turn extras on or off. The wizard auto-pulls in whatever a capability depends on, so you can't build a broken config, and the live <code>capabilities.env</code> preview updates as you go.</p>
+    <p>Anything you enable that needs an optional service (writing-style identity, the perception sandbox…) is still created — the agent's dashboard then shows a clear banner telling you exactly what to start.</p>`},
+  autonomy:{title:"Autonomy — what it may do without asking",html:`
+    <p><b>read-only</b> (default, safe): the agent may only observe — call read-only tools, never change anything. A fresh agent can't act until you raise this.</p>
+    <p><b>tiered</b>: read-only is always allowed, plus an allowlist of actions you control; everything else is blocked.</p>
+    <p><b>full</b>: the agent may run any tool you configured here. Use deliberately.</p>
+    <p>Autonomy governs <i>acting</i> — separate from which thinking/memory <b>capabilities</b> you chose in Step 03.</p>`},
+  tools:{title:"Giving the agent hands",html:`
+    <p><b>Webhook</b> — expose any HTTP endpoint of yours as a tool: a name, a URL with <code>{placeholders}</code>, and the parameter names the agent may fill. Its LLM calls it like a function.</p>
+    <p><b>MCP server</b> — connect a Model Context Protocol tool-server (Streamable HTTP, or a local stdio process); all of its tools become available at once.</p>
+    <p><b>Agent (A2A)</b> — point at <i>another agent's</i> "agent card" URL and your agent can <b>delegate a task</b> to it, as if that whole agent were one tool. It's the loose "ask another agent" link — contrast the tight shared-graph coupling of a hive in Step 05.</p>
+    <p>Every call is governed by the <b>autonomy</b> level above and recorded so the agent learns what works.</p>`},
+  hive:{title:"Solo, or part of a hive",html:`
+    <p><b>Solo</b> (default): the agent owns its own private world-model (symbol graph).</p>
+    <p><b>Hive member</b>: several agents share ONE world-model and build on each other's knowledge, while each keeps its own goals, drives and pursuit (owner-scoped). Exactly one member is the <b>keeper</b> that runs the heavy graph-global maintenance (clustering, dreamstate).</p>
+    <p>To form a hive, point every member's <code>NMEM_AGENT_DB</code> at the same database. This is the <i>tight</i> coupling; for one agent to merely hand work to another, use an <b>A2A</b> tool in Step 04 instead.</p>`},
+};
+function openHelp(key){
+  const h=HELP[key]; if(!h) return;
+  let ov=document.getElementById('helpov');
+  if(!ov){ov=document.createElement('div');ov.id='helpov';ov.className='modalov';
+    ov.onclick=e=>{ if(e.target===ov) closeHelp(); };
+    ov.innerHTML='<div class="modal" role="dialog" aria-modal="true"><button class="x" onclick="closeHelp()" aria-label="Close">×</button><div id="helpbody"></div></div>';
+    document.body.appendChild(ov);
+    document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeHelp(); });}
+  document.getElementById('helpbody').innerHTML=`<h3>${h.title}</h3>${h.html}`;
+  ov.classList.add('on');
+}
+function closeHelp(){const ov=document.getElementById('helpov'); if(ov) ov.classList.remove('on');}
 
 // ── capability graph (dependency-safe toggling; mirrors config_writer's closure) ──
 function addWithDeps(f,acc){if(acc.has(f))return;acc.add(f);(CAPS[f]?.r||[]).forEach(r=>addWithDeps(r,acc));}
@@ -434,7 +495,13 @@ function toggle(flag){
   [...enabled].filter(f=>!before.has(f)&&f!==flag).forEach(f=>{const el=document.querySelector(`[data-flag="${f}"]`);
     if(el){el.classList.add('flash');setTimeout(()=>el.classList.remove('flash'),800);}});
 }
-function selectPreset(name){preset=name;const acc=new Set();(CATALOG.presets[name].flags||[]).forEach(f=>addWithDeps(f,acc));enabled=acc;render();}
+function selectPreset(name){preset=name;const acc=new Set();(CATALOG.presets[name].flags||[]).forEach(f=>addWithDeps(f,acc));enabled=acc;render();
+  const hint=document.getElementById('presethint');
+  if(hint){const lbl=CATALOG.presets[name]?.label||name;
+    hint.innerHTML=`<b>${lbl}</b> selected — ${acc.size} capabilities. Want more or fewer? Switch to the `
+      +`<a onclick="setView('advanced')">Advanced</a> tab to toggle any capability individually.`;
+    hint.hidden=false;}
+}
 // value-flags: the default pick is the last (most-capable) choice; config_writer applies the same default.
 function defaultValue(f){const va=CAPS[f]?.va||[];return va.length?va[va.length-1]:'';}
 function syncValues(){for(const f of Object.keys(VALUES))if(!enabled.has(f))delete VALUES[f];
@@ -492,7 +559,8 @@ function renderTemplates(){const host=document.getElementById('tmpl');
     assistant:["Assistant","Gets things done with the tools you give it — the hands-on agent."],
     analyst:["Analyst / watcher","Watches a domain and surfaces what changed and why it matters."],
     teammate:["Team member","Joins a shared world-model with other agents (a hive)."],
-    companion:["Companion","A reflective companion that remembers your context over time."]};
+    companion:["Companion","A reflective companion that remembers your context over time."],
+    everything:["Everything (full suite)","Every capability enabled — the whole cognitive stack. A showcase; some capabilities need an optional profile (the dashboard will say which)."]};
   for(const[k,[nm,bl]]of Object.entries(meta)){const b=document.createElement('button');b.className='pick';b.dataset.t=k;
     b.setAttribute('aria-pressed',k==='researcher');b.onclick=()=>applyTemplate(k);
     b.innerHTML=`<div class="nm">${nm}</div><div class="bl">${bl}</div>`;host.appendChild(b);}}
