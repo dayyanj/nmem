@@ -3,15 +3,23 @@
 All notable changes to nmem are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [1.0.0] — 2026-09-08
+## [1.0.0] — 2026-09-15
 
 **First stable release.** nmem's public API and on-disk schema are now stable —
 breaking changes bump the major version from here — and the package is promoted from
 Alpha to Production/Stable. This release rolls up everything since 0.11.0: a headless
 agent runtime, a hardened skills loop, self-engineering, the capability-activation
-sweep, and two additive schema steps.
+sweep, two additive schema steps, and the nmem-studio pull-and-run appliance.
 
 ### Added
+
+- **nmem-studio — a pull-and-run appliance.** A single Docker image stands up one fully
+  configured agent from a web wizard (pick a persona, point it at your LLM, choose how much
+  of a mind it has) — no config files by hand. Bundles Postgres+pgvector and the nmem-viz
+  brain in one container with all state on one volume; optional `identity` (writing-style
+  recognition) and `perception` (embodied nmem-sandbox) compose profiles. Published on
+  Docker Hub (`docker.io/dayyanj`), with a landing page at
+  [huggingface.co/dayyanj/nmem-studio](https://huggingface.co/dayyanj/nmem-studio).
 
 - **`nmem.agent_core` — a headless cognitive runtime.** A new agent is now *config +
   persona + (executor) + host I/O*, with no hand-rolled cognition. `AgentRuntime` owns
