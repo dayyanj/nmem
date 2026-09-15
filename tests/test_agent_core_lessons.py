@@ -45,7 +45,7 @@ async def test_tool_tag_and_agent_id_threaded_to_skills_find():
 @pytest.mark.asyncio
 async def test_surfaces_procedure_ids_and_context(monkeypatch):
     # a fake graph whose embedder + procedural lookups return two compiled procedures
-    graph = SimpleNamespace(_embedder=SimpleNamespace(encode=lambda s: SimpleNamespace(tolist=lambda: [0.1])),
+    graph = SimpleNamespace(_embedder=SimpleNamespace(embed=lambda s: [0.1]),
                             pool=object())
     procs = [{"id": 11}, {"id": 12}]
     import nmem_sym.procedural as proc

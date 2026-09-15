@@ -560,6 +560,24 @@ def build_agent_app():
                 log.warning("[studio] act failed: %s", e, exc_info=True)
                 return {"ok": False, "error": str(e)}
 
+        @app.post("/chat/session-end")
+        async def chat_session_end(req: dict):
+            """Summarize a finished /chat conversation → journal, and (if the caller identifies
+            itself) build a durable dossier of the interlocutor the agent carries into later
+            sessions. Body: {transcript:[{role,content}] | [str…], speaker_id?, speaker_name?,
+            speaker_type?}. The generic host owns the turn-by-turn /chat; this closes the session
+            (the twin/front-end bridge calls it on hang-up). Fail-open."""
+            from nmem.agent_core import summarize_and_remember
+            try:
+                return await summarize_and_remember(
+                    ctx.mem, ctx.backend, ctx.persona.agent_id,
+                    req.get("transcript") or [],
+                    interlocutor_id=req.get("speaker_id"),
+                    interlocutor_name=req.get("speaker_name"),
+                    interlocutor_type=req.get("speaker_type", "agent"))
+            except Exception as e:  # noqa: BLE001
+                return {"ok": False, "error": str(e)}
+
     # The generic host owns lifespan/bootstrap/ops + the default /chat (runtime.converse — exactly
     # studio's old /chat). Studio injects only its executor (selector OR research runner) + the
     # sandbox lifecycle (resources_ready/started) + UI routes + auth.

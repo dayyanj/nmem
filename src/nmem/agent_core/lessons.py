@@ -42,7 +42,11 @@ async def recall_lessons(mem, graph, task_hint: str, *, tool_tag: str,
     try:
         if graph is not None:
             from nmem_sym.procedural import find_matching_procedures, format_procedure_context
-            emb = graph._embedder.encode(f"{tool_tag}: {task_hint}").tolist()
+            # graph._embedder is an nmem EmbeddingProvider (Protocol = .embed → list[float]); the
+            # whole nmem-sym codebase uses .embed. (Historically this called the raw sentence-
+            # transformers .encode(), which fails for every provider-wrapped embedder — the
+            # compiled-procedures branch silently no-op'd.)
+            emb = graph._embedder.embed(f"{tool_tag}: {task_hint}")
             procs = await find_matching_procedures(graph.pool, emb, limit=3)
             for p in (procs or []):
                 pid = getattr(p, "id", None) if not isinstance(p, dict) else p.get("id")
