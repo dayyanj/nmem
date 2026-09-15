@@ -14,26 +14,26 @@ hand. One image, one process, two modes:
 
 ## Download
 
-**Home / released image: [huggingface.co/dayyanj/nmem-studio](https://huggingface.co/dayyanj/nmem-studio).**
-That is the canonical public download for the appliance — grab the `docker-compose.yml` and pull the
-image from there. (The `registry.spwig.com` references below are the internal build registry; the
-public image is mirrored to Hugging Face.)
+**Home / landing page: [huggingface.co/dayyanj/nmem-studio](https://huggingface.co/dayyanj/nmem-studio)** —
+start here for what the appliance is and how to run it. The container images ship from **Docker Hub**
+(`docker.io/dayyanj`); see [Run](#run) below for the one-line `docker run` and the compose stack.
 
 ## Run
 
-### Fastest — one line (all-in-one image)
+### Fastest — one line
 
-`nmem-studio-aio` bundles **everything a solo agent needs in one container** — Postgres+pgvector, the
-studio, and the nmem-viz brain — with all state on one volume:
+The `nmem-studio` image runs **the whole appliance in one container** — Postgres+pgvector, the studio,
+and the nmem-viz brain — with all state on one volume:
 
 ```bash
-docker run -p 127.0.0.1:8080:8080 -p 127.0.0.1:5174:5174 -v nmem:/data docker.io/dayyanj/nmem-studio-aio
+docker run -p 127.0.0.1:8080:8080 -p 127.0.0.1:5174:5174 -v nmem:/data docker.io/dayyanj/nmem-studio
 # → open http://localhost:8080  (wizard)     http://localhost:5174  (brain viz)
 ```
 
-That's the whole appliance. State lives on the `nmem` volume, so it survives `docker rm` and comes
-back in agent mode. The LLM stays external — point the wizard at your endpoint. (For several agents,
-the writing-style-identity / perception profiles, or a hive, use compose below.)
+That's it. State lives on the `nmem` volume, so it survives `docker rm` and comes back in agent mode.
+The LLM stays external — point the wizard at your endpoint. (For several agents, the writing-style
+identity / perception profiles, or a hive, use the compose stack below — the **same image**, with its
+embedded Postgres+viz turned off in favour of separate services.)
 
 > **Ports are bound to `127.0.0.1`** — the admin surface (wizard / create / act) is unauthenticated by
 > default, so keep it on loopback. To reach it from another machine, tunnel over SSH, or set
@@ -60,11 +60,11 @@ docker compose up --build
 
 Then open <http://localhost:8080>. (If 8080 is taken: `STUDIO_HOST_PORT=18080 docker compose up`.)
 
-> **Releasing (maintainers):** `./docker/publish.sh --push` builds all four appliance images from the
+> **Releasing (maintainers):** `./docker/publish.sh --push` builds the appliance images from the
 > monorepo — `nmem-studio`, `nmem-viz`, and (for the optional profiles) `nmem-identity` +
 > `nmem-sandbox` — version-stamps them (`VERSION` → the `org.opencontainers.image.version` label), and
-> pushes `:<version>` + `:latest` to `$REGISTRY` (default `registry.spwig.com`). CI does this on a `v*`
-> tag (`.github/workflows/publish-images.yml`).
+> pushes `:<version>` + `:latest` to `$REGISTRY` (default `docker.io/dayyanj`; internal builds set
+> `REGISTRY=registry.spwig.com`). CI does this on a `v*` tag (`.github/workflows/publish-images.yml`).
 
 > **Security — the admin surface can create + run agents and register container-executing tools.**
 > By default it is **unauthenticated** and the compose binds the studio + viz ports to **loopback

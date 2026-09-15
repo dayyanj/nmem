@@ -21,6 +21,11 @@ services:
       # Override the host port if 8080 is taken: STUDIO_HOST_PORT=18080 docker compose up.
       - "${STUDIO_BIND:-127.0.0.1}:${STUDIO_HOST_PORT:-8080}:8080"
     environment:
+      # The nmem-studio image runs its embedded Postgres+viz by default (the one-line `docker run`);
+      # here we turn those OFF and use the separate `postgres` + `viz` services below (needed for the
+      # identity/perception profiles + hives). Same image, multi-service shape.
+      NMEM_EMBEDDED_PG: "0"
+      NMEM_EMBEDDED_VIZ: "0"
       STUDIO_DATA_DIR: /data
       STUDIO_PORT: "8080"
       POSTGRES_HOST: postgres

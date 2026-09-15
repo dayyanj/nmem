@@ -1,12 +1,12 @@
-# Build-context filter for the studio image (BuildKit reads <dockerfile>.dockerignore).
-# The context is the apps/ monorepo root; scope it down to just the nmem-* library sources
-# this image installs so the daemon isn't shipped every sibling repo, venv, and .git.
+# Build-context filter for the nmem-studio image (BuildKit reads <dockerfile>.dockerignore).
+# Context is the apps/ monorepo root; ship the studio libs + nmem-viz + nmem-sym-sensor sources.
 *
 !nmem
 !nmem-sym
 !nmem-act
 !nmem-exchange
 !nmem-sym-sensor
+!nmem-viz
 
 # prune heavy / irrelevant bits from the included libraries (last-match-wins)
 **/.git
@@ -25,8 +25,7 @@ nmem-act/tests
 nmem-exchange/tests
 nmem-sym-sensor/tests
 # nmem-sym-sensor's working tree carries multi-GB local artifacts (training videos, audio, model
-# checkpoints) that pip does NOT need — the appliance installs only the package source. Excluding them
-# keeps the studio image ~2GB (else the COPY balloons it to ~20GB) and shrinks the build context.
+# checkpoints) pip does NOT need — excluding them keeps the image lean (else the COPY balloons it ~20GB).
 nmem-sym-sensor/videos
 nmem-sym-sensor/training_data
 nmem-sym-sensor/checkpoints*
@@ -35,3 +34,5 @@ nmem-sym-sensor/**/*.pth
 nmem-sym-sensor/**/*.onnx
 nmem-sym-sensor/**/*.mp4
 nmem-sym-sensor/**/*.wav
+nmem-viz/node_modules
+nmem-viz/dist

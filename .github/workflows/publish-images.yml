@@ -1,7 +1,7 @@
 # Build + push the nmem appliance images on a version tag (open, free pull-and-run distribution).
 #
-#   git tag v1.0.0 && git push origin v1.0.0   → builds nmem-studio-aio + nmem-studio + nmem-viz +
-#                                                 nmem-identity + nmem-sandbox :1.0.0 (+ :latest)
+#   git tag v1.0.0 && git push origin v1.0.0   → builds nmem-studio + nmem-viz + nmem-identity +
+#                                                 nmem-sandbox :1.0.0 (+ :latest)
 #
 # REQUIRES three repo/org secrets to be wired (Settings → Secrets):
 #   REGISTRY_USERNAME / REGISTRY_PASSWORD  — a push credential for registry.spwig.com
