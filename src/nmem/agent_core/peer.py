@@ -70,6 +70,10 @@ class PeerExchange:
         # The sink exists even before start() (delivery no-ops until started), so a host
         # can wire the comms loop unconditionally — matching pre-graduation behaviour.
         self._comms_sink = PeerExchangeSink(self, comms_channel) if comms_channel else None
+        # kind → handler(meta, body): other subsystems (e.g. delegation's task.request /
+        # task.result) route their own message kinds over this ONE shared bus. Empty by
+        # default → challenge/response behaviour is byte-identical.
+        self._kind_handlers: dict[str, Callable] = {}
 
     @staticmethod
     def _accepts_continuity(fn) -> bool:
@@ -87,6 +91,13 @@ class PeerExchange:
     @property
     def comms_sink(self):
         return self._comms_sink
+
+    def register_kind(self, kind: str, handler: Callable) -> None:
+        """Route inbound messages of ``kind`` to ``handler(meta, body)`` — used to plug the
+        delegation inbox/client (``task.request`` / ``task.result`` / ``task.progress``) into
+        this agent's single Exchange bus. Registered handlers run BEFORE the conversation
+        path, so delegation traffic is never journaled as peer chat nor run as a challenge."""
+        self._kind_handlers[kind] = handler
 
     @property
     def started(self) -> bool:
@@ -136,6 +147,16 @@ class PeerExchange:
         ephemeral = channel.startswith(self._ephemeral)
         if ephemeral:
             log.info("[peer] ephemeral channel %s — responding without persisting", channel)
+
+        # Registered non-conversation kinds (delegation task.*, …) own their handling and are
+        # NOT journaled/correlated/challenged. Default: no handlers → unchanged behaviour.
+        kh = self._kind_handlers.get(kind)
+        if kh is not None:
+            try:
+                await kh(meta, body)
+            except Exception:  # noqa: BLE001 — a delegation handler error must not kill the bus loop
+                log.warning("[peer] kind handler %s failed", kind, exc_info=True)
+            return
 
         if not ephemeral:
             await self._log("peer_msg", f"{kind} from {sender}", f"[{channel}] {text}",
