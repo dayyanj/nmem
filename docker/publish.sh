@@ -39,11 +39,14 @@ _build () {   # display-name  dockerfile  build-context
   fi
 }
 
-# Core appliance (always pulled). nmem-identity + nmem-sandbox back the optional identity /
-# perception compose profiles — published too so `docker compose --profile … pull` finds them.
-_build nmem-studio   "$HERE/docker/studio/Dockerfile"          "$CONTEXT"
-_build nmem-viz      "$CONTEXT/nmem-viz/Dockerfile"            "$CONTEXT/nmem-viz"
-_build nmem-identity "$HERE/docker/studio/Dockerfile.identity" "$CONTEXT"
-_build nmem-sandbox  "$CONTEXT/nmem-sandbox/Dockerfile"        "$CONTEXT/nmem-sandbox"
+# nmem-studio-aio = the ONE-LINER trial image (Postgres+studio+viz in one container; `docker run`).
+# nmem-studio = the slim studio for docker-compose (production/hive; separate pg + viz services).
+# nmem-identity + nmem-sandbox back the optional identity / perception compose profiles — published
+# so `docker compose --profile … pull` finds them.
+_build nmem-studio-aio "$HERE/docker/studio/Dockerfile.aio"      "$CONTEXT"
+_build nmem-studio     "$HERE/docker/studio/Dockerfile"          "$CONTEXT"
+_build nmem-viz        "$CONTEXT/nmem-viz/Dockerfile"            "$CONTEXT/nmem-viz"
+_build nmem-identity   "$HERE/docker/studio/Dockerfile.identity" "$CONTEXT"
+_build nmem-sandbox    "$CONTEXT/nmem-sandbox/Dockerfile"        "$CONTEXT/nmem-sandbox"
 
-echo "done: nmem-studio + nmem-viz + nmem-identity + nmem-sandbox :$VERSION @ $REGISTRY${PUSH:+  (pushed :$VERSION and :latest)}"
+echo "done: nmem-studio-aio + nmem-studio + nmem-viz + nmem-identity + nmem-sandbox :$VERSION @ $REGISTRY${PUSH:+  (pushed :$VERSION and :latest)}"

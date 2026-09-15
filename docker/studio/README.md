@@ -21,16 +21,29 @@ public image is mirrored to Hugging Face.)
 
 ## Run
 
-**Run the released images** (open, free — no login to pull). The compose file references
-`registry.spwig.com/nmem-studio` + `registry.spwig.com/nmem-viz`, so a fresh checkout just pulls them:
+### Fastest — one line (all-in-one image)
+
+`nmem-studio-aio` bundles **everything a solo agent needs in one container** — Postgres+pgvector, the
+studio, and the nmem-viz brain — with all state on one volume:
+
+```bash
+docker run -p 8080:8080 -p 5174:5174 -v nmem:/data docker.io/dayyanj/nmem-studio-aio
+# → open http://localhost:8080  (wizard)     http://localhost:5174  (brain viz)
+```
+
+That's the whole appliance. State lives on the `nmem` volume, so it survives `docker rm` and comes
+back in agent mode. The LLM stays external — point the wizard at your endpoint. (For several agents,
+the writing-style-identity / perception profiles, or a hive, use compose below.)
+
+### Production / advanced — docker-compose
+
+The multi-service stack (separate Postgres + viz, plus the optional `identity` / `perception`
+profiles). Images pull from Docker Hub by default (`docker.io/dayyanj`; override with `NMEM_REGISTRY`):
 
 ```bash
 cd nmem/docker/studio
-docker compose pull        # fetches BOTH the studio + viz images from the registry
+docker compose pull        # studio + viz (+ identity/sandbox if you enable those profiles)
 docker compose up
-# check what you got:
-docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' \
-  registry.spwig.com/nmem-studio:latest
 ```
 
 **Or build from source** (needs the sibling `nmem-*` repos side-by-side; installs CPU torch + the
