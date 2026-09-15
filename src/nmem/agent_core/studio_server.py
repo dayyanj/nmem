@@ -432,6 +432,9 @@ def build_agent_app():
         task = ctx.state.get("readiness_task")
         if task is not None:
             task.cancel()
+        peer = ctx.state.get("peer")
+        if peer is not None:
+            await peer.close()                         # close the exchange bus (host owns it) before runtime.stop
         close = ctx.state.get("close")
         if close is not None:
             await close()                              # tear down live MCP/A2A sessions
@@ -452,6 +455,12 @@ def build_agent_app():
         vm = ctx.state.get("visual_memory")
         if vm is not None:
             out["visual_memory"] = bool(getattr(vm, "enabled", False))
+        peer = ctx.state.get("peer")
+        if peer is not None:
+            out["peer"] = bool(getattr(peer, "started", False))
+            deleg = (ctx.runtime.status or {}).get("delegation") if ctx.runtime is not None else None
+            if deleg is not None:
+                out["delegation"] = deleg
         out["readiness"] = _readiness(ctx)
         return out
 
@@ -578,13 +587,58 @@ def build_agent_app():
             except Exception as e:  # noqa: BLE001
                 return {"ok": False, "error": str(e)}
 
+    async def _comms_factory(ctx):
+        """CONFIG-DRIVEN peering for a thin studio appliance (host-shell-convergence-plan G2): build
+        the agent's PeerExchange from its ``exchange:`` block with a GENERIC grounded ``on_challenge``
+        (no bespoke voice code), start it, stash it on ctx.state for the delegation factory, and
+        return the comms ChannelSink. No-op (None) unless ``exchange.enabled`` — so an agent with no
+        ``exchange:`` block is byte-identical to today (no peer)."""
+        excfg = config.get("exchange") or {}
+        if not excfg.get("enabled", False):
+            return None
+        from nmem.agent_core.peer import PeerExchange, grounded_on_challenge
+        comms_channel = (config.get("comms") or {}).get("channel", "")
+        peer = PeerExchange(config, mem=ctx.mem, agent_id=persona.agent_id,
+                            on_challenge=grounded_on_challenge(ctx.backend, persona),
+                            comms_channel=comms_channel)
+        await peer.start()   # no-op + returns None when exchange.enabled is false (guarded above anyway)
+        ctx.state["peer"] = peer
+        return peer.comms_sink
+
+    async def _delegation_factory(ctx):
+        """CONFIG-DRIVEN delegation seams for a thin appliance. Reads the ``delegation:`` block:
+        ``{enabled, task_types:[{type,capability_class,description}], peer_channels:{target: channel}}``.
+        Worker role = the generic AskExecutor over the declared task types (an ``ask`` answered via the
+        agent's grounded cognition); requester role = channel_for from peer_channels. Shares the ONE
+        peer the comms factory built. Returns {} unless enabled (create_agent_app + runtime gate again)."""
+        dcfg = config.get("delegation") or {}
+        if not dcfg.get("enabled", False):
+            return {}
+        peer = ctx.state.get("peer")
+        if peer is None:
+            log.warning("[studio] delegation.enabled but no peer (needs exchange.enabled) — skipping")
+            return {}
+        from nmem.agent_core.delegation import AskExecutor, TaskTypeRegistry, TaskTypeSpec
+        specs = [TaskTypeSpec(t.get("type"), t.get("capability_class", "READ_ONLY"),
+                              t.get("description", ""))
+                 for t in (dcfg.get("task_types") or []) if t.get("type")]
+        registry = TaskTypeRegistry(specs) if specs else None
+        executor = AskExecutor(ctx.backend, persona) if registry else None
+        peer_channels = dcfg.get("peer_channels") or {}   # {target_agent_id: channel}
+        channel_for = (lambda t: peer_channels[t]) if peer_channels else None
+        # approve stays None for now → READ_ONLY passes, MUTATING/HIGH_RISK fail-closed (safe). A
+        # tiered gate adapter (ctx.state['gate']) is wired when we delegate mutating work (P2+).
+        return {"peer": peer, "executor": executor, "registry": registry,
+                "channel_for": channel_for, "approve": None}
+
     # The generic host owns lifespan/bootstrap/ops + the default /chat (runtime.converse — exactly
     # studio's old /chat). Studio injects only its executor (selector OR research runner) + the
-    # sandbox lifecycle (resources_ready/started) + UI routes + auth.
+    # sandbox lifecycle (resources_ready/started) + UI routes + auth + config-driven peering/delegation.
     app, ctx = create_agent_app(
         config, persona,
         build_executor=_build_executor, on_resources_ready=_on_resources_ready,
         pre_start=_pre_start, on_started=_on_started, on_shutdown=_on_shutdown,
+        comms_factory=_comms_factory, delegation_factory=_delegation_factory,
         extra_health=_health_extras, extra_routes=_studio_routes,
         title=f"nmem agent · {persona.agent_id}")
 

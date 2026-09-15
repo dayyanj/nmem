@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from nmem.agent_core.peer import PeerExchange
+from nmem.agent_core.peer import PeerExchange, grounded_on_challenge
 
 
 class _Wake:
@@ -137,6 +137,61 @@ async def test_delegation_kinds_reserved_by_default_before_any_registration():
 
     assert mem.journal.added == []   # reserved-by-default → nothing journaled
     assert mem.checkpoints == []
+
+
+# ── generic appliance cognition: grounded_on_challenge + AskExecutor ────────────
+
+
+class _FakeBackend:
+    def __init__(self, reply="a grounded reply", boom=False):
+        self._reply, self._boom = reply, boom
+        self.calls = []
+
+    async def chat(self, messages, max_tokens=None):
+        self.calls.append(messages)
+        if self._boom:
+            raise RuntimeError("backend down")
+        return self._reply
+
+
+def _P():
+    from nmem.agent_core.persona import Persona
+    return Persona(agent_id="djai")
+
+
+@pytest.mark.asyncio
+async def test_grounded_on_challenge_answers_over_backend():
+    be = _FakeBackend("I disagree, because X.")
+    handler = grounded_on_challenge(be, _P())
+    reply = await handler("michelle", "do you agree that X?", "continuity here")
+    assert reply == "I disagree, because X."
+    # grounded floor + continuity + the peer's text all reached the backend
+    sysp = be.calls[0][0]["content"]
+    assert "continuity here" in sysp
+    assert "do you agree that X?" in be.calls[0][1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_grounded_on_challenge_fails_safe():
+    handler = grounded_on_challenge(_FakeBackend(boom=True), _P())
+    reply = await handler("michelle", "well?")
+    assert reply == "(unable to respond right now)"   # never raises into the bus loop
+
+
+@pytest.mark.asyncio
+async def test_ask_executor_answers_and_retryable():
+    from nmem.agent_core.delegation import AskExecutor, ExecOutcome, Retryable
+    be = _FakeBackend("42")
+    ex = AskExecutor(be, _P())
+    out = await ex.run("ask", {"question": "meaning of life?"}, task_id="t1")
+    assert isinstance(out, ExecOutcome) and out.ok and out.result == {"answer": "42"}
+    # empty question → terminal failure (not retried)
+    empty = await ex.run("ask", {}, task_id="t2")
+    assert not empty.ok and "empty" in (empty.reason or "")
+    # backend blip → Retryable (infra, reclaimed) not a terminal failure
+    exb = AskExecutor(_FakeBackend(boom=True), _P())
+    with pytest.raises(Retryable):
+        await exb.run("ask", {"question": "hi"}, task_id="t3")
 
 
 @pytest.mark.asyncio

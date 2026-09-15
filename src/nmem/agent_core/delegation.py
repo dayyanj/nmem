@@ -154,6 +154,33 @@ class ExecOutcome:
     reason: str | None = None
 
 
+class AskExecutor:
+    """A generic READ_ONLY delegation executor: answer a delegated QUESTION via the agent's own
+    grounded cognition (``chat.system_prompt`` + its backend). The trivial-but-real capability a thin
+    appliance exposes first — a peer delegates ``ask`` with ``payload={question|prompt}`` and gets
+    ``{answer}`` back. A backend/LLM failure is INFRA → raise :class:`Retryable` (reclaimed), not a
+    terminal task failure. Unknown task types never reach here (the inbox rejects them at intake)."""
+
+    def __init__(self, backend, persona, *, max_tokens: int = 600) -> None:
+        self._backend = backend
+        self._persona = persona
+        self._max_tokens = int(max_tokens)
+
+    async def run(self, task_type: str, payload: dict, *, task_id: str) -> "ExecOutcome":
+        question = (payload.get("question") or payload.get("prompt") or "").strip()
+        if not question:
+            return ExecOutcome(ok=False, reason="empty question")
+        from nmem.agent_core.chat import system_prompt
+        sysp = system_prompt(self._persona)
+        try:
+            answer = await self._backend.chat(
+                [{"role": "system", "content": sysp}, {"role": "user", "content": question}],
+                max_tokens=self._max_tokens)
+        except Exception as e:  # noqa: BLE001 — LLM/backend blip is INFRA, not a bad task → retry
+            raise Retryable(f"ask backend failure: {e}") from e
+        return ExecOutcome(ok=True, result={"answer": answer})
+
+
 @runtime_checkable
 class Executor(Protocol):
     """A worker agent injects one of these. Refinery agents' executors call the shared

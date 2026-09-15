@@ -38,6 +38,33 @@ def _resolve(ex_cfg: dict) -> dict:
     return ex_cfg
 
 
+def grounded_on_challenge(backend, persona, *, max_tokens: int = 500):
+    """A GENERIC in-character ``on_challenge`` for a thin appliance that has no bespoke peer
+    cognition (e.g. a studio-image agent). Answers a peer's challenge with the agent's grounded
+    identity floor (``chat.system_prompt``) + the living continuity snapshot PeerExchange supplies,
+    over the agent's own backend. This is michelle's ``_on_challenge`` pattern made generic, minus
+    the bespoke voice layer — so any appliance peers in character purely from config. Fail-safe: a
+    backend hiccup yields a plain fallback rather than raising into the bus loop."""
+    from nmem.agent_core.chat import system_prompt
+
+    async def _on_challenge(sender: str, text: str, continuity: str = "") -> str:
+        sysp = system_prompt(persona)
+        if continuity and continuity.strip():
+            sysp += "\n\n# Continuity — where you are right now\n" + continuity
+        prompt = (f"{sender} (a peer agent) puts this to you:\n\n{text}\n\n"
+                  f"Respond as {persona.agent_id} — your genuine assessment: agree plainly if it's "
+                  f"right, push back if it isn't, refine if it's half-right. Be substantive.")
+        try:
+            return await backend.chat(
+                [{"role": "system", "content": sysp}, {"role": "user", "content": prompt}],
+                max_tokens=max_tokens)
+        except Exception as e:  # noqa: BLE001 — a reply hiccup must not kill the bus loop
+            log.warning("[peer] grounded on_challenge failed: %s", e)
+            return "(unable to respond right now)"
+
+    return _on_challenge
+
+
 class PeerExchange:
     """An agent's connection to the nmem-exchange bus.
 
