@@ -222,8 +222,8 @@
           <div class="ph" style="margin-bottom:6px"><span class="fn">discover over the broker <span class="keynote" style="font-weight:normal;color:var(--muted)">(TOFU — convenience)</span></span></div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
             <button class="go" id="hiveannouncebtn" onclick="hiveAnnounce()">Announce me to broker</button>
-            <button class="go" id="hivediscoverbtn" onclick="hiveDiscover(false)">Discover peers</button>
-            <button class="go" id="hivepinbtn" onclick="hiveDiscover(true)" hidden>Pin new verified</button>
+            <button class="go" id="hivediscoverbtn" onclick="hiveDiscover()">Discover peers</button>
+            <button class="go" id="hivepinbtn" onclick="hivePinDiscovered()" hidden>Pin new verified</button>
           </div>
           <pre id="hivepeers" hidden class="res" style="margin-top:6px;white-space:pre-wrap;word-break:break-all;max-height:180px;overflow:auto"></pre>
           <p class="sub" style="color:var(--muted);margin:6px 0 0;font-size:12px">Announce publishes your <em>public</em> bundle to the broker's open roster; Discover collects peers' announcements. Pinning is trust-on-first-use — anyone who can reach the broker can announce, so verify fingerprints out-of-band if the broker isn't trusted. A known id re-announced with different keys is refused (rotate + re-share, or remove first).</p>
@@ -480,23 +480,40 @@ async function hiveAnnounce(){
   }catch(e){ setHiveOut('⚠ '+e,'err'); }
   finally{ _hiveTofuBtns(false); }
 }
-async function hiveDiscover(pin){
-  setHiveOut(pin?'pinning…':'listening on the roster ~5s…','wait'); _hiveTofuBtns(true);
+let _hiveDiscovered=[];   // the peers from the LAST review, so Pin trusts the EXACT keys shown (no re-discover)
+async function hiveDiscover(){
+  setHiveOut('listening on the roster ~5s…','wait'); _hiveTofuBtns(true);
   try{
-    const r=await getJSON('/hive/discover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({timeout:5,pin:!!pin})});
+    const r=await getJSON('/hive/discover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({timeout:5})});
     if(r.ok===false){ setHiveOut('⚠ '+(r.error||'failed'),'err'); return; }
+    _hiveDiscovered = r.peers||[];
     const box=document.getElementById('hivepeers');
-    const badge=p=>({pinned:'✓ pinned',new:'• new (verified) — Pin to trust',known:'· already a member',conflict:'⚠ CONFLICT: known id, different keys — NOT pinned',unverified:'✗ unverified signature — ignored'})[p.status]||p.status;
-    if(!(r.peers||[]).length){ box.textContent='no announcements on the roster (are peers running “Announce me”? is the broker reachable?)'; }
-    else{ box.textContent=r.peers.map(p=>`${p.agent_id}  sign=${p.sign_fp}…  box=${p.box_fp}…  [${badge(p)}]`).join('\n'); }
+    const badge=p=>({new:'• new (verified) — Pin to trust',known:'· already a member',conflict:'⚠ CONFLICT: known id, different keys — will NOT pin',unverified:'✗ unverified signature — ignored'})[p.status]||p.status;
+    if(!_hiveDiscovered.length){ box.textContent='no announcements on the roster (are peers running “Announce me”? is the broker reachable?)'; }
+    else{ box.textContent=_hiveDiscovered.map(p=>`${p.agent_id}  sign=${p.sign_fp}…  box=${p.box_fp}…  [${badge(p)}]`).join('\n'); }
     box.hidden=false;
-    document.getElementById('hivepinbtn').hidden = !(r.peers||[]).some(p=>p.status==='new');
-    if(pin && r.restarting){
+    const conflicts=(r.conflicts||[]).length;
+    document.getElementById('hivepinbtn').hidden = !_hiveDiscovered.some(p=>p.status==='new');
+    setHiveOut('discovered '+_hiveDiscovered.length+' peer(s)'+(conflicts?' — '+conflicts+' conflict(s)':'')+' — verify fingerprints, then Pin','ok');
+  }catch(e){ setHiveOut('⚠ '+e,'err'); }
+  finally{ _hiveTofuBtns(false); }
+}
+async function hivePinDiscovered(){
+  // Pin the EXACT bundles just reviewed — NOT a fresh discovery — so keys can't be swapped between
+  // review and trust. Server re-applies the first-use guard (a known id with different keys is refused).
+  const news=_hiveDiscovered.filter(p=>p.status==='new'&&p.bundle);
+  if(!news.length){ setHiveOut('nothing new to pin','ok'); return; }
+  if(!confirm('Pin '+news.length+' peer(s) you just reviewed?\n\nTrust-on-first-use: confirm each fingerprint matches what the peer told you out-of-band. The agent restarts (memory preserved).')) return;
+  setHiveOut('pinning…','wait'); _hiveTofuBtns(true);
+  try{
+    const r=await getJSON('/hive/pin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bundles:news.map(p=>p.bundle)})});
+    if(r.ok===false){ setHiveOut('⚠ '+(r.error||'failed'),'err'); return; }
+    if(r.restarting){
       setHiveOut('pinned '+r.pinned.length+' peer(s) — restarting…','ok');
       ['hiveshare','hivesharebundle','hivesharebundlelbl'].forEach(id=>document.getElementById(id).hidden=true);
+      _hiveDiscovered=[]; document.getElementById('hivepinbtn').hidden=true;
       setTimeout(loadHive,4000); setTimeout(loadHive,9000);
-    } else if(pin){ setHiveOut('nothing new to pin (only new verified peers are pinned)','ok'); }
-    else { setHiveOut('discovered '+(r.peers||[]).length+' peer(s)'+(r.conflicts&&r.conflicts.length?' — '+r.conflicts.length+' conflict(s)':''),'ok'); }
+    } else { setHiveOut('nothing pinned'+((r.conflicts||[]).length?' — '+r.conflicts.length+' conflict(s)':'')+((r.errors||[]).length?' — '+r.errors.length+' error(s)':''),'err'); }
   }catch(e){ setHiveOut('⚠ '+e,'err'); }
   finally{ _hiveTofuBtns(false); }
 }

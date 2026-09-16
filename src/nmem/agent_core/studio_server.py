@@ -1024,13 +1024,55 @@ def build_agent_app():
                     status = "conflict"        # known id, different keys (review mode: not in res.conflicts)
                 else:
                     status = "new"
+                # Echo the full PUBLIC bundle so the dashboard can pin the EXACT keys it just showed the
+                # operator (via /hive/pin) rather than re-discovering — closing the review→pin TOCTOU.
                 peers.append({"agent_id": aid, "verified": rec["verified"], "status": status,
-                              "sign_fp": b["sign_pub"][:12], "box_fp": b["box_pub"][:12]})
+                              "sign_fp": b["sign_pub"][:12], "box_fp": b["box_pub"][:12],
+                              "bundle": {"agent_id": aid, "sign_pub": b["sign_pub"], "box_pub": b["box_pub"]}})
             restarting = bool(res["pinned"])
             if restarting:
                 _schedule_restart()            # descriptor changed on disk → restart re-expands the roster
             return {"ok": True, "peers": peers, "pinned": res["pinned"],
                     "conflicts": res["conflicts"], "restarting": restarting}
+
+        @app.post("/hive/pin")
+        async def hive_pin(req: dict):
+            """Pin one or more PUBLIC bundles the operator JUST reviewed in a discovery into the descriptor,
+            under the first-use guard, then restart if anything new was added. Binds trust to the EXACT keys
+            shown — unlike re-running discovery (which could pin newer keys announced since the review).
+            Body: {bundles:[{agent_id,sign_pub,box_pub},...]}. A known id with DIFFERENT keys is refused
+            (returned as a conflict); a known id with the SAME keys is a no-op."""
+            from nmem.agent_core import hive_cli
+            desc_path = _hive_descriptor_path(config, agent_dir)
+            if desc_path is None:
+                return {"ok": False, "error": "this agent isn't descriptor-backed — roster edits need a "
+                                              "hive descriptor"}
+            bundles = (req or {}).get("bundles")
+            if not isinstance(bundles, list) or not bundles:
+                return {"ok": False, "error": "bundles must be a non-empty list of {agent_id,sign_pub,box_pub}"}
+            pinned, conflicts, errors = [], [], []
+            for b in bundles:
+                if not isinstance(b, dict):
+                    errors.append("bundle must be a JSON object")
+                    continue
+                try:
+                    status = hive_cli._pin_new_member(desc_path, b)   # first-use guarded (no overwrite)
+                except SystemExit as e:               # malformed bundle → engine SystemExit
+                    errors.append(str(e))
+                    continue
+                except Exception as e:  # noqa: BLE001 — malformed keys (HiveDescriptorError) etc.
+                    log.warning("[studio] hive pin failed for %s: %s", b.get("agent_id"), e, exc_info=True)
+                    errors.append(str(e))
+                    continue
+                if status == "pinned":
+                    pinned.append(b.get("agent_id"))
+                elif status == "conflict":
+                    conflicts.append(b.get("agent_id"))
+            restarting = bool(pinned)
+            if restarting:
+                _schedule_restart()
+            return {"ok": True, "pinned": pinned, "conflicts": conflicts, "errors": errors,
+                    "restarting": restarting}
 
         @app.post("/act")
         async def act(req: dict):
