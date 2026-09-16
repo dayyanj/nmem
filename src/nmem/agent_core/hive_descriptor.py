@@ -19,6 +19,8 @@ Pure library: no I/O beyond optional yaml load/save, no env. The studio host wir
 from __future__ import annotations
 
 import base64
+import os
+import stat
 from dataclasses import dataclass, field
 
 # X25519 / Ed25519 public keys are both 32 bytes when base64-decoded (mirrors hive_doctor._valid_pub;
@@ -131,9 +133,47 @@ class HiveDescriptor:
             return cls.from_dict(yaml.safe_load(f) or {})
 
     def save(self, path: str) -> None:
+        """ATOMIC write: serialize to a temp file in the same dir, then os.replace() — so a failed
+        write (disk full, etc.) leaves the EXISTING descriptor intact rather than truncating the
+        hive's roster (which would break every member's expand-at-load). Preserves the existing file's
+        mode across re-saves (so a 0644 NFS descriptor stays readable); a new file mimics open()'s
+        umask default."""
+        import tempfile
+
         import yaml
-        with open(path, "w") as f:
-            yaml.safe_dump(self.to_dict(), f, sort_keys=False)
+        # Resolve symlinks so a descriptor that's a symlink to a SHARED roster updates the target
+        # (os.replace on the link path would replace the link with a local file, splitting the roster).
+        path = os.path.realpath(path)
+        d = os.path.dirname(path) or "."
+        prev = os.stat(path) if os.path.exists(path) else None
+        # Preserve an existing file's mode across re-saves; a NEW descriptor defaults to 0644 (it holds
+        # only PUBLIC data — member public keys + the broker env-var NAME, never a secret). A fixed
+        # default avoids the process-wide os.umask(0)/restore juggling, which races under concurrency
+        # (interleaved restores could leave the whole process at umask 0 → world-writable files).
+        keep = stat.S_IMODE(prev.st_mode) if prev is not None else 0o644
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=".hive-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                yaml.safe_dump(self.to_dict(), f, sort_keys=False)
+            os.chmod(tmp, keep)
+            # Preserve the existing owner/group so replacing a group-shared descriptor (e.g. 0660 in a
+            # non-setgid dir) doesn't drop the shared group's access. Best-effort: setting uid needs
+            # privilege, but chgrp to a group we belong to does not — fall back to group-only.
+            if prev is not None and hasattr(os, "chown"):   # os.chown is POSIX-only (absent on Windows)
+                try:
+                    os.chown(tmp, prev.st_uid, prev.st_gid)
+                except OSError:
+                    try:
+                        os.chown(tmp, -1, prev.st_gid)
+                    except OSError:
+                        pass
+            os.replace(tmp, path)        # atomic on the same filesystem
+        except Exception:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
 
     # ── membership ops ────────────────────────────────────────────────────
     def validate(self) -> None:
