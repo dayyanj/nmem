@@ -340,6 +340,20 @@ def _hive_descriptor_path(config: dict, agent_dir: str) -> str | None:
     return desc if os.path.isabs(desc) else os.path.join(agent_dir, desc)
 
 
+def _hive_keyfile_path(config: dict, agent_dir: str, default_identity: str) -> tuple[str, str]:
+    """This agent's ``(identity, keyfile_abs_path)`` — the private key rotate-key replaces. Mirrors
+    expand-at-load's resolution exactly (``hive.identity`` or the persona id; ``hive.keyfile`` or
+    ``<identity>.key.json``; relative → under the agent dir) so the path matches the file the runtime
+    reads. Pure; never raises."""
+    cfg = config if isinstance(config, dict) else {}
+    hive = cfg.get("hive") if isinstance(cfg.get("hive"), dict) else {}
+    identity = hive.get("identity") or default_identity
+    keyfile = hive.get("keyfile") or f"{identity}.key.json"
+    if not os.path.isabs(keyfile):
+        keyfile = os.path.join(agent_dir, keyfile)
+    return identity, keyfile
+
+
 def _provision_hive(agent_dir: str, agent_id: str, setup: dict) -> dict:
     """Materialize a wizard hive-membership intent into a working peering config (P2b). Runs AFTER
     write_agent created ``agent_dir``: generate THIS agent's keyfile, create a new descriptor or accept
@@ -835,6 +849,32 @@ def build_agent_app():
                 return {"ok": False, "error": str(e)}
             return {"ok": True, "enabled": enabled, "accepts": deleg.get("accepts", []),
                     "restarting": True}
+
+        @app.post("/hive/rotate-key")
+        async def hive_rotate_key(req: dict):
+            """Rotate THIS agent's keypair: generate a fresh key, publish the new public bundle to the
+            descriptor, swap in the private keyfile, and restart. Descriptor-backed hives only. Peers
+            must pick up the updated descriptor/bundle afterwards or they'll reject our messages — the
+            returned bundle is surfaced so the operator can re-share it. Memory (the DB) is untouched."""
+            from nmem.agent_core import hive_cli
+            desc_path = _hive_descriptor_path(config, agent_dir)
+            if desc_path is None:
+                return {"ok": False, "error": "this agent isn't descriptor-backed — key rotation needs a "
+                                              "hive descriptor"}
+            identity, keyfile = _hive_keyfile_path(config, agent_dir, persona.agent_id)
+            # Preserve the keyfile's existing perms convention (0644 on an NFS root-squash bind-mount,
+            # else 0600) so a rotated key stays readable by the same runtime user.
+            try:
+                nfs = bool(os.stat(keyfile).st_mode & 0o044)
+            except OSError:
+                nfs = False
+            try:
+                res = hive_cli.rotate_key(desc_path, agent_id=identity, keyfile=keyfile, nfs=nfs)
+            except Exception as e:  # noqa: BLE001
+                log.warning("[studio] hive rotate-key failed: %s", e, exc_info=True)
+                return {"ok": False, "error": str(e)}
+            await _reconfigure(_current_spec())
+            return {"ok": True, "identity": identity, "bundle": res["bundle"], "restarting": True}
 
         @app.post("/act")
         async def act(req: dict):

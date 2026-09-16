@@ -178,6 +178,74 @@ def test_main_remove_member(tmp_path, capsys):
     assert HiveDescriptor.load(desc_path).agent_ids() == []
 
 
+# ── rotate-key ───────────────────────────────────────────────────────────────────────
+
+def test_rotate_key_swaps_key_and_descriptor(tmp_path):
+    desc_path = str(tmp_path / "hive.yaml")
+    cli.create_descriptor("fleet", out=desc_path)
+    kf = str(tmp_path / "djai.key.json")
+    old = cli.join_hive(desc_path, agent_id="djai", keyfile=kf)
+    old_secret = json.load(open(kf))
+    res = cli.rotate_key(desc_path, agent_id="djai", keyfile=kf)
+    # new bundle differs from the old one, and both keyfile + descriptor now carry it
+    assert res["bundle"]["sign_pub"] != old["bundle"]["sign_pub"]
+    assert HiveDescriptor.load(desc_path).member("djai").sign_pub == res["bundle"]["sign_pub"]
+    assert json.load(open(kf)) != old_secret     # private key actually rotated
+    assert _mode(kf) == 0o600                     # perms preserved
+
+
+def test_rotate_key_nfs_writes_0644(tmp_path):
+    desc_path = str(tmp_path / "hive.yaml")
+    cli.create_descriptor("fleet", out=desc_path, nfs=True)
+    kf = str(tmp_path / "djai.key.json")
+    cli.join_hive(desc_path, agent_id="djai", keyfile=kf, nfs=True)
+    cli.rotate_key(desc_path, agent_id="djai", keyfile=kf, nfs=True)
+    assert _mode(kf) == 0o644
+
+
+def test_rotate_key_requires_existing_member(tmp_path):
+    desc_path = str(tmp_path / "hive.yaml")
+    cli.create_descriptor("fleet", out=desc_path)
+    kf = str(tmp_path / "ghost.key.json")
+    cli.generate_keyfile("ghost", kf)             # a keyfile exists but ghost isn't in the roster
+    with pytest.raises(SystemExit):
+        cli.rotate_key(desc_path, agent_id="ghost", keyfile=kf)
+
+
+def test_rotate_key_requires_existing_keyfile(tmp_path):
+    desc_path = str(tmp_path / "hive.yaml")
+    cli.create_descriptor("fleet", out=desc_path)
+    cli.add_member(desc_path, crypto.generate_identity("djai").public_bundle())
+    with pytest.raises(SystemExit):              # no keyfile to rotate → tell them to `join` first
+        cli.rotate_key(desc_path, agent_id="djai", keyfile=str(tmp_path / "missing.key.json"))
+
+
+def test_rotate_key_rolls_back_descriptor_on_keyfile_failure(tmp_path, monkeypatch):
+    """If the local keyfile swap fails AFTER the descriptor was updated, the descriptor is rolled back
+    to the old bundle so its advertised pub still matches the (unchanged) private keyfile."""
+    desc_path = str(tmp_path / "hive.yaml")
+    cli.create_descriptor("fleet", out=desc_path)
+    kf = str(tmp_path / "djai.key.json")
+    old = cli.join_hive(desc_path, agent_id="djai", keyfile=kf)
+    old_secret = json.load(open(kf))
+    monkeypatch.setattr(cli, "_replace_keyfile",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError):
+        cli.rotate_key(desc_path, agent_id="djai", keyfile=kf)
+    # descriptor reverted to the OLD pub; keyfile untouched → they still agree
+    assert HiveDescriptor.load(desc_path).member("djai").sign_pub == old["bundle"]["sign_pub"]
+    assert json.load(open(kf)) == old_secret
+
+
+def test_main_rotate_key(tmp_path, capsys):
+    desc_path = str(tmp_path / "hive.yaml")
+    cli.create_descriptor("fleet", out=desc_path)
+    kf = str(tmp_path / "djai.key.json")
+    cli.join_hive(desc_path, agent_id="djai", keyfile=kf)
+    assert cli.main(["rotate-key", desc_path, "--as", "djai", "--keyfile", kf]) == 0
+    assert "rotated key for 'djai'" in capsys.readouterr().out
+
+
 # ── seed block emission ─────────────────────────────────────────────────────────────
 
 def test_seed_block_paths_relative_to_seed_dir(tmp_path):

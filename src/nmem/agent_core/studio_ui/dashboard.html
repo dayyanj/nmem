@@ -212,9 +212,10 @@
         <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
           <button class="go" id="hiveaddbtn" onclick="hiveAddMember()">Add member</button>
           <button class="go" id="hivedelbtn" onclick="hiveToggleDelegation()">Toggle delegation</button>
+          <button class="go" id="hiverotbtn" onclick="hiveRotateKey()">Rotate my key</button>
           <input id="hiveaccepts" type="text" placeholder="accepts (e.g. ask) — for enable" style="flex:1;min-width:130px">
         </div>
-        <p class="sub" style="color:var(--muted);margin:6px 0 0;font-size:12px">Add a peer by pasting the bundle they printed on join. Remove one with the × on its chip. Changes restart the agent (memory preserved).</p>
+        <p class="sub" style="color:var(--muted);margin:6px 0 0;font-size:12px">Add a peer by pasting the bundle they printed on join. Remove one with the × on its chip. Rotating your key re-issues your identity — re-share your descriptor afterwards so peers accept you. Changes restart the agent (memory preserved).</p>
       </div>
     </section>
   </div>
@@ -413,14 +414,14 @@ function setHiveOut(msg,cls){const el=document.getElementById('hivest');
   el.className='st '+(cls||''); el.textContent=msg||'';}
 async function hiveAct(path,body){    // POST a mutation; the agent restarts, so re-poll after a beat
   setHiveOut('working…','wait');
-  ['hiveaddbtn','hivedelbtn'].forEach(id=>document.getElementById(id).disabled=true);
+  ['hiveaddbtn','hivedelbtn','hiverotbtn'].forEach(id=>document.getElementById(id).disabled=true);
   try{
     const r=await getJSON(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
     if(r.ok===false){ setHiveOut('⚠ '+(r.error||'failed'),'err'); return; }
     setHiveOut('applied — restarting…','ok');
     setTimeout(loadHive,4000); setTimeout(loadHive,9000);   // catch the agent as it comes back
   }catch(e){ setHiveOut('⚠ '+e,'err'); }
-  finally{ ['hiveaddbtn','hivedelbtn'].forEach(id=>document.getElementById(id).disabled=false); }
+  finally{ ['hiveaddbtn','hivedelbtn','hiverotbtn'].forEach(id=>document.getElementById(id).disabled=false); }
 }
 function hiveAddMember(){
   const t=document.getElementById('hivebundle').value.trim();
@@ -443,6 +444,10 @@ async function hiveShowDescriptor(){    // reveal the shareable descriptor + thi
     }
   }catch(e){ box.textContent=String(e); }
   box.hidden=false;
+}
+function hiveRotateKey(){
+  if(!confirm('Rotate this agent’s key? A fresh identity is issued and the agent restarts. Peers keep rejecting you until you re-share your descriptor (use “Show descriptor to share” after it comes back).')) return;
+  hiveAct('/hive/rotate-key',{});
 }
 function hiveToggleDelegation(){
   const enabling=document.getElementById('hivedelbtn').textContent.indexOf('Enable')===0;

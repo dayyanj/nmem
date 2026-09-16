@@ -23,6 +23,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import tempfile
 
 from nmem.agent_core.hive_descriptor import HiveDescriptor, Member
 
@@ -219,6 +220,75 @@ def remove_member(descriptor_path: str, agent_id: str, *, nfs: bool = False) -> 
     return removed
 
 
+def _replace_keyfile(keyfile: str, idn, mode: int) -> None:
+    """Atomically REPLACE an existing private keyfile with a new identity (key rotation): serialize the
+    new secret to a sibling temp file with the right perms, then os.replace() over the keyfile — so a
+    failed write leaves the OLD key intact rather than truncating the only copy of the agent's identity.
+    fchmod acts on the fd we created (a path-based chmod could follow a symlink swapped in after
+    creation); mkstemp gives a unique 0600 temp that O_EXCL-creates (no symlink-follow, no collision)."""
+    d = os.path.dirname(os.path.abspath(keyfile)) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".key-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(idn.export_secret(), f, indent=2)
+            f.flush()
+            os.fchmod(f.fileno(), mode)
+        os.replace(tmp, keyfile)         # atomic on the same filesystem
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def rotate_key(descriptor_path: str, *, agent_id: str, keyfile: str, nfs: bool = False) -> dict:
+    """Generate a FRESH keypair for an EXISTING member, publish its new PUBLIC bundle to the descriptor,
+    and atomically swap in the matching PRIVATE keyfile. Returns ``{bundle, descriptor, keyfile}`` — the
+    operator re-shares the descriptor (or the new bundle) so peers pick up the new key. Unlike ``join``
+    this expects the member + keyfile to already exist (rotation, not first join).
+
+    Consistency invariant: the keyfile's private key and the descriptor's advertised public key MUST
+    agree, or this agent can neither be decrypted by peers nor decrypt their replies. We commit the
+    descriptor FIRST (the operation that actually fails in practice — read-only/NFS descriptor), so a
+    failure there leaves BOTH the keyfile and descriptor on the old identity (nothing to roll back).
+    Only after the descriptor is saved do we swap the local keyfile; if that rare local write fails we
+    ROLL THE DESCRIPTOR BACK to the old bundle so pub and priv still match and the agent keeps working."""
+    if not isinstance(agent_id, str) or not agent_id:
+        raise SystemExit("agent_id to rotate must be a non-empty string")
+    if not os.path.exists(keyfile):
+        raise SystemExit(f"no keyfile to rotate at {keyfile} (use `join` to create one first)")
+    from nmem_exchange import crypto
+
+    idn = crypto.generate_identity(agent_id)     # new keypair in memory; nothing written yet
+    with _descriptor_lock(descriptor_path):      # serialize with concurrent join/add/remove-member
+        descriptor = HiveDescriptor.load(descriptor_path)
+        old_member = descriptor.member(agent_id)
+        if old_member is None:                   # rotate is for members; adding is join/add-member
+            raise SystemExit(
+                f"'{agent_id}' is not a member of {descriptor_path} — use `join`/`add-member` to add it")
+        descriptor.upsert_member(Member(agent_id, idn.sign_pub, idn.box_pub))
+        descriptor.save(descriptor_path)
+        if nfs:                                  # inside the lock (a concurrent save must not re-tighten)
+            _make_readable(descriptor_path)
+    # descriptor now advertises the NEW pub; swap in the matching private key. This local write rarely
+    # fails, but if it does the descriptor is ahead of the keyfile — roll it back so they agree again.
+    try:
+        _replace_keyfile(keyfile, idn, mode=0o644 if nfs else 0o600)
+    except Exception:
+        try:
+            with _descriptor_lock(descriptor_path):
+                revert = HiveDescriptor.load(descriptor_path)
+                revert.upsert_member(old_member)     # restore the old PUBLIC bundle (matches old keyfile)
+                revert.save(descriptor_path)
+                if nfs:
+                    _make_readable(descriptor_path)
+        except Exception:                            # noqa: BLE001 — best-effort; original error is what matters
+            pass
+        raise
+    return {"bundle": idn.public_bundle(), "descriptor": descriptor_path, "keyfile": keyfile}
+
+
 def list_members(descriptor_path: str) -> list[dict]:
     return [m.bundle() for m in HiveDescriptor.load(descriptor_path).members]
 
@@ -298,6 +368,13 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("--as", dest="agent_id", required=True, help="the member's agent id to remove")
     pr.add_argument("--nfs", action="store_true", help="keep the descriptor world-readable (root-squash)")
 
+    pk = sub.add_parser("rotate-key", help="generate a fresh keypair for an existing member")
+    pk.add_argument("descriptor")
+    pk.add_argument("--as", dest="agent_id", required=True, help="the member whose key to rotate")
+    pk.add_argument("--keyfile", help="private keyfile path (default: <descriptor dir>/<id>.key.json)")
+    pk.add_argument("--nfs", action="store_true",
+                    help="write the new keyfile 0644 for an NFS root-squash bind-mount (else 0600)")
+
     pm = sub.add_parser("members", help="list the descriptor's members")
     pm.add_argument("descriptor")
 
@@ -336,6 +413,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"removed member '{args.agent_id}' from {args.descriptor}")
         else:
             print(f"no member '{args.agent_id}' in {args.descriptor} (nothing to remove)")
+        return 0
+
+    if args.cmd == "rotate-key":
+        keyfile = args.keyfile or os.path.join(
+            os.path.dirname(os.path.abspath(args.descriptor)), f"{args.agent_id}.key.json")
+        res = rotate_key(args.descriptor, agent_id=args.agent_id, keyfile=keyfile, nfs=args.nfs)
+        print(f"rotated key for '{args.agent_id}' — new keyfile {res['keyfile']} "
+              f"({'0644 NFS' if args.nfs else '0600'}) and updated {res['descriptor']}\n")
+        print("PUBLIC bundle (re-share with peers, or send them the updated descriptor):")
+        print(json.dumps(res["bundle"], indent=2))
+        print("\nnote: peers must pick up the new descriptor/bundle or they'll reject your messages.")
         return 0
 
     if args.cmd == "members":
