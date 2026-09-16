@@ -3,6 +3,65 @@
 All notable changes to nmem are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] — 2026-09-16
+
+**Brokerless agent-to-agent delegation + appliance-native hives.** Agents can now form a
+**hive** — peer over an untrusted message bus and durably delegate work to each other — and
+establishing or joining one is a guided, validated, config-driven flow (wizard + dashboard +
+`hive` CLI) instead of hand-edited seeds and cross-pasted keys. Additive and default-off; a
+solo agent is byte-identical to 1.0.0.
+
+### Added
+
+- **Brokerless A2A delegation** (`nmem.agent_core.delegation`). A durable
+  request→work→result queue over the nmem-exchange bus: a transactional **outbox**
+  (requester) + leased **inbox** (worker) in each agent's own database, at-least-once
+  delivery with idempotent dedup, retry/backoff, and crash-recovery by lease scan — no
+  broker-side state. Wired into `AgentRuntime` (default-off, gated by `delegation.enabled`)
+  and exposed as `runtime.delegate()` / `delegate_and_wait()`. Task types carry a
+  capability class; mutating types require an approver. `READ_ONLY` `ask` ships built-in
+  (answered by grounded cognition via `grounded_on_challenge`).
+- **Hive descriptor + expand-at-load** (`hive_descriptor.py`). One shareable descriptor
+  (hive name, broker env-var *name*, members' **public** bundles) is the source of truth;
+  the verbose `exchange:`/`delegation:` config is **derived at boot** (`expand_into_config`,
+  shared by the studio host and the doctor) — keyring, canonical `dm:<sorted>` channels, and
+  delegation routes, with nothing hand-maintained and no O(N²) key cross-pasting. Fail-open.
+- **`hive` CLI** (`python -m nmem.agent_core.hive_cli`): `create`, `join`, `add-member`,
+  `remove-member`, `rotate-key`, `announce`, `discover`, `members`, `doctor`. `join` owns the
+  keyfile lifecycle (atomic `O_EXCL`/`O_NOFOLLOW`, `0600` / `0644 --nfs`, rollback);
+  descriptor writes are atomic + flock-serialized + symlink-safe and preserve mode/owner.
+- **`hive doctor`** — read-only preflight validating enablement, identity keyfile
+  (present/valid/in-container-readable/matches roster), keyring, roster symmetry, canonical
+  channels, delegation routes/prereqs, and live broker reachability. Surfaced in `/health`
+  readiness and as dashboard banners. Never raises.
+- **Trust bootstrap (TOFU, default-off convenience).** `hive announce` publishes an agent's
+  *signed* public bundle to an open `hive:roster` channel; `hive discover [--pin]` collects
+  peers and pins **verified, new** identities (trust-on-first-use, first-use-only — a known
+  id re-announced with different keys is refused). The broker password is the coarse
+  admission gate; the default remains out-of-band descriptor exchange. No central key
+  registry.
+- **Studio wizard "Hive membership" step** (Solo / Create / Join-a-pasted-descriptor) and a
+  dashboard **Hive card**: members + key fingerprints, live doctor status, and actions —
+  add/remove-member, enable/disable delegation, rotate-key, show-descriptor-to-share, and
+  **Announce / Discover peers / Pin** (bundles are pinned exactly as reviewed).
+- **`NMEM_EMBEDDED_EXCHANGE`** (default-off) — an appliance can host the hive broker itself
+  (a supervised, authenticated `redis-server`), so one all-in-one box can *be* the hive on-ramp.
+
+### Changed
+
+- The tool executor now threads `reasoning_effort` through to the loop (Qwen keeps thinking
+  across tool calls, and terminates).
+- Roster/key dashboard edits restart to re-expand from disk instead of rewriting `agent.yaml`
+  from a reconstructed spec, so unrelated fields (comms, `reasoning_effort`, custom
+  `db.env_key`) are never dropped.
+
+### Fixed
+
+- The peer bus fails **open** when peering is enabled but no broker URL is set — the agent
+  boots solo with a readiness warning instead of crash-looping the whole appliance.
+- Procedure recall uses the embedder's `.embed` (not raw `.encode`); `/chat/session-end` is
+  mounted on the appliance.
+
 ## [1.0.0] — 2026-09-15
 
 **First stable release.** nmem's public API and on-disk schema are now stable —
