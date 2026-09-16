@@ -168,8 +168,18 @@ class PeerExchange:
         if not ex_cfg.get("enabled", False):
             log.info("[peer] exchange gated OFF (exchange.enabled=false)")
             return None
+        # Fail-OPEN on a missing broker URL: an exchange enabled by a descriptor whose broker env var is
+        # UNSET (a default appliance has the embedded broker off) would otherwise KeyError('url') inside
+        # build_transport and crash the ENTIRE agent + dashboard at boot — bricking it. Boot SOLO instead
+        # and let the hive-doctor readiness banner flag "broker unreachable" so the operator can fix it.
+        resolved = _resolve(ex_cfg)
+        tr = resolved.get("transport") or {}
+        if tr.get("kind", "redis") == "redis" and not tr.get("url"):
+            log.warning("[peer] exchange enabled but no broker URL (NMEX_REDIS_URL unset) — booting SOLO; "
+                        "set the broker env var (or enable the embedded broker) and restart to peer")
+            return None
         from nmem_exchange.client import build_exchange
-        ex = build_exchange(_resolve(ex_cfg))
+        ex = build_exchange(resolved)
         try:
             await ex.start(self._handle)   # publish to state ONLY once fully started
         except Exception:

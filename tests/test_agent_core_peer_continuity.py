@@ -280,3 +280,21 @@ async def test_comms_delivery_records_action_checkpoint():
     la = mem.checkpoints[0]["last_action"]
     assert "reached out to agent-b" in la
     assert "schema drift" in la
+
+
+# ── fail-open: an enabled exchange with no broker URL must not brick boot ─────────
+
+@pytest.mark.asyncio
+async def test_start_fails_open_when_broker_url_missing(monkeypatch):
+    """An exchange enabled by a descriptor whose broker env var is UNSET must boot SOLO (return None),
+    not KeyError('url') out of build_transport and crash the whole agent + dashboard. (Codex round-4.)"""
+    monkeypatch.delenv("NMEX_REDIS_URL", raising=False)
+
+    async def on_challenge(sender, text):
+        return "reply"
+
+    cfg = {"exchange": {"enabled": True, "transport": {"kind": "redis"},
+                        "channels": {"dm:a:b": {"policy": "encrypted", "roster": ["a", "b"]}}}}
+    px = PeerExchange(cfg, mem=FakeMem(), agent_id="a", on_challenge=on_challenge)
+    assert await px.start() is None          # solo, no exception
+    assert px.started is False

@@ -242,8 +242,14 @@ async def _start_agent(spec: dict, agent_dir: str) -> None:
     if isinstance(setup, dict) and str(setup.get("action", "")).lower() in ("create", "join"):
         res = _provision_hive(agent_dir, agent_id, setup)
         if not res.get("ok"):
-            log.warning("[studio] agent %s created but hive setup failed: %s — booting solo "
-                        "(establish/join the hive from the dashboard)", agent_id, res.get("error"))
+            # The user EXPLICITLY asked to create/join a hive; a failure (malformed pasted descriptor,
+            # etc.) must SURFACE and be retryable — not silently strand a solo agent with no dashboard
+            # recovery path (the Hive card is hidden for solo agents, and edit mode hides Create/Join).
+            # Roll the whole create back (as a DB-provision failure does) so the wizard reports the error
+            # and the operator can fix the input and retry. (Runtime peering issues never brick — the
+            # peer bus fails open — so this fatal path is create-time input validation only.)
+            shutil.rmtree(agent_dir, ignore_errors=True)
+            raise RuntimeError(f"hive setup failed: {res.get('error')} — fix the input and retry")
     log.info("[studio] staged agent %s (db=%s); scheduling restart", agent_id, db)
     asyncio.get_event_loop().call_later(1.5, _request_restart)
 
