@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 import re
 import signal
 
@@ -352,6 +353,15 @@ def _hive_keyfile_path(config: dict, agent_dir: str, default_identity: str) -> t
     if not os.path.isabs(keyfile):
         keyfile = os.path.join(agent_dir, keyfile)
     return identity, keyfile
+
+
+def _hive_identity(config: dict, default_identity: str) -> str:
+    """This agent's EFFECTIVE hive identity — ``hive.identity`` if set, else the persona id. This is the
+    agent_id it appears as in the roster (which can differ from the persona id), so roster lookups and
+    the self-removal guard must resolve it rather than assuming persona.agent_id. Pure; never raises."""
+    cfg = config if isinstance(config, dict) else {}
+    hive = cfg.get("hive") if isinstance(cfg.get("hive"), dict) else {}
+    return hive.get("identity") or default_identity
 
 
 def _provision_hive(agent_dir: str, agent_id: str, setup: dict) -> dict:
@@ -760,7 +770,7 @@ def build_agent_app():
                 with open(desc_path) as f:
                     text = f.read()
                 desc = HiveDescriptor.load(desc_path)
-                me = desc.member(persona.agent_id)
+                me = desc.member(_hive_identity(config, persona.agent_id))
                 return {"ok": True, "name": desc.name, "text": text,
                         "bundle": me.bundle() if me else None}
             except Exception as e:  # noqa: BLE001
@@ -808,7 +818,7 @@ def build_agent_app():
             aid = str((req or {}).get("agent_id", "")).strip()
             if not aid:
                 return {"ok": False, "error": "agent_id required"}
-            if aid == persona.agent_id:
+            if aid == _hive_identity(config, persona.agent_id):
                 return {"ok": False, "error": "can't remove yourself from your own roster "
                                               "(reset the data volume to leave a hive)"}
             try:
@@ -862,15 +872,20 @@ def build_agent_app():
                 return {"ok": False, "error": "this agent isn't descriptor-backed — key rotation needs a "
                                               "hive descriptor"}
             identity, keyfile = _hive_keyfile_path(config, agent_dir, persona.agent_id)
-            # Preserve the keyfile's existing perms convention (0644 on an NFS root-squash bind-mount,
-            # else 0600) so a rotated key stays readable by the same runtime user.
+            # Preserve the keyfile's EXACT existing permission bits so a rotated key keeps the same
+            # access (0600 private, 0644 NFS root-squash, or a group-restricted 0640) — never widen a
+            # group-only key to world-readable. `nfs` (world-readable) gates the DESCRIPTOR's
+            # world-readability too, so key it on the other-read bit only, not group-read.
             try:
-                nfs = bool(os.stat(keyfile).st_mode & 0o044)
+                st_mode = os.stat(keyfile).st_mode
+                keymode = stat.S_IMODE(st_mode)
+                nfs = bool(st_mode & 0o004)
             except OSError:
-                nfs = False
+                keymode, nfs = None, False
             try:
-                res = hive_cli.rotate_key(desc_path, agent_id=identity, keyfile=keyfile, nfs=nfs)
-            except Exception as e:  # noqa: BLE001
+                res = hive_cli.rotate_key(desc_path, agent_id=identity, keyfile=keyfile,
+                                          nfs=nfs, mode=keymode)
+            except (Exception, SystemExit) as e:  # noqa: BLE001 — engine raises SystemExit on refusals
                 log.warning("[studio] hive rotate-key failed: %s", e, exc_info=True)
                 return {"ok": False, "error": str(e)}
             await _reconfigure(_current_spec())

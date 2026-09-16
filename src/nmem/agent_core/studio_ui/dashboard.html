@@ -207,6 +207,7 @@
         <div style="margin-bottom:8px">
           <button class="go" id="hivesharebtn" onclick="hiveShowDescriptor()">Show descriptor to share</button>
           <pre id="hiveshare" hidden class="res" style="margin-top:6px;white-space:pre-wrap;word-break:break-all;max-height:220px;overflow:auto"></pre>
+          <pre id="hivesharebundle" hidden class="res" style="margin-top:6px;white-space:pre-wrap;word-break:break-all;max-height:160px;overflow:auto"></pre>
         </div>
         <textarea id="hivebundle" placeholder='paste a peer&#39;s public bundle: {"agent_id":"…","sign_pub":"…","box_pub":"…"}' style="width:100%;min-height:52px;font-family:monospace;font-size:12px;box-sizing:border-box"></textarea>
         <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -434,15 +435,19 @@ function hiveRemoveMember(aid){
 }
 async function hiveShowDescriptor(){    // reveal the shareable descriptor + this agent's own bundle
   const box=document.getElementById('hiveshare');
-  if(!box.hidden){ box.hidden=true; return; }   // toggle off
+  const bbox=document.getElementById('hivesharebundle');
+  if(!box.hidden){ box.hidden=true; bbox.hidden=true; return; }   // toggle off
   try{
     const r=await getJSON('/hive/descriptor');
-    if(r.ok===false){ box.textContent='⚠ '+(r.error||'unavailable'); }
+    if(r.ok===false){ box.textContent='⚠ '+(r.error||'unavailable'); bbox.hidden=true; }
     else{
-      const mine=r.bundle?('\n\n# your bundle — send to a hive keeper to be added there:\n'+JSON.stringify(r.bundle,null,2)):'';
-      box.textContent='# hive "'+r.name+'" — share this whole descriptor with a new member:\n'+r.text+mine;  // textContent: no HTML injection
+      // SEPARATE copyable blocks: the descriptor is YAML (paste into a joiner's Join field); the bundle
+      // is JSON (paste into a keeper's add-member). Mixing them made the descriptor block invalid YAML.
+      box.textContent='# hive "'+r.name+'" — share this whole descriptor with a new member:\n'+r.text;  // textContent: no HTML injection
+      if(r.bundle){ bbox.textContent='# your public bundle — send to a hive keeper to be added there:\n'+JSON.stringify(r.bundle,null,2); bbox.hidden=false; }
+      else{ bbox.hidden=true; }
     }
-  }catch(e){ box.textContent=String(e); }
+  }catch(e){ box.textContent=String(e); bbox.hidden=true; }
   box.hidden=false;
 }
 function hiveRotateKey(){

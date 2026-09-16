@@ -251,26 +251,31 @@ def _replace_keyfile(keyfile: str, idn, mode: int) -> None:
         raise
 
 
-def rotate_key(descriptor_path: str, *, agent_id: str, keyfile: str, nfs: bool = False) -> dict:
+def rotate_key(descriptor_path: str, *, agent_id: str, keyfile: str, nfs: bool = False,
+               mode: int | None = None) -> dict:
     """Generate a FRESH keypair for an EXISTING member, publish its new PUBLIC bundle to the descriptor,
     and atomically swap in the matching PRIVATE keyfile. Returns ``{bundle, descriptor, keyfile}`` — the
     operator re-shares the descriptor (or the new bundle) so peers pick up the new key. Unlike ``join``
-    this expects the member + keyfile to already exist (rotation, not first join).
+    this expects the member + keyfile to already exist (rotation, not first join). ``mode`` (if given)
+    sets the new keyfile's exact permission bits — used by callers that PRESERVE the old keyfile's mode
+    rather than forcing 0600/0644; otherwise ``nfs`` selects 0644 (root-squash) vs 0600.
 
     Consistency invariant: the keyfile's private key and the descriptor's advertised public key MUST
-    agree, or this agent can neither be decrypted by peers nor decrypt their replies. We commit the
-    descriptor FIRST (the operation that actually fails in practice — read-only/NFS descriptor), so a
-    failure there leaves BOTH the keyfile and descriptor on the old identity (nothing to roll back).
-    Only after the descriptor is saved do we swap the local keyfile; if that rare local write fails we
-    ROLL THE DESCRIPTOR BACK to the old bundle so pub and priv still match and the agent keeps working."""
+    agree, or this agent can neither be decrypted by peers nor decrypt their replies. The WHOLE
+    rotation (descriptor save + keyfile swap + any rollback) runs under ONE descriptor lock so two
+    concurrent rotations of the same identity can't interleave into a pub/priv mismatch (save A, save B,
+    then replace-key B, replace-key A). We save the descriptor first, then swap the local keyfile; if
+    that rare local write fails we ROLL THE DESCRIPTOR BACK to the old bundle — still holding the lock —
+    so pub and priv stay in agreement and the agent keeps working."""
     if not isinstance(agent_id, str) or not agent_id:
         raise SystemExit("agent_id to rotate must be a non-empty string")
     if not os.path.exists(keyfile):
         raise SystemExit(f"no keyfile to rotate at {keyfile} (use `join` to create one first)")
     from nmem_exchange import crypto
 
+    keymode = mode if mode is not None else (0o644 if nfs else 0o600)
     idn = crypto.generate_identity(agent_id)     # new keypair in memory; nothing written yet
-    with _descriptor_lock(descriptor_path):      # serialize with concurrent join/add/remove-member
+    with _descriptor_lock(descriptor_path):      # one lock spans the ENTIRE rotation (no interleaving)
         descriptor = HiveDescriptor.load(descriptor_path)
         old_member = descriptor.member(agent_id)
         if old_member is None:                   # rotate is for members; adding is join/add-member
@@ -280,21 +285,20 @@ def rotate_key(descriptor_path: str, *, agent_id: str, keyfile: str, nfs: bool =
         descriptor.save(descriptor_path)
         if nfs:                                  # inside the lock (a concurrent save must not re-tighten)
             _make_readable(descriptor_path)
-    # descriptor now advertises the NEW pub; swap in the matching private key. This local write rarely
-    # fails, but if it does the descriptor is ahead of the keyfile — roll it back so they agree again.
-    try:
-        _replace_keyfile(keyfile, idn, mode=0o644 if nfs else 0o600)
-    except Exception:
+        # descriptor advertises the NEW pub; swap in the matching private key WHILE STILL LOCKED. This
+        # local write rarely fails, but if it does the descriptor is ahead of the keyfile — roll it
+        # back to the old bundle (same lock) so they agree again.
         try:
-            with _descriptor_lock(descriptor_path):
-                revert = HiveDescriptor.load(descriptor_path)
-                revert.upsert_member(old_member)     # restore the old PUBLIC bundle (matches old keyfile)
-                revert.save(descriptor_path)
+            _replace_keyfile(keyfile, idn, mode=keymode)
+        except Exception:
+            try:
+                descriptor.upsert_member(old_member)   # restore the old PUBLIC bundle (matches old key)
+                descriptor.save(descriptor_path)
                 if nfs:
                     _make_readable(descriptor_path)
-        except Exception:                            # noqa: BLE001 — best-effort; original error is what matters
-            pass
-        raise
+            except Exception:                          # noqa: BLE001 — best-effort; original error matters
+                pass
+            raise
     return {"bundle": idn.public_bundle(), "descriptor": descriptor_path, "keyfile": keyfile}
 
 
@@ -420,13 +424,27 @@ async def discover_members(descriptor_path: str, *, self_id: str | None = None, 
             await transport.close()
 
     pinned: list[str] = []
+    conflicts: list[str] = []
     if pin:
+        # trust-on-FIRST-use: pin only agent_ids we don't already know. A self-signed announcement
+        # proves POSSESSION of a key, NOT continuity of identity — so an announcement re-claiming an
+        # EXISTING member id with DIFFERENT keys is a takeover attempt (anyone who can reach the broker
+        # could publish it). Refuse it; the operator must rotate-key + re-share (or remove-member first)
+        # to intentionally re-key a peer. Re-announcing the SAME keys is a harmless idempotent no-op.
+        current = {m.agent_id: m for m in HiveDescriptor.load(descriptor_path).members}
         for aid, rec in collected.items():
             if not rec["verified"]:
                 continue                      # never pin an unverifiable bundle
-            add_member(descriptor_path, rec["bundle"], nfs=nfs)   # reuse the locked, atomic writer
+            b = rec["bundle"]
+            existing = current.get(aid)
+            if existing is not None:
+                if not (existing.sign_pub == b["sign_pub"] and existing.box_pub == b["box_pub"]):
+                    conflicts.append(aid)     # known id, different keys → refuse (not first-use)
+                continue                      # already known (same keys = nothing to do)
+            add_member(descriptor_path, b, nfs=nfs)   # genuinely new peer → reuse the locked writer
             pinned.append(aid)
-    return {"collected": collected, "pinned": pinned, "channel": ROSTER_CHANNEL}
+    return {"collected": collected, "pinned": pinned, "conflicts": conflicts,
+            "channel": ROSTER_CHANNEL}
 
 
 def list_members(descriptor_path: str) -> list[dict]:
@@ -613,7 +631,12 @@ def main(argv: list[str] | None = None) -> int:
                       f"{', '.join(sorted(res['pinned']))}")
                 print("trust-on-first-use: verify these fingerprints out-of-band if the broker isn't trusted.")
             else:
-                print("\nnothing pinned (no verified peers).")
+                print("\nnothing pinned (no NEW verified peers).")
+            if res.get("conflicts"):
+                print(f"\nREFUSED {len(res['conflicts'])} takeover attempt(s): "
+                      f"{', '.join(sorted(res['conflicts']))} already exist with DIFFERENT keys and were "
+                      "NOT replaced. To intentionally re-key a peer, use `rotate-key` + re-share, or "
+                      "`remove-member` first.")
         else:
             print("\n(review-only — re-run with --pin to add verified peers to the descriptor)")
         return 0

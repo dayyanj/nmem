@@ -48,6 +48,17 @@ def test_provision_create_default_name_and_no_delegation(tmp_path):
     assert HiveDescriptor.load(str(d / "hive.yaml")).name == "solo-hive"  # derived default name
 
 
+def test_provision_create_requester_only_when_accepts_empty(tmp_path):
+    """An explicit empty accepts (the wizard's 'blank = requester-only') enables delegation with no
+    worker task types, so requester routing is installed. (Codex P2 repro: blank must not silently
+    disable delegation.)"""
+    d = _agent_dir(tmp_path, "req")
+    res = _provision_hive(str(d), "req", {"action": "create", "accepts": []})
+    assert res["ok"] is True
+    hv = yaml.safe_load((d / "agent.yaml").read_text())["hive"]
+    assert hv["delegation"] == {"enabled": True, "accepts": []}
+
+
 def test_provision_join_accepts_pasted_descriptor(tmp_path):
     from nmem_exchange import crypto
     peer = crypto.generate_identity("michelle")

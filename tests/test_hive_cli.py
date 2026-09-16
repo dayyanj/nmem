@@ -304,6 +304,60 @@ def test_discover_pin_writes_verified_peer(tmp_path):
     assert "michelle" in HiveDescriptor.load(dj_desc).agent_ids()   # pinned into the descriptor
 
 
+def test_discover_pin_refuses_to_replace_known_member(tmp_path):
+    """TOFU is FIRST-use only: an announcement re-claiming an existing member id with DIFFERENT keys is
+    a takeover attempt (anyone reaching the broker could send it) and must NOT overwrite the trusted
+    pin. (Codex P1 repro.)"""
+    from nmem_exchange.transport import InMemoryTransport
+    dj_desc, _ = _hive_with_keyfile(tmp_path, "fleet", "djai")
+    known = crypto.generate_identity("trusted-peer")
+    cli.add_member(dj_desc, known.public_bundle())          # trusted, out-of-band-verified pin
+    _, spoof_kf = _hive_with_keyfile(tmp_path / "s", "fleet", "trusted-peer")   # SAME id, DIFFERENT keys
+    bus = InMemoryTransport()
+
+    async def scenario():
+        task = asyncio.ensure_future(
+            cli.discover_members(dj_desc, self_id="djai", timeout=0.3, pin=True, transport=bus))
+        await asyncio.sleep(0.05)
+        await cli.announce_identity(dj_desc, keyfile=spoof_kf, transport=bus)
+        return await task
+
+    res = _run(scenario())
+    assert res["pinned"] == [] and res["conflicts"] == ["trusted-peer"]
+    kept = HiveDescriptor.load(dj_desc).member("trusted-peer")
+    assert kept.sign_pub == known.sign_pub                  # original trusted key untouched
+
+
+def test_discover_pin_reannounce_same_keys_is_noop(tmp_path):
+    """Re-announcing the SAME keys for a known member is a harmless idempotent no-op (not a conflict)."""
+    from nmem_exchange.transport import InMemoryTransport
+    dj_desc, _ = _hive_with_keyfile(tmp_path, "fleet", "djai")
+    _, mich_kf = _hive_with_keyfile(tmp_path / "m", "fleet", "michelle")
+    cli.add_member(dj_desc, cli._load_identity(mich_kf).public_bundle())   # already pinned, same keys
+    bus = InMemoryTransport()
+
+    async def scenario():
+        task = asyncio.ensure_future(
+            cli.discover_members(dj_desc, self_id="djai", timeout=0.3, pin=True, transport=bus))
+        await asyncio.sleep(0.05)
+        await cli.announce_identity(dj_desc, keyfile=mich_kf, transport=bus)
+        return await task
+
+    res = _run(scenario())
+    assert res["pinned"] == [] and res["conflicts"] == []   # neither new nor a conflict
+
+
+def test_rotate_key_preserves_explicit_mode(tmp_path):
+    """rotate_key(mode=…) writes the keyfile with EXACTLY those bits (callers preserve a 0640 group-only
+    key rather than widening it to world-readable)."""
+    desc_path = str(tmp_path / "hive.yaml")
+    cli.create_descriptor("fleet", out=desc_path)
+    kf = str(tmp_path / "djai.key.json")
+    cli.join_hive(desc_path, agent_id="djai", keyfile=kf)
+    cli.rotate_key(desc_path, agent_id="djai", keyfile=kf, mode=0o640)
+    assert _mode(kf) == 0o640
+
+
 def test_discover_excludes_self(tmp_path):
     """My own announcement echoed back off the broker is filtered out of the results."""
     from nmem_exchange.transport import InMemoryTransport

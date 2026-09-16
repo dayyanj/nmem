@@ -793,8 +793,11 @@ function collectHive(){
     const setup={action:p};
     if(p==='create'){const n=document.getElementById('hive_name').value.trim(); if(n)setup.name=n;}
     if(p==='join'){setup.descriptor_text=document.getElementById('hive_desc').value;}
+    // blank accepts = requester-only (delegation ON, no worker task types) per the field hint — emit an
+    // explicit [] so _provision_hive writes delegation:{enabled:true,accepts:[]} and requester routing
+    // is installed; a non-empty value also makes this agent a worker for those task types.
     const a=document.getElementById('hive_accepts').value.trim();
-    if(a)setup.accepts=a.split(/[,\s]+/).filter(Boolean);
+    setup.accepts=a?a.split(/[,\s]+/).filter(Boolean):[];
     h=h||{}; h.setup=setup;
   }
   return h;
