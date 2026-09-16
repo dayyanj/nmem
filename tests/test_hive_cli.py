@@ -391,8 +391,11 @@ def test_discover_drops_tampered_announcement(tmp_path):
         payload = json.dumps({"hive": "fleet", "bundle": idn.public_bundle()}).encode()
         env = crypto.seal_open(idn, payload, channel=cli.ROSTER_CHANNEL, kind="hive.announce",
                                msg_id="x", ts=1.0)
+        # swap in a DIFFERENT but well-formed box_pub after signing → bundle still validates, but the
+        # signature (computed over the original pt) no longer verifies → collected as UNVERIFIED.
+        forged_box = crypto.generate_identity("michelle").box_pub
         tampered = {"hive": "fleet", "bundle": {"agent_id": "michelle",
-                                                "sign_pub": idn.sign_pub, "box_pub": "TAMPERED"}}
+                                                "sign_pub": idn.sign_pub, "box_pub": forged_box}}
         env["pt"] = base64.b64encode(json.dumps(tampered).encode()).decode()   # break the signature
         await bus.publish(cli.ROSTER_CHANNEL, json.dumps(env).encode())
         return await task
@@ -400,6 +403,31 @@ def test_discover_drops_tampered_announcement(tmp_path):
     res = _run(scenario())
     assert res["collected"]["michelle"]["verified"] is False
     assert res["pinned"] == []                           # unverified is never pinned
+
+
+def test_discover_drops_incomplete_bundle(tmp_path):
+    """A validly-SIGNED announcement whose bundle is missing box_pub is discarded (not collected, not
+    crashing print/pin) — else, since the stream replays history, one bad entry would block discovery
+    of legitimate peers on every run. (Codex round-2 repro.)"""
+    from nmem_exchange.transport import InMemoryTransport
+    dj_desc, _ = _hive_with_keyfile(tmp_path, "fleet", "djai")
+    _, mich_kf = _hive_with_keyfile(tmp_path / "m", "fleet", "michelle")
+    idn = cli._load_identity(mich_kf)
+    bus = InMemoryTransport()
+
+    async def scenario():
+        task = asyncio.ensure_future(
+            cli.discover_members(dj_desc, self_id="djai", timeout=0.3, pin=True, transport=bus))
+        await asyncio.sleep(0.05)
+        payload = json.dumps({"hive": "fleet",
+                              "bundle": {"agent_id": "michelle", "sign_pub": idn.sign_pub}}).encode()
+        env = crypto.seal_open(idn, payload, channel=cli.ROSTER_CHANNEL, kind="hive.announce",
+                               msg_id="x", ts=1.0)                 # signature is VALID over this envelope
+        await bus.publish(cli.ROSTER_CHANNEL, json.dumps(env).encode())
+        return await task
+
+    res = _run(scenario())
+    assert res["collected"] == {} and res["pinned"] == []   # incomplete bundle silently dropped
 
 
 def test_discover_drops_other_hive(tmp_path):

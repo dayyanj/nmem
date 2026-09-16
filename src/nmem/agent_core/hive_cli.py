@@ -213,6 +213,28 @@ def add_member(descriptor_path: str, bundle: dict, *, nfs: bool = False) -> dict
     return member.bundle()
 
 
+def _pin_new_member(descriptor_path: str, bundle: dict, *, nfs: bool = False) -> str:
+    """Atomically PIN a discovered peer under the descriptor lock (TOFU first-use). Returns ``'pinned'``
+    (new id added), ``'exists'`` (already present with the SAME keys — no-op), or ``'conflict'`` (present
+    with DIFFERENT keys — REFUSED, not overwritten). The load→compare→save runs inside ONE lock so a
+    concurrent join/add-member/discover can't slip a new pin past the first-use check (a plain
+    load-then-add_member would TOCTOU: another writer could add the id in the gap and be overwritten)."""
+    member = Member(bundle.get("agent_id"), bundle.get("sign_pub"), bundle.get("box_pub"))
+    member.validate()                # reject a malformed bundle before touching the descriptor
+    with _descriptor_lock(descriptor_path):
+        descriptor = HiveDescriptor.load(descriptor_path)
+        existing = descriptor.member(member.agent_id)
+        if existing is not None:
+            if existing.sign_pub == member.sign_pub and existing.box_pub == member.box_pub:
+                return "exists"      # already pinned with the same keys — idempotent no-op
+            return "conflict"        # known id, DIFFERENT keys — takeover attempt, do NOT overwrite
+        descriptor.upsert_member(member)
+        descriptor.save(descriptor_path)
+        if nfs:                      # inside the lock (a concurrent normal save must not re-tighten it)
+            _make_readable(descriptor_path)
+    return "pinned"
+
+
 def remove_member(descriptor_path: str, agent_id: str, *, nfs: bool = False) -> bool:
     """Drop a member from the descriptor and save. Returns True if a member was removed, False if
     none matched (idempotent). Serialized with concurrent join/add-member so a removal can't lose a
@@ -236,12 +258,24 @@ def _replace_keyfile(keyfile: str, idn, mode: int) -> None:
     fchmod acts on the fd we created (a path-based chmod could follow a symlink swapped in after
     creation); mkstemp gives a unique 0600 temp that O_EXCL-creates (no symlink-follow, no collision)."""
     d = os.path.dirname(os.path.abspath(keyfile)) or "."
+    prev = os.stat(keyfile) if os.path.exists(keyfile) else None
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".key-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(idn.export_secret(), f, indent=2)
             f.flush()
             os.fchmod(f.fileno(), mode)
+        # Preserve the existing keyfile's owner/group so a rotation run by a DIFFERENT user (e.g. root
+        # doing maintenance on a runtime-owned key) doesn't leave the new key unreadable to the runtime.
+        # Best-effort: setting uid needs privilege; fall back to chgrp-only (mirrors descriptor save()).
+        if prev is not None and hasattr(os, "chown"):   # POSIX-only
+            try:
+                os.chown(tmp, prev.st_uid, prev.st_gid)
+            except OSError:
+                try:
+                    os.chown(tmp, -1, prev.st_gid)
+                except OSError:
+                    pass
         os.replace(tmp, keyfile)         # atomic on the same filesystem
     except Exception:
         try:
@@ -351,8 +385,12 @@ def _parse_announcement(blob, expected_hive: str | None) -> dict | None:
     try:
         payload = json.loads(base64.b64decode(env["pt"]))
         bundle = payload["bundle"]
+        # Reject an INCOMPLETE/malformed bundle here (missing box_pub, bad base64 keys) so one bad
+        # announcement can't later crash `discover` printing or abort `add_member` — and, because the
+        # stream replays history, block discovery of legitimate peers on every subsequent run.
+        Member(bundle["agent_id"], bundle["sign_pub"], bundle["box_pub"]).validate()
         aid, sign_pub = bundle["agent_id"], bundle["sign_pub"]
-    except (KeyError, ValueError, TypeError):
+    except (KeyError, ValueError, TypeError):   # incl. HiveDescriptorError (a ValueError)
         return None
     hive = payload.get("hive")
     if expected_hive and hive and hive != expected_hive:
@@ -431,18 +469,16 @@ async def discover_members(descriptor_path: str, *, self_id: str | None = None, 
         # EXISTING member id with DIFFERENT keys is a takeover attempt (anyone who can reach the broker
         # could publish it). Refuse it; the operator must rotate-key + re-share (or remove-member first)
         # to intentionally re-key a peer. Re-announcing the SAME keys is a harmless idempotent no-op.
-        current = {m.agent_id: m for m in HiveDescriptor.load(descriptor_path).members}
+        # The check+insert is atomic (per-member descriptor lock) so a concurrent writer can't slip a
+        # new pin past the first-use check.
         for aid, rec in collected.items():
             if not rec["verified"]:
                 continue                      # never pin an unverifiable bundle
-            b = rec["bundle"]
-            existing = current.get(aid)
-            if existing is not None:
-                if not (existing.sign_pub == b["sign_pub"] and existing.box_pub == b["box_pub"]):
-                    conflicts.append(aid)     # known id, different keys → refuse (not first-use)
-                continue                      # already known (same keys = nothing to do)
-            add_member(descriptor_path, b, nfs=nfs)   # genuinely new peer → reuse the locked writer
-            pinned.append(aid)
+            status = _pin_new_member(descriptor_path, rec["bundle"], nfs=nfs)
+            if status == "pinned":
+                pinned.append(aid)
+            elif status == "conflict":
+                conflicts.append(aid)         # known id, different keys → refused (not first-use)
     return {"collected": collected, "pinned": pinned, "conflicts": conflicts,
             "channel": ROSTER_CHANNEL}
 

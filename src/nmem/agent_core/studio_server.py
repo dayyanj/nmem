@@ -163,6 +163,46 @@ def _request_restart() -> None:
     os.kill(os.getpid(), signal.SIGTERM)
 
 
+def _schedule_restart(delay: float = 1.5) -> None:
+    """Restart into agent mode after ``delay`` (lets the HTTP response flush first) WITHOUT rewriting
+    agent.yaml. Roster/key edits change the descriptor file on disk, so a plain restart re-runs
+    expand-at-load — no config rebuild needed. Preferred over _reconfigure(_current_spec()) for those,
+    because _current_spec()/write_agent can't represent comms/reasoning_effort/custom db.env_key and
+    would silently drop them."""
+    import asyncio
+    asyncio.get_event_loop().call_later(delay, _request_restart)
+
+
+def _patch_agent_yaml_hive(agent_dir: str, delegation: dict | None) -> None:
+    """Persist ONLY the hive.delegation block to agent.yaml (delegation lives in the seed, not the
+    descriptor), leaving comms/backends/db and every other field byte-for-byte intact — unlike a full
+    write_agent rebuild from _current_spec(), which can't represent them and drops them. Read → patch →
+    atomic replace (temp + os.replace) so a crash mid-write can't truncate the agent's config."""
+    import tempfile
+
+    import yaml
+    ypath = os.path.join(agent_dir, "agent.yaml")
+    with open(ypath) as f:
+        doc = yaml.safe_load(f) or {}
+    hive = doc.get("hive") if isinstance(doc.get("hive"), dict) else {}
+    if delegation is None:
+        hive.pop("delegation", None)
+    else:
+        hive["delegation"] = delegation
+    doc["hive"] = hive
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(ypath)), prefix=".agent-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            yaml.safe_dump(doc, f, sort_keys=False)
+        os.replace(tmp, ypath)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 async def _start_agent(spec: dict, agent_dir: str) -> None:
     """The studio router's start_agent hook (called AFTER write_agent). In the appliance we do
     NOT boot in-process (stale settings singletons); we provision the DB, wire the DSN into
@@ -803,7 +843,7 @@ def build_agent_app():
             except Exception as e:  # noqa: BLE001 — malformed keys (HiveDescriptorError) etc.
                 log.warning("[studio] hive add-member failed: %s", e, exc_info=True)
                 return {"ok": False, "error": str(e)}
-            await _reconfigure(_current_spec())   # rewrite (same) config + restart → expand re-reads roster
+            _schedule_restart()      # descriptor changed on disk → restart re-expands; no config rewrite
             return {"ok": True, "added": added.get("agent_id"), "restarting": True}
 
         @app.post("/hive/remove-member")
@@ -828,7 +868,7 @@ def build_agent_app():
                 return {"ok": False, "error": str(e)}
             if not removed:
                 return {"ok": False, "error": f"no member '{aid}' in the descriptor"}
-            await _reconfigure(_current_spec())
+            _schedule_restart()      # descriptor changed on disk → restart re-expands; no config rewrite
             return {"ok": True, "removed": aid, "restarting": True}
 
         @app.post("/hive/delegation")
@@ -837,26 +877,23 @@ def build_agent_app():
             restart. Body: {enabled:bool, accepts?:[str]}. Enabling needs at least one accepted task
             type (existing or passed in). Descriptor-backed hives only. Memory preserved."""
             enabled = bool((req or {}).get("enabled"))
-            spec = _current_spec()
-            hive = dict(spec.get("hive") or {})
-            if not hive.get("descriptor"):
+            if _hive_descriptor_path(config, agent_dir) is None:
                 return {"ok": False, "error": "this agent isn't descriptor-backed — configure "
                                               "delegation in the seed"}
-            deleg = dict(hive.get("delegation") or {})
+            deleg = dict((config.get("hive") or {}).get("delegation") or {})
             accepts = (req or {}).get("accepts")
             if isinstance(accepts, list):
                 deleg["accepts"] = [str(a) for a in accepts if a]
-            if enabled and not deleg.get("accepts"):
-                return {"ok": False, "error": "enabling delegation needs at least one accepted task "
-                                              "type (pass accepts:[...])"}
+            deleg.setdefault("accepts", [])          # enabling with no worker types = requester-only (valid)
             deleg["enabled"] = enabled
-            hive["delegation"] = deleg
-            spec["hive"] = hive
             try:
-                await _reconfigure(spec)
+                # Patch ONLY the hive.delegation block on disk (comms/backends/db untouched) + restart —
+                # a full _reconfigure(_current_spec()) would drop config the wizard can't represent.
+                _patch_agent_yaml_hive(agent_dir, deleg)
             except Exception as e:  # noqa: BLE001
                 log.warning("[studio] hive delegation toggle failed: %s", e, exc_info=True)
                 return {"ok": False, "error": str(e)}
+            _schedule_restart()
             return {"ok": True, "enabled": enabled, "accepts": deleg.get("accepts", []),
                     "restarting": True}
 
@@ -888,7 +925,7 @@ def build_agent_app():
             except (Exception, SystemExit) as e:  # noqa: BLE001 — engine raises SystemExit on refusals
                 log.warning("[studio] hive rotate-key failed: %s", e, exc_info=True)
                 return {"ok": False, "error": str(e)}
-            await _reconfigure(_current_spec())
+            _schedule_restart()      # descriptor+keyfile changed on disk → restart re-expands
             return {"ok": True, "identity": identity, "bundle": res["bundle"], "restarting": True}
 
         @app.post("/act")

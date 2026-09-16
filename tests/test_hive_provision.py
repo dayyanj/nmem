@@ -12,7 +12,7 @@ import pytest
 pytest.importorskip("fastapi")          # studio_server imports fastapi at module load
 pytest.importorskip("nmem_exchange")    # keyfile generation needs the exchange crypto
 
-from nmem.agent_core.studio_server import _provision_hive  # noqa: E402
+from nmem.agent_core.studio_server import _provision_hive, _patch_agent_yaml_hive  # noqa: E402
 from nmem.agent_core.hive_descriptor import HiveDescriptor, Member  # noqa: E402
 from nmem.agent_core.config_writer import render_agent_yaml  # noqa: E402
 
@@ -86,6 +86,34 @@ def test_provision_join_needs_descriptor_text(tmp_path):
 def test_provision_unknown_action(tmp_path):
     assert _provision_hive(str(tmp_path), "djai", {"action": "solo"})["ok"] is False
     assert _provision_hive(str(tmp_path), "djai", {})["ok"] is False
+
+
+# ── delegation toggle patches ONLY the hive block (P1: no lossy full-config rewrite) ──
+
+def test_patch_agent_yaml_hive_preserves_unrelated_config(tmp_path):
+    """The delegation route patches hive.delegation in place, leaving comms / backends.brain.
+    reasoning_effort / a custom db.env_key untouched — unlike a write_agent rebuild from _current_spec()
+    which can't represent them and would drop them. (Codex round-2 P1 repro.)"""
+    d = _agent_dir(tmp_path, agent_yaml={
+        "comms": {"channel": "dm:djai:peer"},
+        "backends": {"brain": {"provider": "openai", "url": "http://x/v1", "model": "m",
+                               "reasoning_effort": "high"}},
+        "db": {"config_key": "djai", "env_key": "CUSTOM_DB"},
+        "hive": {"descriptor": "hive.yaml", "identity": "djai"}})
+    _patch_agent_yaml_hive(str(d), {"enabled": True, "accepts": []})   # requester-only
+    doc = yaml.safe_load((d / "agent.yaml").read_text())
+    assert doc["hive"]["delegation"] == {"enabled": True, "accepts": []}
+    assert doc["hive"]["descriptor"] == "hive.yaml" and doc["hive"]["identity"] == "djai"
+    assert doc["comms"] == {"channel": "dm:djai:peer"}                 # NOT dropped
+    assert doc["backends"]["brain"]["reasoning_effort"] == "high"      # NOT dropped
+    assert doc["db"]["env_key"] == "CUSTOM_DB"                         # NOT replaced
+
+
+def test_patch_agent_yaml_hive_removes_delegation_when_none(tmp_path):
+    d = _agent_dir(tmp_path, agent_yaml={"hive": {"descriptor": "hive.yaml",
+                                                  "delegation": {"enabled": True, "accepts": ["ask"]}}})
+    _patch_agent_yaml_hive(str(d), None)
+    assert "delegation" not in yaml.safe_load((d / "agent.yaml").read_text())["hive"]
 
 
 # ── config_writer never persists the transient wizard intent ─────────────────────────
