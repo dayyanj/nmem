@@ -100,6 +100,7 @@
   #readiness:empty{display:none}
   .banner{border-radius:10px;padding:10px 13px;font-size:13px;line-height:1.45;border:1px solid}
   .banner.warn{background:color-mix(in srgb,var(--warn) 12%,transparent);border-color:var(--warn);color:var(--ink)}
+  .banner.error{background:color-mix(in srgb,var(--warn) 22%,transparent);border-color:var(--warn);color:var(--ink);font-weight:500}
   .banner.info{background:var(--surface-2);border-color:var(--line-2);color:var(--muted)}
   .banner b{color:var(--ink)}
   .banner code{font-family:var(--mono);font-size:12px;background:var(--surface-2);padding:1px 5px;border-radius:5px}
@@ -258,8 +259,10 @@ function renderReadiness(items){
   if(!items||!items.length){host.innerHTML='';return;}
   const esc=s=>s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
   const fmt=s=>esc(s).replace(/(docker compose[^.]*|https?:\/\/[^\s.]+|NMEM_[A-Z_]+)/g,'<code>$1</code>');
-  host.innerHTML=items.map(it=>`<div class="banner ${it.level==='warn'?'warn':'info'}">`
-    +`${it.level==='warn'?'⚠ ':'✓ '}${fmt(it.message)}</div>`).join('');
+  const lvl=l=>l==='error'?'error':(l==='warn'?'warn':'info');
+  const icon=l=>l==='error'?'✗ ':(l==='warn'?'⚠ ':'✓ ');
+  host.innerHTML=items.map(it=>`<div class="banner ${lvl(it.level)}">`
+    +`${icon(it.level)}${fmt(it.message)}</div>`).join('');
 }
 function stateEl(label,on,valOn,valOff){
   return `<div class="state ${on?'on':'off'}"><span class="sw"></span><span class="lbl">${label}</span>`+

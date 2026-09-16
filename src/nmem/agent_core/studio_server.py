@@ -396,6 +396,14 @@ def build_agent_app():
                 {"reachable": await _probe_url_health(url)} if url else None)
         except Exception:  # noqa: BLE001
             ctx.state["readiness_sandbox"] = None
+        # Hive membership preflight (hive doctor, P0): validate the exchange/delegation/keyfile/broker
+        # config + probe broker reachability, so a misconfigured hive is a visible dashboard warning
+        # instead of a silent runtime drop. Read-only; fails open (an errored probe → no hive items).
+        try:
+            from nmem.agent_core import hive_doctor
+            ctx.state["readiness_hive"] = await hive_doctor.run(config)
+        except Exception:  # noqa: BLE001 — advisory only
+            ctx.state["readiness_hive"] = None
 
     async def _on_started(ctx):
         # Start the readiness refresher (first pass now, then every 20s) so the dashboard's banners
@@ -511,6 +519,17 @@ def build_agent_app():
                 items.append({"level": "warn", "capability": "visual memory",
                               "message": "Visual memory is ON and a sandbox is attached, but the sensory "
                                          "store isn't available (check NMEM_SENSOR_DB_DSN / nmem-sym-sensor)."})
+        # Hive membership: surface the doctor's actionable findings (warn/error), plus one green
+        # note when a configured hive is fully healthy — so "peering on but broker down / roster
+        # asymmetric / keyfile unreadable" is a banner, not a silent no-op.
+        rh = ctx.state.get("readiness_hive")
+        if rh is not None and rh.enabled:
+            problems = rh.readiness_items()
+            items.extend(problems)
+            if not problems and rh.ok:
+                items.append({"level": "info", "capability": "hive membership",
+                              "message": "Hive is configured and healthy (peering + delegation "
+                                         "validated, broker reachable)."})
         return items
 
     def _studio_routes(app, ctx):
