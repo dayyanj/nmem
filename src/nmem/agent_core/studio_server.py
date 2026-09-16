@@ -965,6 +965,73 @@ def build_agent_app():
             _schedule_restart()      # descriptor+keyfile changed on disk → restart re-expands
             return {"ok": True, "identity": identity, "bundle": res["bundle"], "restarting": True}
 
+        @app.post("/hive/announce")
+        async def hive_announce(req: dict):
+            """Publish THIS agent's SIGNED public bundle to the broker's open roster channel so peers can
+            discover + pin it (TOFU convenience). Only public keys go on the wire. Descriptor-backed hives
+            with a reachable broker only; nothing is written locally, so no restart."""
+            from nmem.agent_core import hive_cli
+            desc_path = _hive_descriptor_path(config, agent_dir)
+            if desc_path is None:
+                return {"ok": False, "error": "this agent isn't descriptor-backed — TOFU needs a hive descriptor"}
+            identity, keyfile = _hive_keyfile_path(config, agent_dir, persona.agent_id)
+            try:
+                res = await hive_cli.announce_identity(desc_path, keyfile=keyfile)
+            except (Exception, SystemExit) as e:  # noqa: BLE001 — SystemExit = missing keyfile / broker URL
+                log.warning("[studio] hive announce failed: %s", e, exc_info=True)
+                return {"ok": False, "error": str(e)}
+            return {"ok": True, "identity": identity, "channel": res["channel"], "hive": res["hive"]}
+
+        @app.post("/hive/discover")
+        async def hive_discover(req: dict):
+            """Collect peers' announcements from the broker roster; with ``{pin:true}`` add VERIFIED NEW
+            peers to the descriptor (trust-on-first-use, first-use-only) and restart, else review-only.
+            Returns per-peer fingerprints + status (new/known/conflict/unverified/pinned). Descriptor-backed
+            hives with a reachable broker only. ``timeout`` (s) is bounded to keep the request short."""
+            from nmem.agent_core import hive_cli
+            from nmem.agent_core.hive_descriptor import HiveDescriptor
+            desc_path = _hive_descriptor_path(config, agent_dir)
+            if desc_path is None:
+                return {"ok": False, "error": "this agent isn't descriptor-backed — TOFU needs a hive descriptor"}
+            identity = _hive_identity(config, persona.agent_id)
+            pin = bool((req or {}).get("pin"))
+            try:
+                timeout = float((req or {}).get("timeout", 5.0))
+            except (TypeError, ValueError):
+                timeout = 5.0
+            timeout = max(1.0, min(timeout, 15.0))     # bound the request-blocking listen window
+            try:
+                res = await hive_cli.discover_members(desc_path, self_id=identity, timeout=timeout, pin=pin)
+            except (Exception, SystemExit) as e:  # noqa: BLE001 — SystemExit = missing broker URL
+                log.warning("[studio] hive discover failed: %s", e, exc_info=True)
+                return {"ok": False, "error": str(e)}
+            # Shape for the dashboard: fingerprints only + TOFU status. Load the descriptor AFTER discovery
+            # (it may have just pinned), so decide 'pinned' from res first, then compare against the roster.
+            current = {m.agent_id: m for m in HiveDescriptor.load(desc_path).members}
+            peers = []
+            for aid, rec in sorted(res["collected"].items()):
+                b = rec["bundle"]
+                ex = current.get(aid)
+                if not rec["verified"]:
+                    status = "unverified"
+                elif aid in res["pinned"]:
+                    status = "pinned"
+                elif aid in res["conflicts"]:
+                    status = "conflict"
+                elif ex is not None and ex.sign_pub == b["sign_pub"] and ex.box_pub == b["box_pub"]:
+                    status = "known"
+                elif ex is not None:
+                    status = "conflict"        # known id, different keys (review mode: not in res.conflicts)
+                else:
+                    status = "new"
+                peers.append({"agent_id": aid, "verified": rec["verified"], "status": status,
+                              "sign_fp": b["sign_pub"][:12], "box_fp": b["box_pub"][:12]})
+            restarting = bool(res["pinned"])
+            if restarting:
+                _schedule_restart()            # descriptor changed on disk → restart re-expands the roster
+            return {"ok": True, "peers": peers, "pinned": res["pinned"],
+                    "conflicts": res["conflicts"], "restarting": restarting}
+
         @app.post("/act")
         async def act(req: dict):
             """Give the agent a goal and run it through its actuator ONCE. Selector mode → a gated,
