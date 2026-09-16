@@ -134,6 +134,20 @@ def test_patch_agent_yaml_hive_preserves_file_mode(tmp_path):
     assert stat.S_IMODE(os.stat(yp).st_mode) == 0o640
 
 
+def test_patch_agent_yaml_hive_follows_symlink_to_target(tmp_path):
+    """When agent.yaml is a symlink to an externally-maintained seed, the delegation edit updates the
+    TARGET and preserves the link — not replacing the link with a regular file. (Codex round-8 repro.)"""
+    import os
+    seed = tmp_path / "seed.yaml"
+    seed.write_text("hive:\n  descriptor: hive.yaml\n  delegation: {enabled: true, accepts: [ask]}\n")
+    d = tmp_path / "agent"
+    d.mkdir()
+    os.symlink(seed, d / "agent.yaml")
+    _patch_agent_yaml_hive(str(d), {"enabled": False, "accepts": ["ask"]})
+    assert (d / "agent.yaml").is_symlink()                                    # link preserved
+    assert yaml.safe_load(seed.read_text())["hive"]["delegation"]["enabled"] is False  # TARGET updated
+
+
 def test_patch_agent_yaml_hive_removes_delegation_when_none(tmp_path):
     d = _agent_dir(tmp_path, agent_yaml={"hive": {"descriptor": "hive.yaml",
                                                   "delegation": {"enabled": True, "accepts": ["ask"]}}})

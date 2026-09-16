@@ -181,7 +181,10 @@ def _patch_agent_yaml_hive(agent_dir: str, delegation: dict | None) -> None:
     import tempfile
 
     import yaml
-    ypath = os.path.join(agent_dir, "agent.yaml")
+    # Follow a symlink to its TARGET so the atomic replace updates the externally-maintained seed the
+    # agent actually reads — replacing the link with a regular file would strand the target unchanged and
+    # detach it from future seed updates (mirrors _replace_keyfile / HiveDescriptor.save).
+    ypath = os.path.realpath(os.path.join(agent_dir, "agent.yaml"))
     with open(ypath) as f:
         doc = yaml.safe_load(f) or {}
     hive = doc.get("hive") if isinstance(doc.get("hive"), dict) else {}
