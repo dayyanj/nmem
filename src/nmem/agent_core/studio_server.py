@@ -1027,7 +1027,9 @@ def build_agent_app():
                 # Echo the full PUBLIC bundle so the dashboard can pin the EXACT keys it just showed the
                 # operator (via /hive/pin) rather than re-discovering — closing the review→pin TOCTOU.
                 peers.append({"agent_id": aid, "verified": rec["verified"], "status": status,
-                              "sign_fp": b["sign_pub"][:12], "box_fp": b["box_pub"][:12],
+                              # SAME fingerprint fn as the Hive card so operators can compare a discovered
+                              # peer against that peer's own dashboard before trusting it.
+                              "sign_fp": _fingerprint(b["sign_pub"]), "box_fp": _fingerprint(b["box_pub"]),
                               "bundle": {"agent_id": aid, "sign_pub": b["sign_pub"], "box_pub": b["box_pub"]}})
             restarting = bool(res["pinned"])
             if restarting:

@@ -490,7 +490,7 @@ async function hiveDiscover(){
     const box=document.getElementById('hivepeers');
     const badge=p=>({new:'• new (verified) — Pin to trust',known:'· already a member',conflict:'⚠ CONFLICT: known id, different keys — will NOT pin',unverified:'✗ unverified signature — ignored'})[p.status]||p.status;
     if(!_hiveDiscovered.length){ box.textContent='no announcements on the roster (are peers running “Announce me”? is the broker reachable?)'; }
-    else{ box.textContent=_hiveDiscovered.map(p=>`${p.agent_id}  sign=${p.sign_fp}…  box=${p.box_fp}…  [${badge(p)}]`).join('\n'); }
+    else{ box.textContent=_hiveDiscovered.map(p=>`${p.agent_id}  sign ${p.sign_fp} · box ${p.box_fp}  [${badge(p)}]`).join('\n'); }
     box.hidden=false;
     const conflicts=(r.conflicts||[]).length;
     document.getElementById('hivepinbtn').hidden = !_hiveDiscovered.some(p=>p.status==='new');
