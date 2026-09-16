@@ -552,6 +552,64 @@ def test_cli_env_loads_secrets_env(tmp_path):
     assert env["NMEX_REDIS_URL"] == "redis://:pw with space@h:6390/0"
 
 
+def test_cli_expands_descriptor_backed_seed(tmp_path, monkeypatch):
+    """A descriptor-only seed must be EXPANDED before validation — else the CLI reports 'solo' and
+    checks nothing (codex P2, P1.2). Drives hd.main() with the broker probe STUBBED (no network I/O),
+    asserting the probe received an EXPANDED config."""
+    import json as _json
+    import yaml as _yaml
+    from nmem.agent_core.hive_descriptor import HiveDescriptor, Member
+
+    agent_dir = tmp_path / "michelle"
+    agent_dir.mkdir()
+    me = crypto.generate_identity("michelle")
+    peer = crypto.generate_identity("djai")
+    HiveDescriptor(name="fleet", members=[
+        Member("michelle", me.sign_pub, me.box_pub),
+        Member("djai", peer.sign_pub, peer.box_pub),
+    ]).save(str(agent_dir / "hive.yaml"))
+    kf = agent_dir / "michelle.key.json"
+    with open(kf, "w") as f:
+        _json.dump(me.export_secret(), f)
+    os.chmod(kf, 0o600)
+    with open(agent_dir / "agent.yaml", "w") as f:
+        _yaml.safe_dump({
+            "db": {"config_key": "michelle"},
+            "symbol_graph": {"enabled": True},
+            "hive": {"descriptor": "hive.yaml", "identity": "michelle",
+                     "delegation": {"enabled": True, "accepts": ["ask"]}},
+        }, f)
+    with open(agent_dir / "secrets.env", "w") as f:
+        f.write("NMEX_REDIS_URL=redis://:pw@h:6390/0\n")
+
+    seen = {}
+
+    async def _stub_broker(config, *, env=None, timeout=3.0):
+        seen["expanded"] = bool(config.get("exchange"))     # did main expand before validating?
+        return hd.Check("broker", False, hd._ERROR, "stubbed unreachable")
+
+    monkeypatch.setattr(hd, "check_broker", _stub_broker)
+    rc = hd.main([str(agent_dir / "agent.yaml")])
+    assert seen.get("expanded") is True     # expanded the descriptor, not reported 'solo'
+    assert rc == 1                          # broker error (stub) → non-zero
+
+
+def test_default_identity_prefers_persona(tmp_path):
+    """_default_identity must match build_agent_app: persona.yaml's agent_id wins over db.config_key
+    (codex P2 round 2)."""
+    import yaml as _yaml
+    agent_dir = tmp_path / "a"
+    agent_dir.mkdir()
+    with open(agent_dir / "persona.yaml", "w") as f:
+        _yaml.safe_dump({"agent_id": "michelle"}, f)
+    ident = hd._default_identity(str(agent_dir), {"db": {"config_key": "wrong_key"}})
+    assert ident == "michelle"
+    # no persona.yaml → falls back to db config_key
+    empty = tmp_path / "b"
+    empty.mkdir()
+    assert hd._default_identity(str(empty), {"db": {"config_key": "djai"}}) == "djai"
+
+
 def test_cli_env_strips_export_prefix(tmp_path):
     """`export KEY=VALUE` is valid in a sourced env file — the loader must strip `export ` (codex P2,
     round 12)."""

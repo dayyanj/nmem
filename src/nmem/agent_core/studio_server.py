@@ -252,6 +252,17 @@ def _build_gate(cfg: dict | None):
     return AutonomyGate(level=level, allow=set(cfg.get("allow") or []), deny=set(cfg.get("deny") or []))
 
 
+def _expand_hive_config(config: dict, agent_dir: str, default_identity: str) -> None:
+    """Expand-at-load (P1.2): turn a compact ``hive:`` membership block into the verbose
+    ``exchange:``/``delegation:`` config Piece A reads, IN PLACE, and resolve the broker URL into the
+    process env. Thin wrapper over the shared ``hive_descriptor.expand_into_config`` (the ``hive
+    doctor`` CLI uses the same path so it validates the effective config). ``env=os.environ`` here so
+    ``peer._resolve`` sees the descriptor's broker. No-op without ``hive.descriptor``; fail-open."""
+    from nmem.agent_core.hive_descriptor import expand_into_config
+    expand_into_config(config, agent_dir=agent_dir, default_identity=default_identity,
+                       env=os.environ, logger=log)
+
+
 def build_wizard_app():
     """WIZARD mode: the setup wizard + /studio/* router, wired to the appliance's secret store,
     DB provisioner, and restart-into-agent-mode."""
@@ -284,6 +295,13 @@ def build_agent_app():
         config = yaml.safe_load(f)
     persona = Persona.from_dict(yaml.safe_load(open(persona_yaml))) if os.path.exists(persona_yaml) \
         else Persona(agent_id=config.get("db", {}).get("config_key", "agent"))
+
+    # Hive expand-at-load (P1.2): if the seed carries a `hive:` block with a descriptor, DERIVE the
+    # verbose exchange:/delegation: config from it in place — so the comms/delegation factories below
+    # read generated config instead of hand-maintained keyring/channels/peer_channels. No-op (config
+    # unchanged) when there's no `hive.descriptor`, so a hand-written exchange:/delegation: seed is
+    # byte-identical to today. Fail-open: a bad descriptor leaves the agent solo, never crash-boots.
+    _expand_hive_config(config, agent_dir, persona.agent_id)
 
     # Two executor MODES, chosen by config (mutually exclusive — §33.3). A top-level `computer_use:`
     # block ⇒ the DIRECT verifier-enforced research runner (an LLM selector's Done(True) must not be
@@ -723,6 +741,17 @@ def build_agent_app():
         new_auto = dict(spec.get("autonomy") or {})
         if cur_auto or new_auto:                        # form supplies `level`; allow/deny survive
             spec["autonomy"] = {**cur_auto, **new_auto}
+        # Preserve hive MEMBERSHIP across an unrelated edit: the edit form round-trips only
+        # mode/graph_role, so a plain save would drop descriptor/identity/keyfile/delegation and the
+        # next boot would run solo (no peering/delegation). Keep them from the running config until
+        # the wizard can round-trip them (P2).
+        cur_hive = config.get("hive") or {}
+        new_hive = dict(spec.get("hive") or {})
+        for hk in ("descriptor", "identity", "keyfile", "delegation"):
+            if hk not in new_hive and hk in cur_hive:
+                new_hive[hk] = cur_hive[hk]
+        if cur_hive or new_hive:
+            spec["hive"] = new_hive
         for k, cur_val in (("belief", cur_nmem.get("belief")), ("policy", cur_nmem.get("policy")),
                            ("pursuit", config.get("pursuit")), ("symbol_graph", config.get("symbol_graph")),
                            ("goal_lifecycle", config.get("goal_lifecycle"))):

@@ -187,6 +187,18 @@ def _collect_static(rep: DoctorReport, config: dict, env: dict) -> None:
         rep.add("delegation", False, _ERROR,
                 f"delegation: config is not a mapping (got {type(config.get('delegation')).__name__}).")
         return
+    # A descriptor-backed seed must have been EXPANDED (at boot by the studio host, or by the CLI
+    # before this runs) into an exchange block. If hive.descriptor is set but no exchange was derived,
+    # expand-at-load failed (missing/invalid descriptor, or this agent isn't a member) → the agent
+    # runs SOLO. Report that as an error, not a benign "solo" — the seed clearly INTENDS a hive.
+    hive = config.get("hive")
+    if isinstance(hive, dict) and hive.get("descriptor") and not config.get("exchange"):
+        rep.add("hive", False, _ERROR,
+                "hive.descriptor is set but no exchange config was derived — expand-at-load failed "
+                "(missing/invalid descriptor, or this agent isn't a member). The agent runs SOLO. "
+                "Check the descriptor path and that this agent is listed as a member.")
+        return
+
     excfg = config.get("exchange") or {}
     dcfg = config.get("delegation") or {}
     ex_on = bool(excfg.get("enabled", False))
@@ -668,6 +680,25 @@ def _load_env_file(path: str) -> dict:
     return env
 
 
+def _default_identity(agent_dir: str, config: dict) -> str:
+    """The identity expand-at-load defaults to when ``hive.identity`` is omitted — MUST match
+    build_agent_app EXACTLY: persona.yaml's agent_id if present, else the db config_key, else the
+    literal ``"agent"`` (build_agent_app's Persona default). Otherwise the doctor would validate a
+    different member/keyfile than the running agent uses."""
+    persona_yaml = os.path.join(agent_dir, "persona.yaml")
+    if os.path.exists(persona_yaml):
+        try:
+            import yaml
+            from nmem.agent_core.persona import Persona
+            with open(persona_yaml) as f:
+                return Persona.from_dict(yaml.safe_load(f)).agent_id
+        except Exception:  # noqa: BLE001 — fall back to the db key
+            pass
+    db = config.get("db")
+    db = db if isinstance(db, dict) else {}
+    return db.get("config_key") or "agent"
+
+
 def _cli_env(yaml_path: str) -> dict:
     """The environment a standalone CLI run should see. entrypoint.sh SOURCES the agent's
     capabilities.env + secrets.env into the studio process, but a ``docker exec`` / separate shell
@@ -710,7 +741,17 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     path = argv[0] if argv else None
     config, yaml_path = _load_config(path)
-    rep = asyncio.run(run(config, env=_cli_env(yaml_path)))
+    env = _cli_env(yaml_path)
+    # A descriptor-backed seed carries only a compact hive: block — expand it (the same path the
+    # studio host runs at boot) so the doctor validates the EFFECTIVE exchange/delegation/broker,
+    # not the raw seed (which would look "solo"). Mutates config + env in place; fail-open no-op
+    # for a hand-written seed. default_identity falls back to the db config_key (the agent id).
+    if isinstance(config, dict):   # a non-mapping seed is diagnosed by run()'s backstop, not here
+        from nmem.agent_core.hive_descriptor import expand_into_config
+        agent_dir = os.path.dirname(os.path.abspath(yaml_path))
+        expand_into_config(config, agent_dir=agent_dir,
+                           default_identity=_default_identity(agent_dir, config), env=env, logger=log)
+    rep = asyncio.run(run(config, env=env))
     _print_report(rep, yaml_path)
     return 1 if not rep.ok else 0
 
