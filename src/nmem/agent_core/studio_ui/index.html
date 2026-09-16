@@ -876,6 +876,9 @@ async function initApp(){
   if(EDIT){ await loadCurrent(); }                          // rehydrate from the running agent (reconfigure mode)
   else { applyTemplate('researcher'); setView('basic'); }   // fresh create: seed a starter template
   onHiveMode();
+  // Hide Create/Join peering when the server can't provision it (no start_agent hook) — else it would
+  // report success but boot solo. Default (flag undefined) = available.
+  if(window.HIVE_PROVISIONING===false){const pb=document.getElementById('hive_peer_block'); if(pb)pb.hidden=true;}
   window.__INIT=true;                                        // one-time init done (guards re-auth re-runs)
 }
 (async function boot(){

@@ -907,6 +907,13 @@ def build_agent_app():
             if _hive_descriptor_path(config, agent_dir) is None:
                 return {"ok": False, "error": "this agent isn't descriptor-backed — configure "
                                               "delegation in the seed"}
+            # Delegation ledgers need an isolated db — AgentRuntime._wire_delegation refuses BOTH worker
+            # and requester roles under shared_world. Refuse to ENABLE here (same rule as _provision_hive)
+            # so the dashboard can't report delegation on when no tasks could ever run. Disabling is fine.
+            if enabled and (config.get("hive") or {}).get("mode") == "shared_world":
+                return {"ok": False, "error": "delegation needs an isolated database — this agent shares a "
+                                              "world graph (hive.mode: shared_world), so delegation can't "
+                                              "run. Peering (the exchange) still works."}
             deleg = dict((config.get("hive") or {}).get("delegation") or {})
             accepts = (req or {}).get("accepts")
             if isinstance(accepts, list):

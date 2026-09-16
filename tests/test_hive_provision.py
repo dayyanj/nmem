@@ -141,6 +141,16 @@ def test_patch_agent_yaml_hive_removes_delegation_when_none(tmp_path):
     assert "delegation" not in yaml.safe_load((d / "agent.yaml").read_text())["hive"]
 
 
+# ── wizard gates peering options on provisioning availability ─────────────────────────
+
+def test_studio_index_html_injects_provisioning_flag():
+    """The served wizard carries window.HIVE_PROVISIONING so it can hide Create/Join when the server
+    can't materialize a descriptor/keyfile (no start_agent hook). (Codex round-7 repro.)"""
+    from nmem.agent_core.studio import studio_index_html
+    assert "window.HIVE_PROVISIONING=true" in studio_index_html()
+    assert "window.HIVE_PROVISIONING=false" in studio_index_html(hive_provisioning=False)
+
+
 # ── config_writer never persists the transient wizard intent ─────────────────────────
 
 def _llm():

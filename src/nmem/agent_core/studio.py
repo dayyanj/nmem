@@ -309,12 +309,16 @@ def make_studio_router(get_runtime: Callable | None = None, *, config_dir: str =
     return router
 
 
-def studio_index_html() -> str:
+def studio_index_html(*, hive_provisioning: bool = True) -> str:
     """The productionised wizard SPA (built from _design/mockups/studio-wizard.html into
     studio_ui/index.html), read from the installed package so it ships in the wheel and is
-    served straight from an editable checkout too."""
+    served straight from an editable checkout too. ``hive_provisioning`` injects a JS flag: when
+    False (no ``start_agent`` hook wired, so nothing materializes a descriptor/keyfile), the wizard
+    hides the Create/Join peering options rather than reporting a success that boots solo anyway."""
     from importlib.resources import files
-    return (files("nmem.agent_core") / "studio_ui" / "index.html").read_text(encoding="utf-8")
+    html = (files("nmem.agent_core") / "studio_ui" / "index.html").read_text(encoding="utf-8")
+    flag = "true" if hive_provisioning else "false"
+    return html.replace("<head>", f"<head>\n<script>window.HIVE_PROVISIONING={flag};</script>", 1)
 
 
 def agent_dashboard_html() -> str:
@@ -346,7 +350,9 @@ def create_studio_app(*, config_dir: str = ".", store_secrets: Callable[[dict], 
     @app.get("/", response_class=HTMLResponse)
     async def index():
         if "html" not in cache:
-            cache["html"] = studio_index_html()
+            # Peering Create/Join only materialize a descriptor/keyfile via the start_agent hook; without
+            # it, hide those options (they'd otherwise report success but leave the agent solo).
+            cache["html"] = studio_index_html(hive_provisioning=start_agent is not None)
         return cache["html"]
 
     return app
