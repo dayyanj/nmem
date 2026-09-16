@@ -109,6 +109,18 @@ def test_patch_agent_yaml_hive_preserves_unrelated_config(tmp_path):
     assert doc["db"]["env_key"] == "CUSTOM_DB"                         # NOT replaced
 
 
+def test_patch_agent_yaml_hive_preserves_file_mode(tmp_path):
+    """An in-place delegation edit keeps agent.yaml's existing mode (a group-readable 0640 config isn't
+    tightened to the server user's 0600). (Codex round-3 repro.)"""
+    import os
+    import stat
+    d = _agent_dir(tmp_path, agent_yaml={"hive": {"descriptor": "hive.yaml"}})
+    yp = d / "agent.yaml"
+    os.chmod(yp, 0o640)
+    _patch_agent_yaml_hive(str(d), {"enabled": True, "accepts": []})
+    assert stat.S_IMODE(os.stat(yp).st_mode) == 0o640
+
+
 def test_patch_agent_yaml_hive_removes_delegation_when_none(tmp_path):
     d = _agent_dir(tmp_path, agent_yaml={"hive": {"descriptor": "hive.yaml",
                                                   "delegation": {"enabled": True, "accepts": ["ask"]}}})

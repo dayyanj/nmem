@@ -190,10 +190,23 @@ def _patch_agent_yaml_hive(agent_dir: str, delegation: dict | None) -> None:
     else:
         hive["delegation"] = delegation
     doc["hive"] = hive
+    prev = os.stat(ypath) if os.path.exists(ypath) else None
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(ypath)), prefix=".agent-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
             yaml.safe_dump(doc, f, sort_keys=False)
+        # Preserve the existing file's mode + owner/group so an in-place edit doesn't tighten a
+        # group-/world-readable agent.yaml down to the server user's 0600 (mirrors HiveDescriptor.save).
+        if prev is not None:
+            os.chmod(tmp, stat.S_IMODE(prev.st_mode))
+            if hasattr(os, "chown"):
+                try:
+                    os.chown(tmp, prev.st_uid, prev.st_gid)
+                except OSError:
+                    try:
+                        os.chown(tmp, -1, prev.st_gid)
+                    except OSError:
+                        pass
         os.replace(tmp, ypath)
     except Exception:
         try:

@@ -427,6 +427,20 @@ async def announce_identity(descriptor_path: str, *, keyfile: str, transport=Non
     return {"bundle": idn.public_bundle(), "channel": ROSTER_CHANNEL, "hive": descriptor.name}
 
 
+async def _destroy_consumer_group(transport, channel: str, group: str) -> None:
+    """Best-effort XGROUP DESTROY of a temporary discovery group so per-run groups don't pile up on the
+    broker. Redis-only + private-attr access, guarded by type + hasattr; a no-op for InMemoryTransport
+    (no groups) or any error (the group is disposable — the stream is maxlen-capped regardless)."""
+    from nmem_exchange import transport as tmod
+    if not isinstance(transport, tmod.RedisTransport):
+        return
+    try:
+        r = await transport._client()
+        await r.xgroup_destroy(tmod.STREAM_PREFIX + channel, group)
+    except Exception:      # noqa: BLE001 — cleanup is best-effort; never fail discovery over it
+        pass
+
+
 async def discover_members(descriptor_path: str, *, self_id: str | None = None, timeout: float = 5.0,
                            pin: bool = False, nfs: bool = False, transport=None,
                            group: str | None = None) -> dict:
@@ -451,14 +465,20 @@ async def discover_members(descriptor_path: str, *, self_id: str | None = None, 
             return                            # don't rediscover myself
         collected[aid] = rec                  # latest announcement wins (a re-keyed peer)
 
+    grp = group or f"discover-{uuid.uuid4().hex[:8]}"
     owns = transport is None
     if owns:
         transport = tmod.RedisTransport(_resolve_broker_url(descriptor))
     try:
-        await transport.subscribe(ROSTER_CHANNEL, group or f"discover-{uuid.uuid4().hex[:8]}", _cb)
+        await transport.subscribe(ROSTER_CHANNEL, grp, _cb)
         await asyncio.sleep(timeout)
     finally:
         if owns:
+            # A fresh consumer group per run makes the redis stream replay recent history — but
+            # transport.close() only cancels tasks + closes the connection, it never destroys the group,
+            # so repeated discovery would accumulate groups on the broker. Destroy it before closing
+            # (best-effort, redis-only; InMemoryTransport has no groups).
+            await _destroy_consumer_group(transport, ROSTER_CHANNEL, grp)
             await transport.close()
 
     pinned: list[str] = []

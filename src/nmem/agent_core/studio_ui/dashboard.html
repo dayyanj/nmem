@@ -207,7 +207,8 @@
         <div style="margin-bottom:8px">
           <button class="go" id="hivesharebtn" onclick="hiveShowDescriptor()">Show descriptor to share</button>
           <pre id="hiveshare" hidden class="res" style="margin-top:6px;white-space:pre-wrap;word-break:break-all;max-height:220px;overflow:auto"></pre>
-          <pre id="hivesharebundle" hidden class="res" style="margin-top:6px;white-space:pre-wrap;word-break:break-all;max-height:160px;overflow:auto"></pre>
+          <div id="hivesharebundlelbl" hidden class="sub" style="margin-top:6px">your public bundle — send to a hive keeper to paste into their Add member field:</div>
+          <pre id="hivesharebundle" hidden class="res" style="margin-top:2px;white-space:pre-wrap;word-break:break-all;max-height:160px;overflow:auto"></pre>
         </div>
         <textarea id="hivebundle" placeholder='paste a peer&#39;s public bundle: {"agent_id":"…","sign_pub":"…","box_pub":"…"}' style="width:100%;min-height:52px;font-family:monospace;font-size:12px;box-sizing:border-box"></textarea>
         <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -436,18 +437,20 @@ function hiveRemoveMember(aid){
 async function hiveShowDescriptor(){    // reveal the shareable descriptor + this agent's own bundle
   const box=document.getElementById('hiveshare');
   const bbox=document.getElementById('hivesharebundle');
-  if(!box.hidden){ box.hidden=true; bbox.hidden=true; return; }   // toggle off
+  const blbl=document.getElementById('hivesharebundlelbl');
+  if(!box.hidden){ box.hidden=true; bbox.hidden=true; blbl.hidden=true; return; }   // toggle off
   try{
     const r=await getJSON('/hive/descriptor');
-    if(r.ok===false){ box.textContent='⚠ '+(r.error||'unavailable'); bbox.hidden=true; }
+    if(r.ok===false){ box.textContent='⚠ '+(r.error||'unavailable'); bbox.hidden=true; blbl.hidden=true; }
     else{
       // SEPARATE copyable blocks: the descriptor is YAML (paste into a joiner's Join field); the bundle
-      // is JSON (paste into a keeper's add-member). Mixing them made the descriptor block invalid YAML.
+      // is JSON (paste into a keeper's Add member). The bundle block holds ONLY the JSON — a comment
+      // prefix would make json.loads reject a copy-paste; its label lives outside the copyable <pre>.
       box.textContent='# hive "'+r.name+'" — share this whole descriptor with a new member:\n'+r.text;  // textContent: no HTML injection
-      if(r.bundle){ bbox.textContent='# your public bundle — send to a hive keeper to be added there:\n'+JSON.stringify(r.bundle,null,2); bbox.hidden=false; }
-      else{ bbox.hidden=true; }
+      if(r.bundle){ bbox.textContent=JSON.stringify(r.bundle,null,2); bbox.hidden=false; blbl.hidden=false; }
+      else{ bbox.hidden=true; blbl.hidden=true; }
     }
-  }catch(e){ box.textContent=String(e); bbox.hidden=true; }
+  }catch(e){ box.textContent=String(e); bbox.hidden=true; blbl.hidden=true; }
   box.hidden=false;
 }
 function hiveRotateKey(){

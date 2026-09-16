@@ -447,6 +447,12 @@ def test_discover_drops_other_hive(tmp_path):
     assert _run(scenario())["collected"] == {}           # wrong hive name → filtered
 
 
+def test_destroy_consumer_group_noop_on_inmemory(tmp_path):
+    """The best-effort group cleanup is a silent no-op for a non-Redis transport (no groups to destroy)."""
+    from nmem_exchange.transport import InMemoryTransport
+    _run(cli._destroy_consumer_group(InMemoryTransport(), cli.ROSTER_CHANNEL, "discover-x"))  # must not raise
+
+
 def test_announce_requires_keyfile(tmp_path):
     dj_desc, _ = _hive_with_keyfile(tmp_path, "fleet", "djai")
     from nmem_exchange.transport import InMemoryTransport
