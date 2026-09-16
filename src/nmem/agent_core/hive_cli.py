@@ -6,6 +6,8 @@ seeds + cross-pasting base64 keys into a few guided commands:
     python -m nmem.agent_core.hive_cli create <name> --out hive.yaml
     python -m nmem.agent_core.hive_cli join   hive.yaml --as djai --keyfile /data/djai/djai.key.json
     python -m nmem.agent_core.hive_cli add-member hive.yaml --bundle michelle.json
+    python -m nmem.agent_core.hive_cli announce  hive.yaml --as djai        # TOFU convenience
+    python -m nmem.agent_core.hive_cli discover  hive.yaml --as djai --pin  # collect + trust peers
     python -m nmem.agent_core.hive_cli members hive.yaml
     python -m nmem.agent_core.hive_cli doctor  /data/djai/agent.yaml
 
@@ -20,12 +22,19 @@ argparse dispatcher over them.
 """
 from __future__ import annotations
 
+import base64
 import contextlib
 import json
 import os
 import tempfile
 
 from nmem.agent_core.hive_descriptor import HiveDescriptor, Member
+
+# TOFU bootstrap (P3b): the OPEN channel members announce their signed public bundle on. The broker
+# password (whoever can reach the broker at all) is the coarse admission gate; collectors pin what
+# they see (trust-on-first-use). Deliberately NOT a persistent registry — announcements are just
+# transient stream entries; nothing here reads an authoritative directory.
+ROSTER_CHANNEL = "hive:roster"
 
 
 @contextlib.contextmanager
@@ -289,6 +298,137 @@ def rotate_key(descriptor_path: str, *, agent_id: str, keyfile: str, nfs: bool =
     return {"bundle": idn.public_bundle(), "descriptor": descriptor_path, "keyfile": keyfile}
 
 
+# ── TOFU bootstrap: announce / discover over the OPEN roster channel (P3b) ───────
+#
+# The trust chain is deliberately shallow and HONEST (see the plan's "trust bootstrap" section):
+#   • The broker is UNTRUSTED — it only fans out blobs. The broker PASSWORD is the coarse membership
+#     gate: whoever can reach the broker at all can announce and be discovered.
+#   • Each announcement is a SIGNED-but-open envelope (crypto.seal_open) carrying the announcer's own
+#     PUBLIC bundle. The signature proves the announcer HOLDS the private key for the advertised
+#     sign_pub (self-attesting) — it does NOT establish that they are who they claim (that's what
+#     "trust-on-first-use" means: you accept the identity you first see under the broker password).
+#   • `discover` COLLECTS + shows; PINNING (writing into the descriptor) is the explicit trust act.
+# This is a CONVENIENCE for single-broker setups; the out-of-band descriptor exchange (join/add-member)
+# remains the default, verifiable path. There is intentionally no central key registry.
+
+
+def _resolve_broker_url(descriptor: HiveDescriptor) -> str:
+    """The broker URL lives in the env var the descriptor NAMES (never on the descriptor itself — the
+    secret stays in env). Fail loudly if it isn't set: TOFU needs a reachable broker."""
+    url_env = descriptor.broker_url_env or "NMEX_REDIS_URL"
+    url = os.environ.get(url_env)
+    if not url:
+        raise SystemExit(
+            f"broker URL not set — export {url_env}=redis://:<password>@host:port before announce/discover")
+    return url
+
+
+def _load_identity(keyfile: str):
+    from nmem_exchange import crypto
+    if not os.path.exists(keyfile):
+        raise SystemExit(f"no keyfile at {keyfile} — run `join` (or `rotate-key`) first")
+    with open(keyfile) as f:
+        return crypto.identity_from_secret(json.load(f))
+
+
+def _parse_announcement(blob, expected_hive: str | None) -> dict | None:
+    """Decode + AUTHENTICATE one roster blob into ``{bundle, hive, verified}`` (or None if it isn't a
+    well-formed, self-consistent announcement). ``verified`` is True only when the envelope signature
+    checks out against the sign_pub the announcement itself advertises AND ``from`` matches the bundle's
+    agent_id — i.e. the sender demonstrably holds that private key. Announcements for a DIFFERENT hive
+    name are dropped (a shared broker can carry several hives)."""
+    from nmem_exchange import crypto
+    try:
+        env = json.loads(blob)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(env, dict) or env.get("kind") != "hive.announce" or env.get("enc") != "none":
+        return None
+    try:
+        payload = json.loads(base64.b64decode(env["pt"]))
+        bundle = payload["bundle"]
+        aid, sign_pub = bundle["agent_id"], bundle["sign_pub"]
+    except (KeyError, ValueError, TypeError):
+        return None
+    hive = payload.get("hive")
+    if expected_hive and hive and hive != expected_hive:
+        return None                          # a different hive sharing the same broker
+    # self-attestation: `from` must be the claimed id AND the signature must verify under the
+    # advertised sign_pub (proves possession of the matching private key).
+    verified = env.get("from") == aid and crypto.verify_sig(env, sign_pub)
+    return {"bundle": bundle, "hive": hive, "verified": verified}
+
+
+async def announce_identity(descriptor_path: str, *, keyfile: str, transport=None,
+                            msg_id: str | None = None, ts: float | None = None) -> dict:
+    """Publish THIS agent's signed public bundle to the open roster channel so peers can discover +
+    pin it. Reads the private key from ``keyfile`` (to sign); only PUBLIC keys go on the wire. Builds a
+    RedisTransport from the descriptor's broker env var unless a ``transport`` is injected (tests)."""
+    import time
+    import uuid
+    from nmem_exchange import crypto, transport as tmod
+
+    descriptor = HiveDescriptor.load(descriptor_path)
+    idn = _load_identity(keyfile)
+    payload = json.dumps({"hive": descriptor.name, "bundle": idn.public_bundle()}).encode()
+    env = crypto.seal_open(idn, payload, channel=ROSTER_CHANNEL, kind="hive.announce",
+                           msg_id=msg_id or uuid.uuid4().hex,
+                           ts=ts if ts is not None else time.time())
+    owns = transport is None
+    if owns:
+        transport = tmod.RedisTransport(_resolve_broker_url(descriptor))
+    try:
+        await transport.publish(ROSTER_CHANNEL, json.dumps(env).encode())
+    finally:
+        if owns:
+            await transport.close()
+    return {"bundle": idn.public_bundle(), "channel": ROSTER_CHANNEL, "hive": descriptor.name}
+
+
+async def discover_members(descriptor_path: str, *, self_id: str | None = None, timeout: float = 5.0,
+                           pin: bool = False, nfs: bool = False, transport=None,
+                           group: str | None = None) -> dict:
+    """Subscribe to the open roster channel, collect signed announcements for ``timeout`` seconds, and
+    return ``{collected, pinned, channel}``. ``collected`` is one record per agent_id (latest wins,
+    self excluded) with its verified flag; when ``pin`` is set, VERIFIED peers are written into the
+    descriptor via the same locked ``add_member`` path (trust-on-first-use). Uses a FRESH consumer
+    group each run so the redis stream replays recent history; tests inject an InMemoryTransport."""
+    import asyncio
+    import uuid
+    from nmem_exchange import transport as tmod
+
+    descriptor = HiveDescriptor.load(descriptor_path)
+    collected: dict[str, dict] = {}
+
+    async def _cb(blob):
+        rec = _parse_announcement(blob, descriptor.name)
+        if rec is None:
+            return
+        aid = rec["bundle"]["agent_id"]
+        if self_id and aid == self_id:
+            return                            # don't rediscover myself
+        collected[aid] = rec                  # latest announcement wins (a re-keyed peer)
+
+    owns = transport is None
+    if owns:
+        transport = tmod.RedisTransport(_resolve_broker_url(descriptor))
+    try:
+        await transport.subscribe(ROSTER_CHANNEL, group or f"discover-{uuid.uuid4().hex[:8]}", _cb)
+        await asyncio.sleep(timeout)
+    finally:
+        if owns:
+            await transport.close()
+
+    pinned: list[str] = []
+    if pin:
+        for aid, rec in collected.items():
+            if not rec["verified"]:
+                continue                      # never pin an unverifiable bundle
+            add_member(descriptor_path, rec["bundle"], nfs=nfs)   # reuse the locked, atomic writer
+            pinned.append(aid)
+    return {"collected": collected, "pinned": pinned, "channel": ROSTER_CHANNEL}
+
+
 def list_members(descriptor_path: str) -> list[dict]:
     return [m.bundle() for m in HiveDescriptor.load(descriptor_path).members]
 
@@ -375,6 +515,22 @@ def main(argv: list[str] | None = None) -> int:
     pk.add_argument("--nfs", action="store_true",
                     help="write the new keyfile 0644 for an NFS root-squash bind-mount (else 0600)")
 
+    pan = sub.add_parser("announce",
+                         help="publish my signed public bundle to the broker roster (TOFU convenience)")
+    pan.add_argument("descriptor")
+    pan.add_argument("--as", dest="agent_id", required=True, help="the identity whose key signs the announcement")
+    pan.add_argument("--keyfile", help="private keyfile path (default: <descriptor dir>/<id>.key.json)")
+
+    pdisc = sub.add_parser("discover",
+                           help="collect peers' announcements from the broker roster; --pin to trust them")
+    pdisc.add_argument("descriptor")
+    pdisc.add_argument("--as", dest="agent_id", default=None,
+                       help="my identity (excluded from results); optional")
+    pdisc.add_argument("--timeout", type=float, default=5.0, help="seconds to listen (default 5)")
+    pdisc.add_argument("--pin", action="store_true",
+                       help="ADD verified discovered peers to the descriptor (trust-on-first-use)")
+    pdisc.add_argument("--nfs", action="store_true", help="keep the descriptor world-readable (root-squash)")
+
     pm = sub.add_parser("members", help="list the descriptor's members")
     pm.add_argument("descriptor")
 
@@ -424,6 +580,42 @@ def main(argv: list[str] | None = None) -> int:
         print("PUBLIC bundle (re-share with peers, or send them the updated descriptor):")
         print(json.dumps(res["bundle"], indent=2))
         print("\nnote: peers must pick up the new descriptor/bundle or they'll reject your messages.")
+        return 0
+
+    if args.cmd == "announce":
+        import asyncio
+        keyfile = args.keyfile or os.path.join(
+            os.path.dirname(os.path.abspath(args.descriptor)), f"{args.agent_id}.key.json")
+        res = asyncio.run(announce_identity(args.descriptor, keyfile=keyfile))
+        print(f"announced '{res['bundle']['agent_id']}' to '{res['channel']}' on hive "
+              f"'{res['hive']}' — peers can now `discover` and pin you.")
+        print("note: TOFU — anyone who can reach the broker sees this; the broker password is the "
+              "only admission gate. Prefer out-of-band descriptor exchange for stricter trust.")
+        return 0
+
+    if args.cmd == "discover":
+        import asyncio
+        res = asyncio.run(discover_members(args.descriptor, self_id=args.agent_id,
+                                           timeout=args.timeout, pin=args.pin, nfs=args.nfs))
+        collected = res["collected"]
+        if not collected:
+            print(f"no announcements on '{res['channel']}' within {args.timeout:g}s "
+                  "(are peers running `announce`? is the broker reachable?)")
+            return 0
+        print(f"discovered {len(collected)} peer(s) on '{res['channel']}':")
+        for aid, rec in sorted(collected.items()):
+            b = rec["bundle"]
+            mark = "✓ verified" if rec["verified"] else "✗ UNVERIFIED (bad signature — will NOT pin)"
+            print(f"  {aid}  sign={b['sign_pub'][:12]}…  box={b['box_pub'][:12]}…  [{mark}]")
+        if args.pin:
+            if res["pinned"]:
+                print(f"\npinned {len(res['pinned'])} verified peer(s) into {args.descriptor}: "
+                      f"{', '.join(sorted(res['pinned']))}")
+                print("trust-on-first-use: verify these fingerprints out-of-band if the broker isn't trusted.")
+            else:
+                print("\nnothing pinned (no verified peers).")
+        else:
+            print("\n(review-only — re-run with --pin to add verified peers to the descriptor)")
         return 0
 
     if args.cmd == "members":

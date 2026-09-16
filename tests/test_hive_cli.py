@@ -246,6 +246,141 @@ def test_main_rotate_key(tmp_path, capsys):
     assert "rotated key for 'djai'" in capsys.readouterr().out
 
 
+# ── TOFU bootstrap: announce / discover (P3b) ────────────────────────────────────────
+
+import asyncio  # noqa: E402
+
+
+def _run(coro):
+    return asyncio.run(coro)
+
+
+def _hive_with_keyfile(tmp_path, name, agent_id):
+    """A descriptor + this agent's keyfile (as `join` would leave them)."""
+    desc_path = str(tmp_path / f"{name}.yaml")
+    cli.create_descriptor(name, out=desc_path)
+    kf = str(tmp_path / f"{agent_id}.key.json")
+    cli.join_hive(desc_path, agent_id=agent_id, keyfile=kf)
+    return desc_path, kf
+
+
+def test_announce_then_discover_roundtrip(tmp_path):
+    """A discoverer subscribed to a shared in-memory broker collects a peer's announced bundle, and it
+    round-trips as VERIFIED (self-attesting signature checks out)."""
+    from nmem_exchange.transport import InMemoryTransport
+    # two independent hives on ONE broker: djai discovers, michelle announces (into djai's roster view)
+    dj_desc, _ = _hive_with_keyfile(tmp_path, "fleet", "djai")
+    _, mich_kf = _hive_with_keyfile(tmp_path / "m", "fleet", "michelle")
+    bus = InMemoryTransport()
+
+    async def scenario():
+        task = asyncio.ensure_future(
+            cli.discover_members(dj_desc, self_id="djai", timeout=0.3, transport=bus))
+        await asyncio.sleep(0.05)                        # let the subscriber attach first
+        await cli.announce_identity(dj_desc, keyfile=mich_kf, transport=bus)
+        return await task
+
+    res = _run(scenario())
+    assert set(res["collected"]) == {"michelle"}
+    assert res["collected"]["michelle"]["verified"] is True
+    assert res["pinned"] == []                           # no --pin → collect only
+
+
+def test_discover_pin_writes_verified_peer(tmp_path):
+    from nmem_exchange.transport import InMemoryTransport
+    dj_desc, _ = _hive_with_keyfile(tmp_path, "fleet", "djai")
+    _, mich_kf = _hive_with_keyfile(tmp_path / "m", "fleet", "michelle")
+    bus = InMemoryTransport()
+
+    async def scenario():
+        task = asyncio.ensure_future(
+            cli.discover_members(dj_desc, self_id="djai", timeout=0.3, pin=True, transport=bus))
+        await asyncio.sleep(0.05)
+        await cli.announce_identity(dj_desc, keyfile=mich_kf, transport=bus)
+        return await task
+
+    res = _run(scenario())
+    assert res["pinned"] == ["michelle"]
+    assert "michelle" in HiveDescriptor.load(dj_desc).agent_ids()   # pinned into the descriptor
+
+
+def test_discover_excludes_self(tmp_path):
+    """My own announcement echoed back off the broker is filtered out of the results."""
+    from nmem_exchange.transport import InMemoryTransport
+    dj_desc, dj_kf = _hive_with_keyfile(tmp_path, "fleet", "djai")
+    bus = InMemoryTransport()
+
+    async def scenario():
+        task = asyncio.ensure_future(
+            cli.discover_members(dj_desc, self_id="djai", timeout=0.3, transport=bus))
+        await asyncio.sleep(0.05)
+        await cli.announce_identity(dj_desc, keyfile=dj_kf, transport=bus)
+        return await task
+
+    assert _run(scenario())["collected"] == {}
+
+
+def test_discover_drops_tampered_announcement(tmp_path):
+    """An announcement whose payload was altered AFTER signing fails self-attestation → never pinned.
+    (The signature is over the whole envelope incl. `pt`, so re-encoding `pt` breaks verification.)"""
+    import base64
+    from nmem_exchange.transport import InMemoryTransport
+    dj_desc, _ = _hive_with_keyfile(tmp_path, "fleet", "djai")
+    _, mich_kf = _hive_with_keyfile(tmp_path / "m", "fleet", "michelle")
+    idn = cli._load_identity(mich_kf)
+    bus = InMemoryTransport()
+
+    async def scenario():
+        task = asyncio.ensure_future(
+            cli.discover_members(dj_desc, self_id="djai", timeout=0.3, pin=True, transport=bus))
+        await asyncio.sleep(0.05)
+        payload = json.dumps({"hive": "fleet", "bundle": idn.public_bundle()}).encode()
+        env = crypto.seal_open(idn, payload, channel=cli.ROSTER_CHANNEL, kind="hive.announce",
+                               msg_id="x", ts=1.0)
+        tampered = {"hive": "fleet", "bundle": {"agent_id": "michelle",
+                                                "sign_pub": idn.sign_pub, "box_pub": "TAMPERED"}}
+        env["pt"] = base64.b64encode(json.dumps(tampered).encode()).decode()   # break the signature
+        await bus.publish(cli.ROSTER_CHANNEL, json.dumps(env).encode())
+        return await task
+
+    res = _run(scenario())
+    assert res["collected"]["michelle"]["verified"] is False
+    assert res["pinned"] == []                           # unverified is never pinned
+
+
+def test_discover_drops_other_hive(tmp_path):
+    """A shared broker can carry several hives; announcements for a different hive name are ignored."""
+    from nmem_exchange.transport import InMemoryTransport
+    dj_desc, _ = _hive_with_keyfile(tmp_path, "fleet", "djai")
+    other_desc, other_kf = _hive_with_keyfile(tmp_path / "o", "other-hive", "stranger")
+    bus = InMemoryTransport()
+
+    async def scenario():
+        task = asyncio.ensure_future(
+            cli.discover_members(dj_desc, self_id="djai", timeout=0.3, transport=bus))
+        await asyncio.sleep(0.05)
+        await cli.announce_identity(other_desc, keyfile=other_kf, transport=bus)
+        return await task
+
+    assert _run(scenario())["collected"] == {}           # wrong hive name → filtered
+
+
+def test_announce_requires_keyfile(tmp_path):
+    dj_desc, _ = _hive_with_keyfile(tmp_path, "fleet", "djai")
+    from nmem_exchange.transport import InMemoryTransport
+    with pytest.raises(SystemExit):
+        _run(cli.announce_identity(dj_desc, keyfile=str(tmp_path / "nope.key.json"),
+                                   transport=InMemoryTransport()))
+
+
+def test_resolve_broker_url_missing_env(tmp_path, monkeypatch):
+    desc_path = str(tmp_path / "hive.yaml")
+    cli.create_descriptor("fleet", out=desc_path, broker_env="NMEX_TEST_URL_ABSENT")
+    monkeypatch.delenv("NMEX_TEST_URL_ABSENT", raising=False)
+    with pytest.raises(SystemExit):
+        cli._resolve_broker_url(HiveDescriptor.load(desc_path))
+
+
 # ── seed block emission ─────────────────────────────────────────────────────────────
 
 def test_seed_block_paths_relative_to_seed_dir(tmp_path):
