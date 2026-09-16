@@ -194,6 +194,15 @@
         <pre class="res" id="actres"># give the agent a goal to see the tools it uses</pre>
       </div>
     </section>
+
+    <section class="card" id="hivecard" hidden>
+      <span class="eyebrow">Hive</span>
+      <h2>Peering &amp; delegation <small id="hivesol" style="color:var(--muted);font-weight:400"></small></h2>
+      <p class="sub" style="color:var(--muted);margin:2px 0 10px">Agents this one trusts, exchanges with, and can delegate to. Fingerprints let you verify a peer's keys out-of-band.</p>
+      <div class="kv" id="hivekv"></div>
+      <div class="plugs" id="hivemembers" style="margin-top:8px"></div>
+      <div id="hivechecks" style="margin-top:10px"></div>
+    </section>
   </div>
 
   <aside>
@@ -354,6 +363,30 @@ async function loadTools(){
       + `<span class="plug" style="border-style:dashed">autonomy: ${t.autonomy}</span>`;
   }catch(e){ /* pure thinker / tools endpoint absent */ }
 }
+// Hive card: read-only membership + live hive-doctor findings (server text is ours; escape peer
+// ids/fingerprints since a member id could in principle contain markup). Hidden unless a hive is on.
+async function loadHive(){
+  let s; try{ s=await getJSON('/hive/status'); }catch(e){ return; }
+  const card=document.getElementById('hivecard');
+  if(!s || !s.enabled){ card.hidden=true; return; }
+  card.hidden=false;
+  const esc=v=>String(v==null?'':v).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  const n=(s.members||[]).length;
+  document.getElementById('hivesol').textContent =
+    s.solo ? '· solo (no peers)' : ('· '+n+' member'+(n===1?'':'s'));
+  const routes=Object.keys(s.peer_channels||{}).length;
+  document.getElementById('hivekv').innerHTML =
+    `<span class="k">identity</span><span class="v">${esc(s.identity)||'—'}</span>`+
+    `<span class="k">accepts</span><span class="v">${(s.accepts||[]).map(esc).join(', ')||'—'}</span>`+
+    `<span class="k">delegates to</span><span class="v">${routes?Object.keys(s.peer_channels).map(esc).join(', '):'—'}</span>`;
+  document.getElementById('hivemembers').innerHTML = (s.members||[]).map(m=>
+    `<span class="plug ${m.is_me?'wired':''}" title="sign ${esc(m.sign_fp)} · box ${esc(m.box_fp)}">`+
+    `${esc(m.agent_id)}${m.is_me?' (me)':''}</span>`).join('') || '<span class="plug">no members</span>';
+  const icon=l=>l==='error'?'✗ ':(l==='warn'?'⚠ ':'✓ ');
+  const lvl=l=>l==='error'?'error':(l==='warn'?'warn':'info');
+  document.getElementById('hivechecks').innerHTML = (s.checks||[]).map(c=>
+    `<div class="banner ${lvl(c.level)}" style="margin:4px 0">${icon(c.level)}${esc(c.message)}</div>`).join('');
+}
 function setActOut(s){const el=document.getElementById('actst');
   el.className='st '+(s==='success'?'ok':(['err','blocked','failure'].includes(s)?'err':'wait'));
   el.textContent=s==='wait'?'running…':s;}
@@ -372,7 +405,7 @@ async function sendAct(){
 }
 
 function startDash(){if(window.__DASH_STARTED)return;window.__DASH_STARTED=true;   // once — re-auth must not add another poll loop
-  refresh(); setInterval(refresh, 5000); loadTools();}
+  refresh(); setInterval(refresh, 5000); loadTools(); loadHive(); setInterval(loadHive, 10000);}
 (async function(){                          // gate on auth if the appliance has it enabled
   try{const s=await (await fetch('/auth/status')).json();
     if(s.enabled){ if(!s.authenticated){showLogin();return;} window.__CSRF=s.csrf; }}catch(e){}  // restore CSRF on reload

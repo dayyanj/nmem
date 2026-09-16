@@ -263,6 +263,59 @@ def _expand_hive_config(config: dict, agent_dir: str, default_identity: str) -> 
                        env=os.environ, logger=log)
 
 
+def _fingerprint(pub: str) -> str:
+    """Short, stable fingerprint of a base64 public key — operators compare these across hosts to
+    confirm a member's key matches out-of-band (the trust-root the untrusted broker can't provide).
+    Never raises: a malformed key yields 'invalid', not an exception into the dashboard route."""
+    import base64
+    import hashlib
+    if not isinstance(pub, str) or not pub:
+        return "invalid"
+    try:
+        raw = base64.b64decode(pub, validate=True)
+    except Exception:  # noqa: BLE001
+        return "invalid"
+    if len(raw) != 32:            # x25519/ed25519 pubs are 32 bytes — anything else is malformed
+        return "invalid"
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def hive_status_payload(config: dict, report) -> dict:
+    """Read-only 'is my hive healthy?' summary for the dashboard Hive card: which member I am, the
+    roster (with key fingerprints for out-of-band verification), the task types I accept + my peer
+    routes, and the cached hive-doctor findings. PURE over (config, DoctorReport|None) so it's unit-
+    testable and reuses the readiness refresher's cached report (no per-request re-probe). Never
+    raises — a malformed field degrades the card, never 500s the dashboard. Works for BOTH a
+    descriptor-backed hive and a hand-written exchange:/delegation: seed (reads the expanded config)."""
+    cfg = config if isinstance(config, dict) else {}
+    ex = cfg.get("exchange") if isinstance(cfg.get("exchange"), dict) else {}
+    dl = cfg.get("delegation") if isinstance(cfg.get("delegation"), dict) else {}
+    hive = cfg.get("hive") if isinstance(cfg.get("hive"), dict) else {}
+    enabled = bool(ex.get("enabled") or dl.get("enabled"))
+    ident = ((ex.get("identity") or {}).get("agent_id")) or hive.get("identity") or ""
+    keyring = ex.get("keyring") if isinstance(ex.get("keyring"), dict) else {}
+    members = []
+    for aid, bundle in sorted(keyring.items()):
+        b = bundle if isinstance(bundle, dict) else {}
+        members.append({"agent_id": aid, "sign_fp": _fingerprint(b.get("sign_pub", "")),
+                        "box_fp": _fingerprint(b.get("box_pub", "")), "is_me": aid == ident})
+    accepts = [t.get("type") for t in (dl.get("task_types") or [])
+               if isinstance(t, dict) and t.get("type")]
+    peer_channels = dl.get("peer_channels") if isinstance(dl.get("peer_channels"), dict) else {}
+    checks: list[dict] = []
+    ok, solo = True, False
+    if report is not None:
+        try:
+            checks = [{"name": c.name, "ok": bool(c.ok), "level": c.level, "message": c.message}
+                      for c in report.checks]
+            ok, solo = bool(report.ok), (not report.enabled)
+        except Exception:  # noqa: BLE001 — advisory; a broken report just omits the checks
+            pass
+    return {"enabled": enabled, "identity": ident, "descriptor": hive.get("descriptor"),
+            "members": members, "accepts": accepts, "peer_channels": peer_channels,
+            "checks": checks, "ok": ok, "solo": solo}
+
+
 def build_wizard_app():
     """WIZARD mode: the setup wizard + /studio/* router, wired to the appliance's secret store,
     DB provisioner, and restart-into-agent-mode."""
@@ -577,6 +630,18 @@ def build_agent_app():
             return {"ok": True, "tools": items,
                     "autonomy": (config.get("autonomy") or {}).get("level", "read_only"),
                     "has_executor": ctx.runtime is not None and ctx.runtime._runner is not None}
+
+        @app.get("/hive/status")
+        async def hive_status():
+            """Read-only hive membership summary for the dashboard Hive card — roster + key
+            fingerprints, accepted task types + peer routes, and the cached hive-doctor findings.
+            Reuses the readiness refresher's cached DoctorReport (refreshed every 20s), so this is a
+            cheap read with no per-request broker probe. Fails open to a solo/disabled payload."""
+            try:
+                return {"ok": True, **hive_status_payload(config, ctx.state.get("readiness_hive"))}
+            except Exception as e:  # noqa: BLE001
+                log.warning("[studio] hive status failed: %s", e, exc_info=True)
+                return {"ok": False, "enabled": False, "error": str(e)}
 
         @app.post("/act")
         async def act(req: dict):
