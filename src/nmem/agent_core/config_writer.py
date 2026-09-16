@@ -161,7 +161,13 @@ def render_agent_yaml(
     if autonomy:
         doc["autonomy"] = autonomy
     if hive:
-        doc["hive"] = hive
+        # `setup` is a TRANSIENT wizard intent (create/join a hive) the host materializes AFTER this
+        # write (generating the keyfile+descriptor, then patching in the compact descriptor/identity/
+        # keyfile block). It must never be persisted — strip it so agent.yaml carries only durable
+        # membership config (mode/graph_role and, once materialized, the peering block).
+        hive = {k: v for k, v in hive.items() if k != "setup"}
+        if hive:
+            doc["hive"] = hive
     if goal_lifecycle:
         doc["goal_lifecycle"] = goal_lifecycle
     return yaml.safe_dump(doc, sort_keys=False, default_flow_style=False)

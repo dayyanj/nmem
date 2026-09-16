@@ -386,6 +386,22 @@
           <option value="keeper">Keeper · also runs clustering + dreamstate (exactly one per hive)</option>
         </select></label>
 
+      <div id="hive_peer_block" style="margin-top:14px;border-top:1px dashed var(--line);padding-top:14px">
+        <label class="fld"><span class="lab">Peering &amp; delegation <span class="keynote">(encrypted A2A messaging + task delegation over the broker)</span></span>
+          <select id="hive_peer" onchange="onHivePeer()">
+            <option value="solo">Solo · no peering (default)</option>
+            <option value="create">Create a hive · this agent is the first member</option>
+            <option value="join">Join a hive · paste a descriptor a member shared</option>
+          </select></label>
+        <label class="fld" id="hive_name_f" hidden><span class="lab">Hive name</span>
+          <input type="text" id="hive_name" placeholder="e.g. spwig-fleet"></label>
+        <label class="fld" id="hive_desc_f" hidden><span class="lab">Hive descriptor <span class="keynote">(paste the YAML a member gave you)</span></span>
+          <textarea id="hive_desc" rows="6" placeholder="hive:&#10;  name: …&#10;  broker: {url_env: NMEX_REDIS_URL}&#10;  members: [ … ]" style="width:100%;box-sizing:border-box;font-family:var(--mono,monospace);font-size:12px"></textarea></label>
+        <label class="fld" id="hive_accepts_f" hidden><span class="lab">Accept delegated tasks <span class="keynote">(task types to serve, e.g. ask; blank = requester-only)</span></span>
+          <input type="text" id="hive_accepts" placeholder="e.g. ask"></label>
+        <p class="sub" id="hive_peer_hint" hidden style="color:var(--muted);font-size:12px;margin:2px 0 0">Uses the broker at <code>NMEX_REDIS_URL</code>. After Create, the dashboard shows the descriptor to hand to other members; after Join, it shows your bundle to send back to the hive.</p>
+      </div>
+
       <div class="create" style="margin-top:20px;border-top:1px solid var(--line);padding-top:18px">
         <button class="go" id="createbtn" onclick="create()">Create agent →</button>
         <span class="note">writes <code>agent.yaml</code> + <code>capabilities.env</code> + persona, bootstraps the DB, starts the runtime.</span>
@@ -635,6 +651,9 @@ function applyCurrent(spec){
   const hv=spec.hive;
   if(hv&&hv.mode==='shared_world'){document.getElementById('hive_mode').value='shared_world';onHiveMode();
     if(hv.graph_role)document.getElementById('hive_role').value=hv.graph_role;}
+  // Peering is materialized only at Create (keyfile+descriptor generation); an existing agent manages
+  // membership from its dashboard Hive card, so hide the create/join selector in edit mode.
+  document.getElementById('hive_peer_block').hidden=true;
   setupEditMode(aid);
 }
 function onName(){if(EDIT)return;document.getElementById('aid').value=document.getElementById('nm').value.trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');if(CATALOG)renderEnv();}
@@ -756,11 +775,30 @@ function onCuMode(){document.getElementById('cu_fields').hidden=
 function collectComputerUse(){if(document.getElementById('cu_mode').value!=='on')return null;
   const cu={enabled:true};const url=_v('cu_url');if(url)cu.url=url;
   const s=parseInt(_v('cu_steps'),10);if(!isNaN(s))cu.max_steps=s;return cu;}
-// ── hive membership (Step 05): solo (no block) or a shared_world member with a graph role ──
+// ── hive membership (Step 05): two orthogonal axes — a shared world-model (graph coupling) and/or
+// peering+delegation over the broker (a descriptor the host materializes into a keyfile on Create). ──
 function onHiveMode(){document.getElementById('hive_role_f').hidden=
   document.getElementById('hive_mode').value!=='shared_world';}
-function collectHive(){if(document.getElementById('hive_mode').value!=='shared_world')return null;
-  return {mode:'shared_world',graph_role:document.getElementById('hive_role').value};}
+function onHivePeer(){const p=document.getElementById('hive_peer').value;
+  document.getElementById('hive_name_f').hidden=p!=='create';
+  document.getElementById('hive_desc_f').hidden=p!=='join';
+  document.getElementById('hive_accepts_f').hidden=p==='solo';
+  document.getElementById('hive_peer_hint').hidden=p==='solo';}
+function collectHive(){
+  let h=null;
+  if(document.getElementById('hive_mode').value==='shared_world')
+    h={mode:'shared_world',graph_role:document.getElementById('hive_role').value};
+  const p=document.getElementById('hive_peer').value;   // peering is materialized by the host on Create
+  if(p==='create'||p==='join'){
+    const setup={action:p};
+    if(p==='create'){const n=document.getElementById('hive_name').value.trim(); if(n)setup.name=n;}
+    if(p==='join'){setup.descriptor_text=document.getElementById('hive_desc').value;}
+    const a=document.getElementById('hive_accepts').value.trim();
+    if(a)setup.accepts=a.split(/[,\s]+/).filter(Boolean);
+    h=h||{}; h.setup=setup;
+  }
+  return h;
+}
 
 async function create(){const aid=document.getElementById('aid').value.trim();const t=document.getElementById('toast');
   const flash=(m)=>{t.textContent=m;t.classList.add('on');setTimeout(()=>t.classList.remove('on'),4200);};

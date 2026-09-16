@@ -204,6 +204,10 @@
       <div id="hivechecks" style="margin-top:10px"></div>
       <div id="hiveadmin" hidden style="margin-top:12px;border-top:1px solid var(--line,#2a2a3a);padding-top:10px">
         <div class="ph" style="margin-bottom:6px"><span class="fn">manage membership</span><span class="st" id="hivest"></span></div>
+        <div style="margin-bottom:8px">
+          <button class="go" id="hivesharebtn" onclick="hiveShowDescriptor()">Show descriptor to share</button>
+          <pre id="hiveshare" hidden class="res" style="margin-top:6px;white-space:pre-wrap;word-break:break-all;max-height:220px;overflow:auto"></pre>
+        </div>
         <textarea id="hivebundle" placeholder='paste a peer&#39;s public bundle: {"agent_id":"…","sign_pub":"…","box_pub":"…"}' style="width:100%;min-height:52px;font-family:monospace;font-size:12px;box-sizing:border-box"></textarea>
         <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
           <button class="go" id="hiveaddbtn" onclick="hiveAddMember()">Add member</button>
@@ -426,6 +430,19 @@ function hiveAddMember(){
 function hiveRemoveMember(aid){
   if(!confirm('Remove "'+aid+'" from this hive? The agent will restart.')) return;
   hiveAct('/hive/remove-member',{agent_id:aid});
+}
+async function hiveShowDescriptor(){    // reveal the shareable descriptor + this agent's own bundle
+  const box=document.getElementById('hiveshare');
+  if(!box.hidden){ box.hidden=true; return; }   // toggle off
+  try{
+    const r=await getJSON('/hive/descriptor');
+    if(r.ok===false){ box.textContent='⚠ '+(r.error||'unavailable'); }
+    else{
+      const mine=r.bundle?('\n\n# your bundle — send to a hive keeper to be added there:\n'+JSON.stringify(r.bundle,null,2)):'';
+      box.textContent='# hive "'+r.name+'" — share this whole descriptor with a new member:\n'+r.text+mine;  // textContent: no HTML injection
+    }
+  }catch(e){ box.textContent=String(e); }
+  box.hidden=false;
 }
 function hiveToggleDelegation(){
   const enabling=document.getElementById('hivedelbtn').textContent.indexOf('Enable')===0;

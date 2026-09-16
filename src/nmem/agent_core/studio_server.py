@@ -181,6 +181,15 @@ async def _start_agent(spec: dict, agent_dir: str) -> None:
         raise
     _merge_env_file(os.path.join(agent_dir, "secrets.env"),
                     {f"{agent_id.upper()}_DB_DSN_ASYNC": _agent_dsn(agent_id)})
+    # Materialize wizard hive-membership intent (create/join) AFTER the config exists. Non-fatal: a
+    # hive setup failure must not destroy an otherwise-good agent — it boots solo and the operator can
+    # establish/join the hive from the dashboard (P2c). Only runs when the wizard asked for peering.
+    setup = (spec.get("hive") or {}).get("setup")
+    if isinstance(setup, dict) and str(setup.get("action", "")).lower() in ("create", "join"):
+        res = _provision_hive(agent_dir, agent_id, setup)
+        if not res.get("ok"):
+            log.warning("[studio] agent %s created but hive setup failed: %s — booting solo "
+                        "(establish/join the hive from the dashboard)", agent_id, res.get("error"))
     log.info("[studio] staged agent %s (db=%s); scheduling restart", agent_id, db)
     asyncio.get_event_loop().call_later(1.5, _request_restart)
 
@@ -329,6 +338,72 @@ def _hive_descriptor_path(config: dict, agent_dir: str) -> str | None:
     if not isinstance(desc, str) or not desc:
         return None
     return desc if os.path.isabs(desc) else os.path.join(agent_dir, desc)
+
+
+def _provision_hive(agent_dir: str, agent_id: str, setup: dict) -> dict:
+    """Materialize a wizard hive-membership intent into a working peering config (P2b). Runs AFTER
+    write_agent created ``agent_dir``: generate THIS agent's keyfile, create a new descriptor or accept
+    a pasted one, add this agent to it, and PATCH agent.yaml's ``hive:`` block to the compact form
+    expand-at-load reads (descriptor/identity/keyfile[/delegation]) — so the next boot peers with no
+    hand-editing. Thin orchestration over the ``hive_cli`` engine (same code the CLI + dashboard use).
+
+    ``setup`` = {action:'create'|'join', name?, descriptor_text?, broker_env?, accepts?, nfs?}. Returns
+    {ok, action, descriptor, keyfile, bundle} or {ok:False, error}. NEVER raises — a failed hive setup
+    is reported so the caller boots the agent solo (retry from the dashboard), never crash-boots."""
+    import yaml
+
+    from nmem.agent_core import hive_cli
+    from nmem.agent_core.hive_descriptor import HiveDescriptor
+
+    action = str((setup or {}).get("action", "")).lower()
+    if action not in ("create", "join"):
+        return {"ok": False, "error": f"unknown hive action {action!r} (want 'create' or 'join')"}
+    nfs = bool(setup.get("nfs"))
+    desc_path = os.path.join(agent_dir, "hive.yaml")
+    keyfile = os.path.join(agent_dir, f"{agent_id}.key.json")
+    try:
+        if action == "create":
+            name = str(setup.get("name") or "").strip() or f"{agent_id}-hive"
+            broker_env = str(setup.get("broker_env") or "NMEX_REDIS_URL").strip() or "NMEX_REDIS_URL"
+            hive_cli.create_descriptor(name, out=desc_path, broker_env=broker_env, nfs=nfs)
+        else:  # join — persist the pasted descriptor, validating it parses BEFORE writing it
+            text = setup.get("descriptor_text")
+            if not isinstance(text, str) or not text.strip():
+                return {"ok": False, "error": "join needs a pasted hive descriptor"}
+            HiveDescriptor.from_dict(yaml.safe_load(text) or {})    # raises on a malformed descriptor
+            with open(desc_path, "w") as f:
+                f.write(text)
+        res = hive_cli.join_hive(desc_path, agent_id=agent_id, keyfile=keyfile, nfs=nfs)
+    except SystemExit as e:               # engine refuses (clobber, bad bundle) → SystemExit
+        return {"ok": False, "error": str(e)}
+    except Exception as e:  # noqa: BLE001 — malformed descriptor / IO; report, don't crash the create
+        log.warning("[studio] hive provision (%s) failed for %s: %s", action, agent_id, e, exc_info=True)
+        return {"ok": False, "error": str(e)}
+
+    # Patch agent.yaml's hive block to the compact peering form. Relative paths (portable across a
+    # host→container bind-mount; expand-at-load resolves them against the agent dir). Merge alongside
+    # any mode/graph_role already written (the two hive axes are orthogonal).
+    accepts = setup.get("accepts")
+    peering = {"descriptor": "hive.yaml", "identity": agent_id, "keyfile": f"{agent_id}.key.json"}
+    if accepts is not None:
+        peering["delegation"] = {"enabled": True, "accepts": [str(a) for a in accepts if a]}
+    try:
+        ypath = os.path.join(agent_dir, "agent.yaml")
+        with open(ypath) as f:
+            doc = yaml.safe_load(f) or {}
+        cur = doc.get("hive") if isinstance(doc.get("hive"), dict) else {}
+        cur.pop("setup", None)            # belt-and-suspenders (config_writer already strips it)
+        cur.update(peering)
+        doc["hive"] = cur
+        with open(ypath, "w") as f:
+            yaml.safe_dump(doc, f, sort_keys=False)
+    except Exception as e:  # noqa: BLE001 — keys exist but the wiring failed; solo boot, operator retries
+        log.warning("[studio] hive provision: wrote descriptor+key but could not patch agent.yaml: %s",
+                    e, exc_info=True)
+        return {"ok": False, "error": f"materialized keys but failed to wire agent.yaml: {e}"}
+    log.info("[studio] hive %s: '%s' wired for peering (descriptor %s)", action, agent_id, desc_path)
+    return {"ok": True, "action": action, "descriptor": desc_path, "keyfile": keyfile,
+            "bundle": res.get("bundle")}
 
 
 def build_wizard_app():
@@ -657,6 +732,26 @@ def build_agent_app():
             except Exception as e:  # noqa: BLE001
                 log.warning("[studio] hive status failed: %s", e, exc_info=True)
                 return {"ok": False, "enabled": False, "error": str(e)}
+
+        @app.get("/hive/descriptor")
+        async def hive_descriptor():
+            """The shareable hive descriptor (PUBLIC only — member public keys + the broker env-var
+            NAME, never a secret) plus THIS agent's bundle, so the operator can hand the descriptor to
+            a new joiner or paste their bundle to an existing keeper. Descriptor-backed hives only."""
+            desc_path = _hive_descriptor_path(config, agent_dir)
+            if desc_path is None or not os.path.exists(desc_path):
+                return {"ok": False, "error": "this agent isn't descriptor-backed (no hive descriptor)"}
+            try:
+                from nmem.agent_core.hive_descriptor import HiveDescriptor
+                with open(desc_path) as f:
+                    text = f.read()
+                desc = HiveDescriptor.load(desc_path)
+                me = desc.member(persona.agent_id)
+                return {"ok": True, "name": desc.name, "text": text,
+                        "bundle": me.bundle() if me else None}
+            except Exception as e:  # noqa: BLE001
+                log.warning("[studio] hive descriptor read failed: %s", e, exc_info=True)
+                return {"ok": False, "error": str(e)}
 
         @app.post("/hive/add-member")
         async def hive_add_member(req: dict):
