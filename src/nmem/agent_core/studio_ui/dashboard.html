@@ -421,6 +421,9 @@ async function hiveAct(path,body){    // POST a mutation; the agent restarts, so
     const r=await getJSON(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
     if(r.ok===false){ setHiveOut('⚠ '+(r.error||'failed'),'err'); return; }
     setHiveOut('applied — restarting…','ok');
+    // A mutation (esp. rotate-key) invalidates any descriptor/bundle already on screen — hide the
+    // sharing blocks so the operator can't copy obsolete keys. Re-open "Show descriptor" for fresh data.
+    ['hiveshare','hivesharebundle','hivesharebundlelbl'].forEach(id=>document.getElementById(id).hidden=true);
     setTimeout(loadHive,4000); setTimeout(loadHive,9000);   // catch the agent as it comes back
   }catch(e){ setHiveOut('⚠ '+e,'err'); }
   finally{ ['hiveaddbtn','hivedelbtn','hiverotbtn'].forEach(id=>document.getElementById(id).disabled=false); }

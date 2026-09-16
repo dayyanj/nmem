@@ -303,10 +303,16 @@ def rotate_key(descriptor_path: str, *, agent_id: str, keyfile: str, nfs: bool =
     so pub and priv stay in agreement and the agent keeps working."""
     if not isinstance(agent_id, str) or not agent_id:
         raise SystemExit("agent_id to rotate must be a non-empty string")
-    if not os.path.exists(keyfile):
-        raise SystemExit(f"no keyfile to rotate at {keyfile} (use `join` to create one first)")
     from nmem_exchange import crypto
 
+    # Guard against a mis-pointed --keyfile: verify the EXISTING keyfile is actually this agent's before
+    # we overwrite it, else rotating 'a' with b.key.json would destroy B's identity (and leave A's real
+    # keyfile out of sync with its updated descriptor entry). _load_identity raises if the file is
+    # missing/unreadable (rotation needs an existing key — use `join` first).
+    existing = _load_identity(keyfile)
+    if existing.agent_id != agent_id:
+        raise SystemExit(f"keyfile {keyfile} belongs to '{existing.agent_id}', not '{agent_id}' — "
+                         "refusing to overwrite a different member's identity")
     keymode = mode if mode is not None else (0o644 if nfs else 0o600)
     idn = crypto.generate_identity(agent_id)     # new keypair in memory; nothing written yet
     with _descriptor_lock(descriptor_path):      # one lock spans the ENTIRE rotation (no interleaving)

@@ -237,6 +237,21 @@ def test_rotate_key_rolls_back_descriptor_on_keyfile_failure(tmp_path, monkeypat
     assert json.load(open(kf)) == old_secret
 
 
+def test_rotate_key_refuses_mismatched_keyfile(tmp_path):
+    """A mis-pointed --keyfile (another member's key) is refused BEFORE anything is written, so rotating
+    'djai' can't destroy michelle's identity. (Codex round-5 repro.)"""
+    desc_path = str(tmp_path / "hive.yaml")
+    cli.create_descriptor("fleet", out=desc_path)
+    dj_kf = str(tmp_path / "djai.key.json")
+    mich_kf = str(tmp_path / "michelle.key.json")
+    cli.join_hive(desc_path, agent_id="djai", keyfile=dj_kf)
+    cli.join_hive(desc_path, agent_id="michelle", keyfile=mich_kf)
+    before = open(mich_kf).read()
+    with pytest.raises(SystemExit):
+        cli.rotate_key(desc_path, agent_id="djai", keyfile=mich_kf)   # wrong keyfile for djai
+    assert open(mich_kf).read() == before                             # michelle's key untouched
+
+
 def test_main_rotate_key(tmp_path, capsys):
     desc_path = str(tmp_path / "hive.yaml")
     cli.create_descriptor("fleet", out=desc_path)
