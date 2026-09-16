@@ -56,6 +56,11 @@ services:
       # the agent DB; SensorGraph.connect() self-applies its migrations. Only touched when
       # NMEM_VISUAL_MEMORY_ENABLED is on AND a sandbox is attached.
       NMEM_SENSOR_DB_DSN: postgresql://nmem:nmem@postgres:5432/agent_nmem
+      # HIVE broker (compose shape): to join/host a hive from compose, point the agent at a broker.
+      # The `redis` service below is the in-compose option — uncomment and give it a password:
+      #   NMEX_REDIS_URL: redis://:CHANGEME@redis:6379/0
+      # For the single-box `docker run` shape instead, set NMEM_EMBEDDED_EXCHANGE=1 (the appliance
+      # then hosts the broker itself on :6390; publish that port for peers on other hosts).
       # network access to a HOST-run LLM (e.g. local vLLM/Ollama) from inside the container:
       # point the wizard at http://host.docker.internal:PORT/v1
     extra_hosts:
@@ -101,6 +106,10 @@ services:
       postgres:
         condition: service_healthy
 
+  # HIVE broker (compose shape) — the message bus for agent-to-agent exchange/delegation. Unused
+  # until you wire the studio's NMEX_REDIS_URL at it (see the studio env above). Add `requirepass`
+  # (the untrusted broker's coarse membership gate) before exposing it beyond this compose network.
+  # The `docker run` AIO shape uses NMEM_EMBEDDED_EXCHANGE instead of this service.
   redis:
     image: redis:7-alpine
     restart: unless-stopped

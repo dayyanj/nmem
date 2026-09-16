@@ -707,7 +707,22 @@ def _cli_env(yaml_path: str) -> dict:
     entrypoint does: capabilities then secrets) over the current environment, so the doctor probes
     what the running agent actually uses."""
     agent_dir = os.path.dirname(os.path.abspath(yaml_path))
-    merged = dict(os.environ)
+    # The embedded-exchange broker (NMEM_EMBEDDED_EXCHANGE) persists the EFFECTIVE broker URL to
+    # <data>/exchange/broker.env — load it as the LOWEST-precedence default so a docker-exec doctor
+    # can validate the embedded broker even though the URL lives only in supervisord's env otherwise.
+    # ONLY when the embedded broker is currently ON: a stale broker.env left on the volume from a
+    # prior embedded run must NOT override a now-external broker (the flag is a container-level env
+    # var, so docker exec sees it too).
+    embedded_on = str(os.environ.get("NMEM_EMBEDDED_EXCHANGE", "")).strip().lower() \
+        in ("1", "true", "yes", "on")
+    data_dir = os.environ.get("STUDIO_DATA_DIR") or os.path.dirname(agent_dir)
+    merged = dict(_load_env_file(os.path.join(data_dir, "exchange", "broker.env"))) if embedded_on else {}
+    # A real env var wins over the persisted default — EXCEPT an empty NMEX_REDIS_URL, which the
+    # supervisor treats as unset (it generates the embedded URL), so it must not clobber the default.
+    for k, v in os.environ.items():
+        if k == "NMEX_REDIS_URL" and not v:
+            continue
+        merged[k] = v
     merged.update(_load_env_file(os.path.join(agent_dir, "capabilities.env")))
     merged.update(_load_env_file(os.path.join(agent_dir, "secrets.env")))
     return merged

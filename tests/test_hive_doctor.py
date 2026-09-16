@@ -610,6 +610,37 @@ def test_default_identity_prefers_persona(tmp_path):
     assert hd._default_identity(str(empty), {"db": {"config_key": "djai"}}) == "djai"
 
 
+def test_cli_env_loads_embedded_broker_env(tmp_path, monkeypatch):
+    """The embedded-exchange broker persists the URL to <data>/exchange/broker.env; the doctor's CLI
+    env must pick it up so a docker-exec doctor validates the embedded broker (codex P2, P1.4)."""
+    import shlex
+    data = tmp_path / "data"
+    agent_dir = data / "michelle"
+    (data / "exchange").mkdir(parents=True)
+    agent_dir.mkdir()
+    yaml_path = str(agent_dir / "agent.yaml")
+    open(yaml_path, "w").close()
+    with open(data / "exchange" / "broker.env", "w") as f:
+        f.write(f"NMEX_REDIS_URL={shlex.quote('redis://:pw@127.0.0.1:6390/0')}\n")
+    monkeypatch.delenv("NMEX_REDIS_URL", raising=False)
+    monkeypatch.setenv("STUDIO_DATA_DIR", str(data))
+    monkeypatch.setenv("NMEM_EMBEDDED_EXCHANGE", "1")     # broker.env loads only when embedded is ON
+    env = hd._cli_env(yaml_path)
+    assert env["NMEX_REDIS_URL"] == "redis://:pw@127.0.0.1:6390/0"
+    # an explicitly EMPTY NMEX_REDIS_URL is treated as unset (supervisor generates it) — don't clobber
+    monkeypatch.setenv("NMEX_REDIS_URL", "")
+    assert hd._cli_env(yaml_path)["NMEX_REDIS_URL"] == "redis://:pw@127.0.0.1:6390/0"
+    monkeypatch.delenv("NMEX_REDIS_URL", raising=False)
+    # a stale broker.env must be IGNORED when the embedded broker is off (now external/none)
+    monkeypatch.setenv("NMEM_EMBEDDED_EXCHANGE", "0")
+    assert "NMEX_REDIS_URL" not in hd._cli_env(yaml_path)
+    monkeypatch.setenv("NMEM_EMBEDDED_EXCHANGE", "1")
+    # an agent's own secrets.env still wins over the persisted default
+    with open(agent_dir / "secrets.env", "w") as f:
+        f.write(f"NMEX_REDIS_URL={shlex.quote('redis://:override@ext:6390/0')}\n")
+    assert hd._cli_env(yaml_path)["NMEX_REDIS_URL"] == "redis://:override@ext:6390/0"
+
+
 def test_cli_env_strips_export_prefix(tmp_path):
     """`export KEY=VALUE` is valid in a sourced env file — the loader must strip `export ` (codex P2,
     round 12)."""

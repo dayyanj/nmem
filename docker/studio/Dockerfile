@@ -52,7 +52,7 @@ ENV PYTHONUNBUFFERED=1 \
 # already ships the postgres-16 server + the vector extension.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      python3 python3-venv python3-dev build-essential curl supervisor gosu \
+      python3 python3-venv python3-dev build-essential curl supervisor gosu redis-server \
  && rm -rf /var/lib/apt/lists/*
 
 # App deps in a venv. CPU torch FIRST so sentence-transformers doesn't drag the multi-GB CUDA build.
@@ -87,7 +87,9 @@ COPY nmem/docker/studio/studio-supervisor.sh /studio-supervisor.sh
 RUN chmod +x /entrypoint.sh /studio-service.sh /studio-supervisor.sh
 
 VOLUME ["/data"]
-EXPOSE 8080 5174
+# 8080 studio · 5174 viz · 6390 embedded exchange broker (only served when NMEM_EMBEDDED_EXCHANGE=1;
+# publish it to let hive peers on other hosts connect)
+EXPOSE 8080 5174 6390
 HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=10 \
   CMD curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1 || curl -fsS http://127.0.0.1:8080/studio/catalog >/dev/null 2>&1 || exit 1
 ENTRYPOINT ["/studio-supervisor.sh"]
