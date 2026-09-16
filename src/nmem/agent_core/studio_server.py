@@ -313,7 +313,22 @@ def hive_status_payload(config: dict, report) -> dict:
             pass
     return {"enabled": enabled, "identity": ident, "descriptor": hive.get("descriptor"),
             "members": members, "accepts": accepts, "peer_channels": peer_channels,
+            "delegation_enabled": bool(dl.get("enabled")),
             "checks": checks, "ok": ok, "solo": solo}
+
+
+def _hive_descriptor_path(config: dict, agent_dir: str) -> str | None:
+    """Absolute path to the descriptor backing this agent, or None if it isn't descriptor-backed.
+    Roster edits (add/remove-member) mutate this file; a solo agent or a hand-written
+    exchange:/delegation: seed has no descriptor to write, so those edits are refused up front.
+    Pure; never raises. Relative descriptor paths resolve against the agent dir (as expand-at-load
+    does), so the returned path matches the file the runtime actually reads."""
+    cfg = config if isinstance(config, dict) else {}
+    hive = cfg.get("hive") if isinstance(cfg.get("hive"), dict) else {}
+    desc = hive.get("descriptor")
+    if not isinstance(desc, str) or not desc:
+        return None
+    return desc if os.path.isabs(desc) else os.path.join(agent_dir, desc)
 
 
 def build_wizard_app():
@@ -642,6 +657,89 @@ def build_agent_app():
             except Exception as e:  # noqa: BLE001
                 log.warning("[studio] hive status failed: %s", e, exc_info=True)
                 return {"ok": False, "enabled": False, "error": str(e)}
+
+        @app.post("/hive/add-member")
+        async def hive_add_member(req: dict):
+            """Merge a peer's PUBLIC bundle into this hive's descriptor and restart to pick it up.
+            Body: {bundle:{agent_id,sign_pub,box_pub}} or {bundle_text:'<json>'}. Descriptor-backed
+            hives only (a hand-written seed has no roster file). Restart preserves memory (DB untouched)."""
+            from nmem.agent_core import hive_cli
+            desc_path = _hive_descriptor_path(config, agent_dir)
+            if desc_path is None:
+                return {"ok": False, "error": "this agent isn't descriptor-backed — roster edits need a "
+                                              "hive descriptor (create or join a hive first)"}
+            bundle = (req or {}).get("bundle")
+            if bundle is None and isinstance((req or {}).get("bundle_text"), str):
+                import json as _json
+                try:
+                    bundle = _json.loads(req["bundle_text"])
+                except Exception as e:  # noqa: BLE001
+                    return {"ok": False, "error": f"bundle_text is not valid JSON: {e}"}
+            if not isinstance(bundle, dict):
+                return {"ok": False, "error": "bundle must be a JSON object {agent_id, sign_pub, box_pub}"}
+            try:
+                added = hive_cli.add_member(desc_path, bundle)
+            except SystemExit as e:       # engine raises SystemExit for a non-object bundle
+                return {"ok": False, "error": str(e)}
+            except Exception as e:  # noqa: BLE001 — malformed keys (HiveDescriptorError) etc.
+                log.warning("[studio] hive add-member failed: %s", e, exc_info=True)
+                return {"ok": False, "error": str(e)}
+            await _reconfigure(_current_spec())   # rewrite (same) config + restart → expand re-reads roster
+            return {"ok": True, "added": added.get("agent_id"), "restarting": True}
+
+        @app.post("/hive/remove-member")
+        async def hive_remove_member(req: dict):
+            """Drop a member from this hive's descriptor and restart. Body: {agent_id}. Refuses to
+            remove SELF (leaving a hive = reset the data volume). Descriptor-backed hives only."""
+            from nmem.agent_core import hive_cli
+            desc_path = _hive_descriptor_path(config, agent_dir)
+            if desc_path is None:
+                return {"ok": False, "error": "this agent isn't descriptor-backed — roster edits need a "
+                                              "hive descriptor"}
+            aid = str((req or {}).get("agent_id", "")).strip()
+            if not aid:
+                return {"ok": False, "error": "agent_id required"}
+            if aid == persona.agent_id:
+                return {"ok": False, "error": "can't remove yourself from your own roster "
+                                              "(reset the data volume to leave a hive)"}
+            try:
+                removed = hive_cli.remove_member(desc_path, aid)
+            except Exception as e:  # noqa: BLE001
+                log.warning("[studio] hive remove-member failed: %s", e, exc_info=True)
+                return {"ok": False, "error": str(e)}
+            if not removed:
+                return {"ok": False, "error": f"no member '{aid}' in the descriptor"}
+            await _reconfigure(_current_spec())
+            return {"ok": True, "removed": aid, "restarting": True}
+
+        @app.post("/hive/delegation")
+        async def hive_delegation(req: dict):
+            """Enable/disable whether this agent ACCEPTS delegated peer tasks (its worker), and
+            restart. Body: {enabled:bool, accepts?:[str]}. Enabling needs at least one accepted task
+            type (existing or passed in). Descriptor-backed hives only. Memory preserved."""
+            enabled = bool((req or {}).get("enabled"))
+            spec = _current_spec()
+            hive = dict(spec.get("hive") or {})
+            if not hive.get("descriptor"):
+                return {"ok": False, "error": "this agent isn't descriptor-backed — configure "
+                                              "delegation in the seed"}
+            deleg = dict(hive.get("delegation") or {})
+            accepts = (req or {}).get("accepts")
+            if isinstance(accepts, list):
+                deleg["accepts"] = [str(a) for a in accepts if a]
+            if enabled and not deleg.get("accepts"):
+                return {"ok": False, "error": "enabling delegation needs at least one accepted task "
+                                              "type (pass accepts:[...])"}
+            deleg["enabled"] = enabled
+            hive["delegation"] = deleg
+            spec["hive"] = hive
+            try:
+                await _reconfigure(spec)
+            except Exception as e:  # noqa: BLE001
+                log.warning("[studio] hive delegation toggle failed: %s", e, exc_info=True)
+                return {"ok": False, "error": str(e)}
+            return {"ok": True, "enabled": enabled, "accepts": deleg.get("accepts", []),
+                    "restarting": True}
 
         @app.post("/act")
         async def act(req: dict):

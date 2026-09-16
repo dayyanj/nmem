@@ -203,6 +203,22 @@ def add_member(descriptor_path: str, bundle: dict, *, nfs: bool = False) -> dict
     return member.bundle()
 
 
+def remove_member(descriptor_path: str, agent_id: str, *, nfs: bool = False) -> bool:
+    """Drop a member from the descriptor and save. Returns True if a member was removed, False if
+    none matched (idempotent). Serialized with concurrent join/add-member so a removal can't lose a
+    concurrent join. Only mutates PUBLIC roster data — never touches anyone's private keyfile."""
+    if not isinstance(agent_id, str) or not agent_id:
+        raise SystemExit("agent_id to remove must be a non-empty string")
+    with _descriptor_lock(descriptor_path):          # serialize with concurrent join/add-member
+        descriptor = HiveDescriptor.load(descriptor_path)
+        removed = descriptor.remove_member(agent_id)
+        if removed:
+            descriptor.save(descriptor_path)
+            if nfs:                  # inside the lock (a concurrent normal save must not re-tighten it)
+                _make_readable(descriptor_path)
+    return removed
+
+
 def list_members(descriptor_path: str) -> list[dict]:
     return [m.bundle() for m in HiveDescriptor.load(descriptor_path).members]
 
@@ -277,6 +293,11 @@ def main(argv: list[str] | None = None) -> int:
     pa.add_argument("--bundle", required=True, help="peer bundle: a JSON file path or a JSON string")
     pa.add_argument("--nfs", action="store_true", help="keep the descriptor world-readable (root-squash)")
 
+    pr = sub.add_parser("remove-member", help="drop a member from the descriptor")
+    pr.add_argument("descriptor")
+    pr.add_argument("--as", dest="agent_id", required=True, help="the member's agent id to remove")
+    pr.add_argument("--nfs", action="store_true", help="keep the descriptor world-readable (root-squash)")
+
     pm = sub.add_parser("members", help="list the descriptor's members")
     pm.add_argument("descriptor")
 
@@ -308,6 +329,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "add-member":
         added = add_member(args.descriptor, _load_bundle(args.bundle), nfs=args.nfs)
         print(f"added/updated member '{added['agent_id']}' in {args.descriptor}")
+        return 0
+
+    if args.cmd == "remove-member":
+        if remove_member(args.descriptor, args.agent_id, nfs=args.nfs):
+            print(f"removed member '{args.agent_id}' from {args.descriptor}")
+        else:
+            print(f"no member '{args.agent_id}' in {args.descriptor} (nothing to remove)")
         return 0
 
     if args.cmd == "members":

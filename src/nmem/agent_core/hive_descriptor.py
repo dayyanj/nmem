@@ -196,6 +196,13 @@ class HiveDescriptor:
         self.members = [m for m in self.members if m.agent_id != member.agent_id]
         self.members.append(member)
 
+    def remove_member(self, agent_id: str) -> bool:
+        """Drop the member with ``agent_id`` from the roster. Returns True if one was removed, False
+        if no such member existed (idempotent — removing an absent member is a no-op, not an error)."""
+        before = len(self.members)
+        self.members = [m for m in self.members if m.agent_id != agent_id]
+        return len(self.members) != before
+
 
 def _coerce_ts(v) -> float:
     try:

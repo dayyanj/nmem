@@ -96,6 +96,13 @@ def test_upsert_replaces_rekeyed_member():
     assert desc.member("djai").sign_pub == new.sign_pub
 
 
+def test_remove_member_drops_and_is_idempotent():
+    desc, _ = _descriptor("michelle", "djai")
+    assert desc.remove_member("djai") is True
+    assert desc.agent_ids() == ["michelle"]
+    assert desc.remove_member("djai") is False    # already gone → no-op, no error
+
+
 # ── expand ───────────────────────────────────────────────────────────────────────
 
 def test_expand_derives_keyring_and_channels():

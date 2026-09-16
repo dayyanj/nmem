@@ -202,6 +202,16 @@
       <div class="kv" id="hivekv"></div>
       <div class="plugs" id="hivemembers" style="margin-top:8px"></div>
       <div id="hivechecks" style="margin-top:10px"></div>
+      <div id="hiveadmin" hidden style="margin-top:12px;border-top:1px solid var(--line,#2a2a3a);padding-top:10px">
+        <div class="ph" style="margin-bottom:6px"><span class="fn">manage membership</span><span class="st" id="hivest"></span></div>
+        <textarea id="hivebundle" placeholder='paste a peer&#39;s public bundle: {"agent_id":"…","sign_pub":"…","box_pub":"…"}' style="width:100%;min-height:52px;font-family:monospace;font-size:12px;box-sizing:border-box"></textarea>
+        <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <button class="go" id="hiveaddbtn" onclick="hiveAddMember()">Add member</button>
+          <button class="go" id="hivedelbtn" onclick="hiveToggleDelegation()">Toggle delegation</button>
+          <input id="hiveaccepts" type="text" placeholder="accepts (e.g. ask) — for enable" style="flex:1;min-width:130px">
+        </div>
+        <p class="sub" style="color:var(--muted);margin:6px 0 0;font-size:12px">Add a peer by pasting the bundle they printed on join. Remove one with the × on its chip. Changes restart the agent (memory preserved).</p>
+      </div>
     </section>
   </div>
 
@@ -371,6 +381,7 @@ async function loadHive(){
   if(!s || !s.enabled){ card.hidden=true; return; }
   card.hidden=false;
   const esc=v=>String(v==null?'':v).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  const escA=v=>esc(v).replace(/"/g,'&quot;');   // attribute-safe (a pasted bundle id may hold quotes)
   const n=(s.members||[]).length;
   document.getElementById('hivesol').textContent =
     s.solo ? '· solo (no peers)' : ('· '+n+' member'+(n===1?'':'s'));
@@ -379,13 +390,49 @@ async function loadHive(){
     `<span class="k">identity</span><span class="v">${esc(s.identity)||'—'}</span>`+
     `<span class="k">accepts</span><span class="v">${(s.accepts||[]).map(esc).join(', ')||'—'}</span>`+
     `<span class="k">delegates to</span><span class="v">${routes?Object.keys(s.peer_channels).map(esc).join(', '):'—'}</span>`;
-  document.getElementById('hivemembers').innerHTML = (s.members||[]).map(m=>
-    `<span class="plug ${m.is_me?'wired':''}" title="sign ${esc(m.sign_fp)} · box ${esc(m.box_fp)}">`+
-    `${esc(m.agent_id)}${m.is_me?' (me)':''}</span>`).join('') || '<span class="plug">no members</span>';
+  const canEdit=!!s.descriptor;   // roster edits need a descriptor-backed hive (not a hand-written seed)
+  document.getElementById('hivemembers').innerHTML = (s.members||[]).map(m=>{
+    const rm=(canEdit && !m.is_me)
+      ? ` <a href="#" class="hiverm" data-aid="${escA(m.agent_id)}" title="remove from hive" style="text-decoration:none;color:var(--muted)">×</a>` : '';
+    return `<span class="plug ${m.is_me?'wired':''}" title="sign ${escA(m.sign_fp)} · box ${escA(m.box_fp)}">`+
+      `${esc(m.agent_id)}${m.is_me?' (me)':''}${rm}</span>`;
+  }).join('') || '<span class="plug">no members</span>';
   const icon=l=>l==='error'?'✗ ':(l==='warn'?'⚠ ':'✓ ');
   const lvl=l=>l==='error'?'error':(l==='warn'?'warn':'info');
   document.getElementById('hivechecks').innerHTML = (s.checks||[]).map(c=>
     `<div class="banner ${lvl(c.level)}" style="margin:4px 0">${icon(c.level)}${esc(c.message)}</div>`).join('');
+  document.getElementById('hiveadmin').hidden = !canEdit;
+  document.getElementById('hivedelbtn').textContent =
+    s.delegation_enabled ? 'Disable delegation' : 'Enable delegation';
+}
+function setHiveOut(msg,cls){const el=document.getElementById('hivest');
+  el.className='st '+(cls||''); el.textContent=msg||'';}
+async function hiveAct(path,body){    // POST a mutation; the agent restarts, so re-poll after a beat
+  setHiveOut('working…','wait');
+  ['hiveaddbtn','hivedelbtn'].forEach(id=>document.getElementById(id).disabled=true);
+  try{
+    const r=await getJSON(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+    if(r.ok===false){ setHiveOut('⚠ '+(r.error||'failed'),'err'); return; }
+    setHiveOut('applied — restarting…','ok');
+    setTimeout(loadHive,4000); setTimeout(loadHive,9000);   // catch the agent as it comes back
+  }catch(e){ setHiveOut('⚠ '+e,'err'); }
+  finally{ ['hiveaddbtn','hivedelbtn'].forEach(id=>document.getElementById(id).disabled=false); }
+}
+function hiveAddMember(){
+  const t=document.getElementById('hivebundle').value.trim();
+  if(!t){ setHiveOut('paste a peer bundle first','err'); return; }
+  hiveAct('/hive/add-member',{bundle_text:t}).then(()=>{document.getElementById('hivebundle').value='';});
+}
+function hiveRemoveMember(aid){
+  if(!confirm('Remove "'+aid+'" from this hive? The agent will restart.')) return;
+  hiveAct('/hive/remove-member',{agent_id:aid});
+}
+function hiveToggleDelegation(){
+  const enabling=document.getElementById('hivedelbtn').textContent.indexOf('Enable')===0;
+  const body={enabled:enabling};
+  if(enabling){ const a=document.getElementById('hiveaccepts').value.trim();
+    if(a) body.accepts=a.split(/[,\s]+/).filter(Boolean); }
+  hiveAct('/hive/delegation',body);
 }
 function setActOut(s){const el=document.getElementById('actst');
   el.className='st '+(s==='success'?'ok':(['err','blocked','failure'].includes(s)?'err':'wait'));
@@ -405,6 +452,9 @@ async function sendAct(){
 }
 
 function startDash(){if(window.__DASH_STARTED)return;window.__DASH_STARTED=true;   // once — re-auth must not add another poll loop
+  // delegated: member chips are re-rendered each poll, but the container persists, so one listener holds
+  document.getElementById('hivemembers').addEventListener('click',e=>{
+    const a=e.target.closest('.hiverm'); if(!a)return; e.preventDefault(); hiveRemoveMember(a.dataset.aid);});
   refresh(); setInterval(refresh, 5000); loadTools(); loadHive(); setInterval(loadHive, 10000);}
 (async function(){                          // gate on auth if the appliance has it enabled
   try{const s=await (await fetch('/auth/status')).json();

@@ -142,6 +142,42 @@ def test_add_member_rejects_malformed_bundle(tmp_path):
         cli.add_member(desc_path, {"agent_id": "x", "sign_pub": "bad", "box_pub": "bad"})
 
 
+# ── remove-member ────────────────────────────────────────────────────────────────────
+
+def test_remove_member_drops_and_reports(tmp_path):
+    desc_path = str(tmp_path / "hive.yaml")
+    cli.create_descriptor("fleet", out=desc_path)
+    cli.add_member(desc_path, crypto.generate_identity("michelle").public_bundle())
+    cli.add_member(desc_path, crypto.generate_identity("djai").public_bundle())
+    assert cli.remove_member(desc_path, "michelle") is True
+    ids = HiveDescriptor.load(desc_path).agent_ids()
+    assert ids == ["djai"]                       # michelle gone, djai kept
+
+
+def test_remove_member_absent_is_noop(tmp_path):
+    desc_path = str(tmp_path / "hive.yaml")
+    cli.create_descriptor("fleet", out=desc_path)
+    cli.add_member(desc_path, crypto.generate_identity("djai").public_bundle())
+    assert cli.remove_member(desc_path, "nobody") is False   # idempotent, no error
+    assert HiveDescriptor.load(desc_path).agent_ids() == ["djai"]
+
+
+def test_remove_member_rejects_empty_id(tmp_path):
+    desc_path = str(tmp_path / "hive.yaml")
+    cli.create_descriptor("fleet", out=desc_path)
+    with pytest.raises(SystemExit):
+        cli.remove_member(desc_path, "")
+
+
+def test_main_remove_member(tmp_path, capsys):
+    desc_path = str(tmp_path / "hive.yaml")
+    cli.create_descriptor("fleet", out=desc_path)
+    cli.add_member(desc_path, crypto.generate_identity("djai").public_bundle())
+    assert cli.main(["remove-member", desc_path, "--as", "djai"]) == 0
+    assert "removed member 'djai'" in capsys.readouterr().out
+    assert HiveDescriptor.load(desc_path).agent_ids() == []
+
+
 # ── seed block emission ─────────────────────────────────────────────────────────────
 
 def test_seed_block_paths_relative_to_seed_dir(tmp_path):

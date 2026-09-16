@@ -45,6 +45,13 @@ def test_members_fingerprints_and_is_me():
     assert next(m for m in p["members"] if m["agent_id"] == "djai")["is_me"] is False
     assert p["accepts"] == ["ask"]
     assert p["peer_channels"] == {"djai": "dm:djai:michelle"}
+    assert p["delegation_enabled"] is True
+
+
+def test_delegation_enabled_reflects_flag():
+    off = hive_status_payload(_cfg(delegation={"enabled": False, "task_types": []}), None)
+    assert off["delegation_enabled"] is False
+    assert off["enabled"] is True   # exchange still on → hive still enabled
 
 
 def test_checks_serialized_from_report():
