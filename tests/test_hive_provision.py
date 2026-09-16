@@ -33,7 +33,9 @@ def test_provision_create_wires_agent_yaml_and_merges_axes(tmp_path):
     hv = yaml.safe_load((d / "agent.yaml").read_text())["hive"]
     assert hv["descriptor"] == "hive.yaml" and hv["identity"] == "djai"
     assert hv["keyfile"] == "djai.key.json"
-    assert hv["delegation"] == {"enabled": True, "accepts": ["ask"]}
+    # shared_world → peering is wired but delegation is skipped (its ledgers need an isolated db); the
+    # requested accepts is dropped rather than written into a config that can't deliver it.
+    assert "delegation" not in hv
     # the peering axis merges alongside the graph-sharing axis — neither clobbers the other
     assert hv["mode"] == "shared_world" and hv["graph_role"] == "keeper"
     assert HiveDescriptor.load(str(d / "hive.yaml")).agent_ids() == ["djai"]  # I'm in the roster
@@ -57,6 +59,17 @@ def test_provision_create_requester_only_when_accepts_empty(tmp_path):
     assert res["ok"] is True
     hv = yaml.safe_load((d / "agent.yaml").read_text())["hive"]
     assert hv["delegation"] == {"enabled": True, "accepts": []}
+
+
+def test_provision_shared_world_skips_delegation(tmp_path):
+    """A shared_world agent gets full peering but NO delegation block — delegation ledgers need an
+    isolated db (AgentRuntime._wire_delegation refuses it under shared_world). (Codex round-6 repro.)"""
+    d = _agent_dir(tmp_path, agent_yaml={"hive": {"mode": "shared_world", "graph_role": "keeper"}})
+    res = _provision_hive(str(d), "djai", {"action": "create", "accepts": ["ask"]})
+    assert res["ok"] is True
+    hv = yaml.safe_load((d / "agent.yaml").read_text())["hive"]
+    assert hv["descriptor"] == "hive.yaml" and hv["mode"] == "shared_world"   # peering + graph both on
+    assert "delegation" not in hv                                             # ...but no delegation
 
 
 def test_provision_join_accepts_pasted_descriptor(tmp_path):

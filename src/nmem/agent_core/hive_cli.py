@@ -257,6 +257,10 @@ def _replace_keyfile(keyfile: str, idn, mode: int) -> None:
     failed write leaves the OLD key intact rather than truncating the only copy of the agent's identity.
     fchmod acts on the fd we created (a path-based chmod could follow a symlink swapped in after
     creation); mkstemp gives a unique 0600 temp that O_EXCL-creates (no symlink-follow, no collision)."""
+    # Follow a symlink to its TARGET so os.replace updates the real keyfile the runtime reads — replacing
+    # the link path itself would leave the target holding the OLD key while the descriptor advertises the
+    # new one (mirrors HiveDescriptor.save). realpath also anchors the temp in the target's dir.
+    keyfile = os.path.realpath(keyfile)
     d = os.path.dirname(os.path.abspath(keyfile)) or "."
     prev = os.stat(keyfile) if os.path.exists(keyfile) else None
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".key-", suffix=".tmp")

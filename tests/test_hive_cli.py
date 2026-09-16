@@ -362,6 +362,24 @@ def test_discover_pin_reannounce_same_keys_is_noop(tmp_path):
     assert res["pinned"] == [] and res["conflicts"] == []   # neither new nor a conflict
 
 
+def test_rotate_key_follows_symlink_to_target(tmp_path):
+    """rotate-key through a symlink updates the TARGET (the file the runtime reads), keeping it in sync
+    with the descriptor — not replacing the link with a fresh file and stranding the old key on the
+    target. (Codex round-6 repro.)"""
+    import os
+    desc_path = str(tmp_path / "hive.yaml")
+    cli.create_descriptor("fleet", out=desc_path)
+    target = str(tmp_path / "real-djai.key.json")
+    cli.join_hive(desc_path, agent_id="djai", keyfile=target)
+    link = str(tmp_path / "djai.key.json")
+    os.symlink(target, link)
+    cli.rotate_key(desc_path, agent_id="djai", keyfile=link)
+    assert os.path.islink(link)                                   # link preserved (not clobbered)
+    new_pub = HiveDescriptor.load(desc_path).member("djai").sign_pub
+    assert cli._load_identity(target).sign_pub == new_pub         # TARGET holds the new key
+    assert cli._load_identity(link).sign_pub == new_pub           # ...reachable through the link
+
+
 def test_rotate_key_preserves_explicit_mode(tmp_path):
     """rotate_key(mode=…) writes the keyfile with EXACTLY those bits (callers preserve a 0640 group-only
     key rather than widening it to world-readable)."""

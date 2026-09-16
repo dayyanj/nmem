@@ -468,14 +468,22 @@ def _provision_hive(agent_dir: str, agent_id: str, setup: dict) -> dict:
     # any mode/graph_role already written (the two hive axes are orthogonal).
     accepts = setup.get("accepts")
     peering = {"descriptor": "hive.yaml", "identity": agent_id, "keyfile": f"{agent_id}.key.json"}
-    if accepts is not None:
-        peering["delegation"] = {"enabled": True, "accepts": [str(a) for a in accepts if a]}
     try:
         ypath = os.path.join(agent_dir, "agent.yaml")
         with open(ypath) as f:
             doc = yaml.safe_load(f) or {}
         cur = doc.get("hive") if isinstance(doc.get("hive"), dict) else {}
         cur.pop("setup", None)            # belt-and-suspenders (config_writer already strips it)
+        # Delegation ledgers need an ISOLATED db — AgentRuntime._wire_delegation refuses delegation under
+        # shared_world graph-sharing. So enable delegation only when NOT shared_world; a shared_world agent
+        # still gets full peering (the exchange), just no delegation queue (rather than a config that
+        # silently can't deliver the requested delegation).
+        shared_world = cur.get("mode") == "shared_world"
+        if accepts is not None and not shared_world:
+            peering["delegation"] = {"enabled": True, "accepts": [str(a) for a in accepts if a]}
+        elif accepts is not None and shared_world:
+            log.info("[studio] hive %s: '%s' is shared_world — peering enabled, delegation skipped "
+                     "(delegation ledgers need an isolated db)", action, agent_id)
         cur.update(peering)
         doc["hive"] = cur
         with open(ypath, "w") as f:
