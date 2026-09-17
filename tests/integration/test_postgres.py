@@ -350,7 +350,10 @@ class TestAutoImportanceScoring:
             "Some event worth logging",
         )
         assert entry.auto_importance is True
-        assert entry.importance == 5  # Default floor before rescoring
+        # score-at-write (default-on) scores auto entries at write, so importance is the heuristic
+        # score, not the pre-rescore 5 floor. Assert the invariant (auto-scored, valid range); the
+        # rescoring value itself is covered by test_score_auto_importance_rescores_heuristic.
+        assert 1 <= entry.importance <= 10
 
     async def test_explicit_importance_preserved_on_journal(self, mem: MemorySystem):
         """Explicit importance flips auto_importance off and sticks."""
@@ -369,7 +372,7 @@ class TestAutoImportanceScoring:
             "Some fact the agent discovered",
         )
         assert entry.auto_importance is True
-        assert entry.importance == 5
+        assert 1 <= entry.importance <= 10   # auto-scored at write; exact value is heuristic
 
     async def test_explicit_importance_preserved_on_ltm(self, mem: MemorySystem):
         """Explicit LTM importance is never silently adjusted."""
