@@ -2,9 +2,18 @@
 individual agents (agent-a used to hardcode ``drive:novelty`` for every drive_intent goal because
 the originating drive wasn't threaded through PursuitGoal → every drive success wrongly discharged
 novelty). Pure function; no DB.
+
+Skipped where the optional nmem-act / nmem-sym packages aren't importable — goal_store adapts them,
+so it can't be imported without them (matches the importorskip pattern the other agent_core tests use;
+keeps the lean CI job, which installs only nmem, green instead of erroring at collection).
 """
-from nmem.agent_core.goal_store import proposal_source
-from nmem_act import PursuitGoal
+import pytest
+
+pytest.importorskip("nmem_act")
+pytest.importorskip("nmem_sym")
+
+from nmem.agent_core.goal_store import proposal_source  # noqa: E402
+from nmem_act import PursuitGoal  # noqa: E402
 
 
 def _pg(source_type=None, source_ref=None):

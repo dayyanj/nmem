@@ -48,7 +48,7 @@ async def test_surfaces_procedure_ids_and_context(monkeypatch):
     graph = SimpleNamespace(_embedder=SimpleNamespace(embed=lambda s: [0.1]),
                             pool=object())
     procs = [{"id": 11}, {"id": 12}]
-    import nmem_sym.procedural as proc
+    proc = pytest.importorskip("nmem_sym.procedural")   # optional sibling; skip on the lean CI job
     monkeypatch.setattr(proc, "find_matching_procedures", AsyncMock(return_value=procs))
     monkeypatch.setattr(proc, "format_procedure_context", lambda p: "proc-ctx")
     text, proc_ids = await recall_lessons(_mem([]), graph, "task",
